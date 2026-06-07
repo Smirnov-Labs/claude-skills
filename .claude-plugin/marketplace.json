@@ -39,10 +39,12 @@
     },
     {
       "name": "pr-utilities",
-      "description": "Pull request lifecycle commands — /pr opens or updates a PR, /pr-fix iteratively drives a PR to clean by reading CI status, SAR review, and inline review comments (including Codex), then auto-committing fixes",
+      "description": "Pull request lifecycle tools — /pr opens or updates a PR; reading-bot-pr-reviews reads and reports (read-only) what the automated reviewers said (Codex across its 3 endpoints + the Architecture/SAR review) so no finding or clean verdict is missed before merge; /pr-fix iteratively drives a PR to clean by reading CI status, SAR review, and inline review comments (including Codex), then auto-committing fixes",
       "source": "./",
       "strict": false,
-      "skills": []
+      "skills": [
+        "./skills/reading-bot-pr-reviews"
+      ]
     }
   ]
 }

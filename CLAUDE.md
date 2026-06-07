@@ -96,6 +96,7 @@ This repo is a Claude Code skills marketplace hosted at `github:smirnov-labs/cla
 | `codex-plan-review` | `plan-utilities` | `skills/codex-plan-review/` | Send the current plan to Codex 5.4 (high effort, read-only) for an independent architectural review |
 | `detect-overengineering` | `plan-utilities` | `skills/detect-overengineering/` | Audit a plan document for LLM-style overengineering — rubric pass + Codex adversarial pass + merged findings with proposed edits |
 | `git-recon` | `git-recon` | `skills/git-recon/` | 12-month git-history health check — churn, bus factor, bug hotspots, velocity, firefighting |
+| `reading-bot-pr-reviews` | `pr-utilities` | `skills/reading-bot-pr-reviews/` | Read-only fetch + severity-classified report of automated PR reviews (Codex across its 3 endpoints + the Architecture/SAR review) so no finding or clean verdict is missed before merge |
 
 ### Current Commands
 
