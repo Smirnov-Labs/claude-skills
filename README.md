@@ -12,6 +12,7 @@ A Claude Code **skills marketplace** and **starter template** that bundles reusa
 /plugin install presentation-tools@smirnovlabs-claude-skills
 /plugin install plan-utilities@smirnovlabs-claude-skills
 /plugin install git-recon@smirnovlabs-claude-skills
+/plugin install pr-utilities@smirnovlabs-claude-skills
 ```
 
 Or from the CLI outside a session:
@@ -29,7 +30,9 @@ Once installed, skills activate automatically based on what you ask. Say "build 
 |-------|--------|--------------|-----------------|
 | **presentation-blueprint** | `presentation-tools` | End-to-end presentation consultant: analyzes codebases/websites/projects, crafts strategic blueprints, and renders polished decks via `document-skills:pptx` | "build a deck", "create a presentation", "pitch deck for" |
 | **codex-plan-review** | `plan-utilities` | Sends your current plan to Codex 5.4 (high-effort, read-only) for an independent architectural second opinion before you execute | "review plan with codex", "get a second opinion", "iterate on plan" |
+| **detect-overengineering** | `plan-utilities` | Audits an implementation-plan doc for LLM-style overengineering: a rubric-driven Claude pass plus a Codex adversarial pass, merged into specific edits that slim the plan | "check this plan for bloat", "is this overengineered", "detect overengineering" |
 | **git-recon** | `git-recon` | 12-month git-history health check: surfaces high-churn files, bus factor, bug hotspots, velocity trends, and firefighting patterns before you read any code | "git recon", "codebase health check", "where are the landmines" |
+| **reading-bot-pr-reviews** | `pr-utilities` | Read-only: fetches every automated PR review (Codex across its 3 endpoints + the Architecture/SAR review), filters on exact bot logins, and reports a severity-classified merge verdict so no finding — or clean pass — is missed | "what did the bots say", "read the PR reviews", "did Codex/the SAR pass" |
 
 ### Prerequisites
 
@@ -42,6 +45,8 @@ The `presentation-blueprint` skill requires `document-skills:pptx` for rendering
 The `codex-plan-review` skill requires the [Codex CLI](https://github.com/openai/codex) on your `PATH` with a `gpt-5.4-codex` model available.
 
 The `git-recon` skill needs only `git` — runs locally against the repo you're standing in.
+
+The `reading-bot-pr-reviews` skill requires the [GitHub CLI](https://cli.github.com/) (`gh`) authenticated against the repo, and a repo whose PRs are reviewed by Codex and/or an Architecture-Review GitHub Action.
 
 ## What's in This Repo
 
@@ -123,7 +128,11 @@ skills/
 │   └── source-analysis.md       # Reference: source evaluation guide
 ├── codex-plan-review/           # Codex second-opinion skill
 │   └── SKILL.md                 # Skill definition
-└── git-recon/                   # Git history health-check skill
+├── detect-overengineering/      # Plan overengineering audit skill
+│   └── SKILL.md                 # Skill definition
+├── git-recon/                   # Git history health-check skill
+│   └── SKILL.md                 # Skill definition
+└── reading-bot-pr-reviews/      # Automated PR-review reader skill
     └── SKILL.md                 # Skill definition
 ```
 
@@ -131,7 +140,7 @@ skills/
 
 1. **Skills Marketplace** (`.claude-plugin/` + `skills/`)
    - Installable via `github:smirnov-labs/claude-skills`
-   - Ships with three plugins: `presentation-tools`, `plan-utilities`, and `git-recon`
+   - Ships with four plugins: `presentation-tools`, `plan-utilities`, `git-recon`, and `pr-utilities`
 
 2. **Slash Commands** (`.claude/commands/`)
    - `/plan` -- structured feature planning with clarifying questions
