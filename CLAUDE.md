@@ -94,6 +94,7 @@ This repo is a Claude Code skills marketplace hosted at `github:smirnov-labs/cla
 |-------|--------|------|---------|
 | `presentation-blueprint` | `presentation-tools` | `skills/presentation-blueprint/` | Build pitch/technical/update decks end-to-end (analyze → strategize → outline → style → render) |
 | `codex-plan-review` | `plan-utilities` | `skills/codex-plan-review/` | Send the current plan to Codex 5.4 (high effort, read-only) for an independent architectural review |
+| `detect-overengineering` | `plan-utilities` | `skills/detect-overengineering/` | Audit a plan document for LLM-style overengineering — rubric pass + Codex adversarial pass + merged findings with proposed edits |
 | `git-recon` | `git-recon` | `skills/git-recon/` | 12-month git-history health check — churn, bus factor, bug hotspots, velocity, firefighting |
 
 ### Current Commands

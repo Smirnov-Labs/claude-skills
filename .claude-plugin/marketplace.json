@@ -24,7 +24,8 @@
       "source": "./",
       "strict": false,
       "skills": [
-        "./skills/codex-plan-review"
+        "./skills/codex-plan-review",
+        "./skills/detect-overengineering"
       ]
     },
     {
