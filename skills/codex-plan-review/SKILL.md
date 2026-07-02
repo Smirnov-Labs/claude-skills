@@ -3,6 +3,10 @@ name: codex-plan-review
 description: Get a second opinion on your current implementation plan by sending it to Codex for independent review. Use after brainstorming, after writing a plan, or when you want to iterate on a plan before execution. Triggers on 'get a second opinion', 'review plan with codex', 'codex review', or 'iterate on plan'.
 ---
 
+<SUBAGENT-STOP>
+If you were dispatched as a subagent to execute a specific delegated task, do NOT follow this skill — skip it and return to the task you were given.
+</SUBAGENT-STOP>
+
 # Codex Plan Review
 
 Send the current working plan to Codex 5.4 for an independent second opinion. This skill is used to iterate on plans before committing to implementation.

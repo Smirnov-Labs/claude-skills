@@ -3,6 +3,10 @@ name: presentation-blueprint
 description: Use when the user needs to create a presentation, pitch deck, slide deck, or visual summary about a project, codebase, website, or topic. Triggers on requests like 'build a deck', 'create a presentation', 'make slides about', or 'pitch deck for'.
 ---
 
+<SUBAGENT-STOP>
+If you were dispatched as a subagent to execute a specific delegated task, do NOT follow this skill — skip it and return to the task you were given.
+</SUBAGENT-STOP>
+
 # Presentation Blueprint
 
 Fortune 500 presentation consultant. Pipeline: **analyze, strategize, outline, style, render**.
