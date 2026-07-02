@@ -1,7 +1,11 @@
 ---
 name: git-recon
-description: Use when the user wants a git-history health check of an unfamiliar or inherited repository — triggers on "git recon", "codebase health check", "analyze this repo's history", "where are the landmines", or onboarding/due-diligence framing. Do NOT use for architecture review, bug-fixing, or feature work; this skill reads history, not code.
+description: Use when the user wants a git-history health check of an unfamiliar or inherited repository — triggers on "git recon", "codebase health check", "analyze this repo's history", "where are the landmines", or onboarding/due-diligence framing. Do NOT use for architecture review, bug-fixing, or feature work; this skill reads history, not code. Main-thread only — subagents dispatched to execute a delegated task must NOT invoke this skill.
 ---
+
+<SUBAGENT-STOP>
+If you were dispatched as a subagent to execute a specific delegated task, do NOT follow this skill — skip it and return to the task you were given.
+</SUBAGENT-STOP>
 
 # Git Recon
 

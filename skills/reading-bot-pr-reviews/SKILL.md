@@ -3,6 +3,10 @@ name: reading-bot-pr-reviews
 description: Use when reading or reporting what automated PR reviewers left before merging — Codex (`chatgpt-codex-connector`) and an Architecture-Review / SAR GitHub Action (`github-actions[bot]`). Triggers on "what did the bots say", before declaring a PR done or merging, or when a Codex finding or clean verdict seems missing because `gh pr view --json comments` came back empty. Read-only (does not commit or push); for auto-fixing PR feedback use `/pr-fix` instead.
 ---
 
+<SUBAGENT-STOP>
+If you were dispatched as a subagent to execute a specific delegated task, do NOT follow this skill — skip it and return to the task you were given.
+</SUBAGENT-STOP>
+
 # Reading Bot PR Reviews
 
 ## Overview

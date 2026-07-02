@@ -3,6 +3,10 @@ name: detect-overengineering
 description: Use when reviewing an implementation plan document (docs/superpowers/plans/*.md or similar) for LLM-style overengineering before implementation. Runs a rubric-driven Claude pass plus a Codex adversarial pass, merges findings, and proposes specific edits to slim the plan. Triggers on 'check this plan for bloat', 'is this overengineered', 'detect overengineering', or invoked as /detect-overengineering.
 ---
 
+<SUBAGENT-STOP>
+If you were dispatched as a subagent to execute a specific delegated task, do NOT follow this skill — skip it and return to the task you were given.
+</SUBAGENT-STOP>
+
 # detect-overengineering
 
 Audit an implementation plan document for LLM-style overengineering. Two passes (rubric-driven Claude pass + Codex adversarial pass) merge into a single report of specific edits to slim the plan before code is written.
