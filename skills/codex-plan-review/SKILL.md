@@ -9,7 +9,7 @@ If you were dispatched as a subagent to execute a specific delegated task, do NO
 
 # Codex Plan Review
 
-Send the current working plan to Codex 5.4 for an independent second opinion. This skill is used to iterate on plans before committing to implementation.
+Send the current working plan to Codex (gpt-5.5) for an independent second opinion. This skill is used to iterate on plans before committing to implementation.
 
 ## When to Use
 
@@ -40,11 +40,11 @@ Read the full plan file. Construct a prompt for Codex that includes:
 
 ### 3. Send to Codex
 
-Run Codex with these exact settings — **non-spark model, high effort, read-only**:
+Run Codex with these exact settings — **gpt-5.5 (strongest ChatGPT-account model), high effort, read-only**:
 
 ```bash
 codex exec \
-  -m gpt-5.4-codex \
+  -m gpt-5.5 \
   --config model_reasoning_effort="high" \
   --sandbox read-only \
   --skip-git-repo-check \
@@ -92,7 +92,7 @@ If the user wants to update the plan:
 
 ## Key Rules
 
-- **Always use `gpt-5.4-codex`** (not spark, not 5.3)
+- **Always use `gpt-5.5`** — full `-codex` models (`gpt-5.4-codex`, `gpt-5.3-codex`, `gpt-5.5-codex`) and base `gpt-5.3` return HTTP 400 on ChatGPT-account auth; `gpt-5.5` is the strongest supported model
 - **Always use `high` reasoning effort**
 - **Always use `read-only` sandbox** — this is a review, not an edit
 - **Never skip the plan lookup step** — if there's no plan, ask for one
