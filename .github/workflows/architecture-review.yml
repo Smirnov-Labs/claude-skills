@@ -194,7 +194,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           settings: |
             {
-              "model": "claude-sonnet-4-5-20250929"
+              "model": "claude-sonnet-5-5"
             }
           # Without explicit --allowed-tools the action runs Claude with no
           # tools, so it cannot Read the diff file or run `git diff` to see
@@ -214,7 +214,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           settings: |
             {
-              "model": "claude-sonnet-4-5-20250929"
+              "model": "claude-sonnet-5-5"
             }
           claude_args: "--allowed-tools Read --allowed-tools Grep --allowed-tools Glob --allowed-tools 'Bash(git*)'"
           show_full_output: true
