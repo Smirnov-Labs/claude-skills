@@ -1,0 +1,58 @@
+SKILL: debugging-kubernetes-rollouts
+CREATED: 2025-11-02
+PURPOSE: Systematically debug Kubernetes deployments with ArgoCD and GitOps workflows
+
+STRUCTURE:
+- SKILL.md (663 lines) - Main debugging workflow
+- argocd-troubleshooting.md (15 KB) - ArgoCD-specific troubleshooting
+- gitops-workflows.md (16 KB) - GitOps patterns and best practices
+- README.md (11 KB) - User documentation
+- test-scripts/ - Diagnostic bash scripts
+  - diagnose-deployment.sh - K8s deployment diagnostics
+  - check-argocd-app.sh - ArgoCD application health check
+- examples/ - Example manifests and patterns
+
+ACTIVATION TRIGGERS:
+- "kubernetes deployment"
+- "argocd sync"
+- "gitops deployment"
+- "pod failing"
+- "rollout stuck"
+- "image pull error"
+- "service connectivity"
+- "kubectl" / "kubernetes MCP"
+
+KEY FEATURES:
+1. GitOps-first debugging approach (Git → ArgoCD → K8s)
+2. Tool selection strategy (MCP vs kubectl vs ArgoCD CLI)
+3. Common failure scenarios with solutions
+4. Decision trees for quick diagnosis
+5. Executable diagnostic scripts
+6. ArgoCD-specific troubleshooting
+7. Repository structure patterns
+8. Deployment strategies (blue-green, canary)
+9. Promotion workflows
+10. Emergency recovery procedures
+
+FOLLOWS BEST PRACTICES:
+✓ Gerund name form
+✓ Invocation-focused description with triggers
+✓ Progressive disclosure with supporting files
+✓ Intention-revealing file names
+✓ CLI-focused (kubectl, argocd, kubernetes MCP)
+✓ Executable diagnostic scripts (bash)
+✓ Comprehensive error catalog
+✓ GitOps-aware workflows
+
+INTEGRATIONS:
+- kubectl CLI
+- ArgoCD CLI (optional but recommended)
+- kubernetes MCP server
+- Git version control
+- Kustomize
+
+TOOL REQUIREMENTS:
+- kubectl (required)
+- argocd CLI (optional, falls back to kubectl)
+- jq (for script parsing)
+- git (for GitOps workflows)
