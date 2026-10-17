@@ -116,6 +116,8 @@ After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds an
 | `operating-frappe-on-kubernetes` | Operate, upgrade, and debug Frappe / ERPNext on Kubernetes: config on the sites PVC, first-site bootstrap, major-version upgrades, Error Log / email / PDF debugging |
 | `hyprland-lua` | Script, control, and debug a Hyprland compositor configured in Lua |
 | `quickshell-bar` | Edit and debug a Quickshell (Qt6/QML) status bar on Hyprland |
+| `de-slopping` | Cut hedges and filler from written deliverables; bundles a Simplified Technical English linter (`ste_lint.py`) and an optional `slop_guard` Stop hook |
+| `minto-pyramid` | Restructure a write-up answer-first (Minto Pyramid) |
 | `humanizer` | Remove signs of AI-generated writing (vendored, see `UPSTREAM`) |
 | `nonstop` | Autonomous work mode driven by a Stop hook (vendored, see `UPSTREAM` for the hook line) |
 

@@ -1,0 +1,3 @@
+# Python bytecode from running skill scripts and tests in a linked checkout
+__pycache__/
+*.pyc
