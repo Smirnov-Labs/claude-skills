@@ -1,0 +1,43 @@
+{
+  "_comment": "Shared ruleset for ste_lint.py. Base forms are HARD. The linter also derives SOFT variants: adverbs from blocklist words (comprehensive -> comprehensively) and verb inflections from substitutions (commence -> commencing). Edit this file to tune; no code change needed.",
+  "blocklist": [
+    "delve", "crucial", "seamless", "seamlessly", "comprehensive", "robust",
+    "cutting-edge", "game-changer", "tapestry", "realm", "plethora", "myriad",
+    "elevate", "foster", "streamline", "meticulous", "intricate", "pivotal",
+    "testament"
+  ],
+  "substitutions": {
+    "utilize": "use", "utilise": "use", "leverage": "use", "leveraging": "using",
+    "facilitate": "help", "commence": "start", "initiate": "start",
+    "terminate": "stop", "accomplish": "do", "sufficient": "enough",
+    "demonstrate": "show", "indicate": "show", "ensure": "make sure",
+    "numerous": "many", "obtain": "get", "attempt": "try",
+    "modification": "change", "additionally": "also", "furthermore": "also",
+    "moreover": "also", "approximately": "about"
+  },
+  "phrase_subs": {
+    "prior to": "before",
+    "subsequent to": "after",
+    "in order to": "to"
+  },
+  "soft_modals": ["should", "would", "may", "might"],
+  "hedges": [
+    "it'?s important to note",
+    "it is important to note",
+    "it'?s worth (?:noting|mentioning)",
+    "it is worth (?:noting|mentioning)",
+    "it should be noted",
+    "needless to say",
+    "at the end of the day",
+    "in today'?s world",
+    "when it comes to",
+    "that being said"
+  ],
+  "filler_ing": [
+    "making it (?:easy|simple|possible|straightforward) to",
+    "allowing (?:you|us|the user|it|them) to",
+    "enabling \\w+(?:\\s\\w+)? to",
+    "helping (?:to|you)",
+    "providing the ability to"
+  ]
+}
