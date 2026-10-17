@@ -32,6 +32,7 @@ EOF
 
 say()  { [ -n "$QUIET" ] || echo "skillsync: $*"; }
 warn() { echo "skillsync: $*" >&2; }
+notice() { [ -n "$QUIET" ] || warn "$@"; }   # conflicts and skips; -q hides them
 excluded() { [ -f "$EXCLUDE" ] && grep -qxF "$1" "$EXCLUDE"; }
 
 pull() {
@@ -41,7 +42,7 @@ pull() {
     if [ -L "$src" ] || [ ! -d "$src/.git" ]; then continue; fi
     if ! GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes" \
          git -C "$src" pull -q --ff-only 2>/dev/null; then
-      [ -n "$QUIET" ] || warn "could not update ${src##*/}, keeping the local copy"
+      notice "could not update ${src##*/}, keeping the local copy"
     fi
   done
 }
@@ -50,28 +51,36 @@ pull() {
 place() {
   local link="$3/$1"
   case $seen in *$'\n'"$link"$'\n'*)
-    warn "$1 is provided twice, keeping $(readlink "$link")"; return 1 ;;
+    notice "$1 is provided twice, keeping $(readlink "$link")"; return 1 ;;
   esac
   seen="$seen$link"$'\n'
   if [ -e "$link" ] && [ ! -L "$link" ]; then
-    warn "$link is a real file or directory, not replacing it"; return 1
+    notice "$link is a real file or directory, not replacing it"; return 1
   fi
   if [ -L "$link" ]; then
     case $(readlink "$link") in
       "$2") return 0 ;;
       "$SRC_ROOT"/*) ;;
-      *) say "relinking $1 (was $(readlink "$link"))" ;;
+      *) if [ "$3" = "$BIN_DIR" ]; then
+           notice "$link points at $(readlink "$link"), not replacing it"; return 1
+         fi
+         say "relinking $1 (was $(readlink "$link"))" ;;
     esac
   fi
   ln -sfn "$2" "$link"
 }
 
 link_exes() {
-  local exe
+  local exe name found
   for exe in "$1"/*; do
-    if [ -f "$exe" ] && [ -x "$exe" ] && ! excluded "${exe##*/}"; then
-      if place "${exe##*/}" "$exe" "$BIN_DIR"; then n_bin=$((n_bin + 1)); fi
+    name=${exe##*/}
+    if [ ! -f "$exe" ] || [ ! -x "$exe" ] || excluded "$name"; then continue; fi
+    # never shadow a command that already exists elsewhere on PATH
+    found=$(command -v "$name" 2>/dev/null || true)
+    if [ -n "$found" ] && [ "$found" != "$BIN_DIR/$name" ] && ! [ "$found" -ef "$exe" ]; then
+      notice "not linking $name, it would shadow $found"; continue
     fi
+    if place "$name" "$exe" "$BIN_DIR"; then n_bin=$((n_bin + 1)); fi
   done
 }
 

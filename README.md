@@ -18,7 +18,7 @@ That clones the repo and symlinks each skill into `~/.claude/skills/`, plus the 
 | `skillsync link` | Relink without touching the network |
 | `skillsync list` | Show the repos it manages |
 
-skillsync never overwrites a skill directory you made by hand, and only removes links that point into its own clones. To keep a skill off one machine, put its name in `~/.config/skillsync/exclude`.
+skillsync never overwrites a skill directory or command you made by hand, never links a command that would shadow one already on your PATH, and only removes links that point into its own clones. To keep a skill off one machine, put its name in `~/.config/skillsync/exclude`.
 
 ### Or as Claude Code plugins
 

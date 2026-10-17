@@ -88,7 +88,7 @@ This repo is **public**, so it only holds skills anyone may read. A skill that m
   - supporting reference files
   - `bin/` (optional) -- executables the skill calls. skillsync links them onto PATH, so names must be unique across the repo
   - `UPSTREAM` -- only on vendored third-party skills (source, commit, license). Update them by re-copying from upstream, not by editing
-- **`bin/skillsync`** -- symlinks every skill from every skills repo cloned under `~/.local/share/skillsync/` into `~/.claude/skills/`, and every `bin/` executable into `~/.local/bin/`. It must never name a specific repository (that is what keeps private repos private) and must stay compatible with bash 3.2.
+- **`bin/skillsync`** -- symlinks every skill from every skills repo cloned under `~/.local/share/skillsync/` into `~/.claude/skills/`, and every `bin/` executable into `~/.local/bin/`. It must never name a specific repository (that is what keeps private repos private) and must stay compatible with bash 3.2. After changing it, run `tests/skillsync.sh` (sandboxed; it never touches your real directories).
 - **`.claude-plugin/marketplace.json`** -- some of the same skills as Claude Code plugins, for people who install with `/plugin`. The maintainer's machines use skillsync instead; listing a new skill here is optional.
 
 ### Installing
