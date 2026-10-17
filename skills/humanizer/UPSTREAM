@@ -1,0 +1,3 @@
+Vendored from https://github.com/blader/humanizer at 523374d (2026-07-21). MIT, see LICENSE.
+Files taken unmodified: SKILL.md, LICENSE, README.md.
+To update: review upstream's diff since that commit, copy the same files over, and update this note.

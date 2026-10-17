@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+# prbots — what Codex, the Architecture Review (SAR) and CI said on a GitHub PR,
+# plus `prbots wait`: block until they have reported on the PR's HEAD commit.
+#
+# Replaces the hand-rolled `until gh api …; do sleep 30; done` pollers that agent
+# sessions re-derive on every push (and get subtly wrong — see SIGNALS).
+#
+# SIGNALS (verified on live PRs, 2026-10)
+#   Codex  One summary comment, edited in place, embeds
+#            <!-- codex-review-state:v1 {"code_review":{"commit_sha":…,"status":"running"|"completed",
+#                  "has_any_findings":…,"has_unresolved_findings":…}} -->
+#          Done for HEAD <=> commit_sha == HEAD && status == completed. (Grepping the
+#          summary for "Completed" also matches the review of the PREVIOUS commit.)
+#          Findings are review comments tagged codex-code-review-finding with a P0–P3
+#          badge; a clean run posts a receipt comment + a 👍 reaction instead.
+#          Runs on PR opened / ready-for-review / an "@codex review" comment; a push
+#          usually does NOT re-run it.
+#   SAR    github-actions[bot] comment "## <icon> Architecture Review - <verdict>" with
+#          "**Severity**: N/4 | **Blockers**: bool". Runs on opened / ready_for_review /
+#          an "@architect-run" comment — never on push. Fresh <=> posted after HEAD's commit.
+#   CI     HEAD commit's check runs + statuses (architecture-review checks excluded).
+#   Logins: REST says "chatgpt-codex-connector[bot]"; GraphQL / `gh pr view` drop "[bot]".
+#
+# Read-only, except `wait --trigger`, which posts the trigger comment once per HEAD.
+set -euo pipefail
+
+ME=$0   # hints echo the path you ran, since prbots needn't be on PATH
+CODEX_LOGIN=${PRBOTS_CODEX_LOGIN:-chatgpt-codex-connector}
+SAR_LOGIN=${PRBOTS_SAR_LOGIN:-github-actions}
+
+usage() {
+  cat <<'EOF'
+prbots — what did Codex / the Architecture Review (SAR) / CI say on a PR — and wait for them
+
+USAGE
+  prbots [status] [PR] [-R owner/repo] [--need LIST] [--full] [--json]
+  prbots wait [PR] [-R owner/repo] [--need LIST] [--trigger] [--sha SHA]
+              [--timeout DUR] [--interval SEC] [--full] [--json]
+
+  PR is a number or a PR URL (default: the current branch's PR); -R defaults to the
+  current repo.
+
+STATUS (default) — one compact digest, then a verdict line:
+  codex  ✓ clean @sha | ✗ N findings @sha (+ one line each) | … running | ⧗ HEAD not reviewed
+  sar    ✓/⚠/✗ <verdict> · severity n/4 · blockers b · time [· STALE (before HEAD)]
+  ci     ✓ N passed | ✗ failing: a, b | … k/N pending
+  verdict CLEAN | FIX (P2, SAR advisory) | BLOCK (P0/P1, SAR blockers or severity>=3,
+          CI failure) | PENDING (a needed bot hasn't reported on HEAD yet)
+
+WAIT — block until every needed bot has reported on HEAD, then print the digest.
+  In Claude Code run it with run_in_background: true; you are notified when it
+  exits. Don't wrap it in a loop and don't poll its output.
+  --need LIST    any of codex,sar,ci or all (default: codex, plus sar when the repo
+                 has an architecture-review workflow; status also checks ci)
+  --trigger      neither bot re-runs on a push by itself: comment "@codex review" /
+                 "@architect-run" once per HEAD, only if no review of HEAD is running
+                 or already requested. Without it, wait exits 2 as soon as it is clear
+                 a review will never start, instead of sitting out the timeout.
+  --sha SHA      first wait for the PR head to reach SHA (default: your local HEAD when
+                 this checkout is the PR branch and HEAD is pushed — so a wait started
+                 right after `git push` never reads the previous head's review)
+  --timeout DUR  give up after DUR (default 30m; e.g. 600, 90s, 20m, 1h)
+  --interval S   poll every S seconds (default 30; one GraphQL call each)
+  --dry-run      with --trigger: print the trigger comment instead of posting it
+
+OUTPUT  --full adds the finding bodies and the full SAR; --json emits the machine payload.
+EXIT    status: 0 digest printed.  wait: 0 CLEAN · 1 FIX/BLOCK · 2 still PENDING (timed
+        out, review never triggered, or PR closed).  3 usage / API error.
+EOF
+}
+
+die() { printf 'x %s\n' "$*" >&2; exit 3; }
+info() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+hint() { printf '→ %s\n' "$*" >&2; }
+dur() {
+  case $1 in
+    *[0-9]h) echo $((${1%h} * 3600)) ;;
+    *[0-9]m) echo $((${1%m} * 60)) ;;
+    *[0-9]s) echo "${1%s}" ;;
+    '' | *[!0-9]*) die "bad duration: $1" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+command -v gh >/dev/null || die "gh not found"
+command -v jq >/dev/null || die "jq not found"
+
+CMD=status PR="" REPO="" NEED="" EXPECT="" TRIGGER=0 DRY=0 JSON=0 FULL=0 TIMEOUT=1800 INTERVAL=30
+case ${1:-} in
+  status | wait) CMD=$1; shift ;;
+  help | -h | --help) usage; exit 0 ;;
+esac
+while (($#)); do
+  case $1 in
+    -R | --repo) REPO=${2:?}; shift 2 ;;
+    --need) NEED=${2:?}; shift 2 ;;
+    --sha) EXPECT=${2:?}; shift 2 ;;
+    --timeout) TIMEOUT=$(dur "${2:?}"); shift 2 ;;
+    --interval) INTERVAL=$(dur "${2:?}"); shift 2 ;;
+    --trigger) TRIGGER=1; shift ;;
+    --dry-run) DRY=1; shift ;;
+    --json) JSON=1; shift ;;
+    --full) FULL=1; shift ;;
+    -h | --help) usage; exit 0 ;;
+    https://github.com/*/pull/*)
+      REPO=$(sed -E 's#https://github.com/([^/]+/[^/]+)/pull/.*#\1#' <<<"$1")
+      PR=$(sed -E 's#.*/pull/([0-9]+).*#\1#' <<<"$1"); shift ;;
+    [0-9]*) PR=$1; shift ;;
+    *) die "unknown argument: $1 (see prbots --help)" ;;
+  esac
+done
+[[ $NEED == all ]] && NEED=codex,sar,ci
+
+AUTO_REPO=0
+if [[ -z $REPO ]]; then
+  REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || die "not in a GitHub repo; pass -R owner/repo"
+  AUTO_REPO=1
+fi
+if [[ -z $PR ]]; then
+  PR=$(gh pr view --json number -q .number 2>/dev/null) || die "no PR for the current branch; pass a PR number"
+fi
+OWNER=${REPO%%/*} NAME=${REPO#*/}
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+QUERY='query($o:String!,$n:String!,$p:Int!,$c:String){repository(owner:$o,name:$n){pullRequest(number:$p){
+number url state isDraft createdAt headRefName headRefOid
+ready: timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:1){nodes{...on ReadyForReviewEvent{createdAt}}}
+forced: timelineItems(itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT],last:1){nodes{...on HeadRefForcePushedEvent{createdAt afterCommit{oid}}}}
+commits(last:1){nodes{commit{oid committedDate statusCheckRollup{contexts(first:60){nodes{__typename
+...on CheckRun{name status conclusion} ...on StatusContext{context state}}}}}}}
+reviews(last:20){nodes{author{login} submittedAt commit{oid}}}
+reviewThreads(last:50){nodes{isResolved isOutdated comments(first:6){nodes{author{login} path line originalLine body originalCommit{oid}}}}}
+comments(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{author{login} createdAt url body}}}}}'
+
+# Raw {pr, comments} -> $TMP/raw.json. Bodies stay in files: SAR comments run to tens
+# of KB, past the per-argument limit if passed through --argjson.
+fetch() {
+  local i=0 cursor="" args
+  rm -f "$TMP"/page.*.json
+  while :; do
+    i=$((i + 1))
+    args=(-f query="$QUERY" -f o="$OWNER" -f n="$NAME" -F p="$PR")
+    [[ -n $cursor ]] && args+=(-f c="$cursor")
+    gh api graphql "${args[@]}" >"$TMP/page.$(printf %03d $i).json" || die "GitHub GraphQL query failed for $REPO#$PR"
+    [[ $(jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage' "$TMP/page.$(printf %03d $i).json") == true ]] || break
+    cursor=$(jq -r '.data.repository.pullRequest.comments.pageInfo.endCursor' "$TMP/page.$(printf %03d $i).json")
+  done
+  jq -s '{pr: .[0].data.repository.pullRequest, comments: [.[].data.repository.pullRequest.comments.nodes[]?]}' \
+    "$TMP"/page.*.json >"$TMP/raw.json"
+  [[ $(jq -r '.pr == null' "$TMP/raw.json") == false ]] || die "no PR #$PR in $REPO"
+}
+
+# Raw -> normalized state + verdict (the --json payload).
+JQ_NORM=$(cat <<'JQ'
+def strip: sub("^\\s+"; "") | sub("\\s+$"; "");
+def needs($x): $need | any(. == $x);
+def failed: . as $s | ["FAILURE","ERROR","TIMED_OUT","CANCELLED","ACTION_REQUIRED","STARTUP_FAILURE","STALE"] | any(. == $s);
+
+.pr as $p
+| .comments as $cs
+| $p.headRefOid as $head
+| ($p.commits.nodes[0].commit) as $hc
+# HEAD "arrived" at its commit time, or at the force-push that put it there (an amend made
+# before the SAR posted but pushed after it must still read as stale)
+| ([$hc.committedDate, ($p.forced.nodes[]? | select(.afterCommit.oid == $head) | .createdAt)] | max) as $head_at
+| ([$p.createdAt, ($p.ready.nodes[]?.createdAt // empty)] | max) as $auto_at
+| ($head_at > $auto_at) as $pushed_after_open
+
+# ---- Codex: state JSON in the summary comment; receipts / reviews as fallback
+| [$cs[] | select(.author.login == $codex)] as $cx
+| ([$cx[] | .body | (capture("codex-review-state:v1 (?<j>\\{.*?\\}) -->").j | fromjson | .code_review)?] | last) as $st
+| ([$cx[] | .body | capture("\\*\\*Code Review\\*\\* \\|[^|]*\\| `[0-9a-f]+` \\| (?<t>[^|]+?) \\|").t] | last) as $trig
+| [$p.reviews.nodes[] | select(.author.login == $codex)] as $crev
+| ([$cx[] | select(.body | test("codex-review-receipt")) | {at: .createdAt, sha: (.body | capture("Reviewed commit:\\*\\* `(?<s>[0-9a-f]+)`").s)}] | last) as $rcpt
+| (if $st != null and $st.status != null then
+     {status: $st.status, sha: $st.commit_sha, has_findings: $st.has_any_findings, unresolved: $st.has_unresolved_findings}
+   elif ($crev | length) > 0 or $rcpt != null then
+     ([($crev[] | {at: .submittedAt, sha: .commit.oid, has_findings: true}), ($rcpt // empty | . + {has_findings: false})]
+      | sort_by(.at) | last) + {status: "completed"}
+   else {status: "none", sha: null, has_findings: null} end) as $c0
+| ($c0.sha != null and ($head | startswith($c0.sha))) as $c_on_head
+# findings = Codex review threads. "current" = on the reviewed commit; handled = resolved or
+# answered by someone else; an older thread whose code has since changed (outdated) is moot.
+| [$p.reviewThreads.nodes[] | . as $t | $t.comments.nodes[0] as $f
+   | select($f.author.login == $codex and ($f.body | test("codex-code-review-finding|!\\[P[0-3] Badge\\]")))
+   | {sev: (($f.body | capture("!\\[(?<s>P[0-3]) Badge\\]").s) // "P?"),
+      path: $f.path, line: ($f.line // $f.originalLine), sha: $f.originalCommit.oid,
+      current: ($c0.sha != null and (($f.originalCommit.oid // "") | startswith($c0.sha))),
+      resolved: $t.isResolved, outdated: $t.isOutdated,
+      replied: ([$t.comments.nodes[1:][] | select(.author.login != $codex)] | length > 0),
+      title: ($f.body | split("\n")[0] | gsub("<[^>]+>|!\\[[^\\]]*\\]\\([^)]*\\)|\\*\\*"; "") | strip),
+      body: ($f.body | sub("\\n+Useful\\? React with[^\\n]*"; "") | gsub("<!--[^>]*-->"; "") | strip)}
+   | .open = ((.resolved or .replied | not) and (.current or (.outdated | not)))
+   | select(.current or .open)] as $findings
+| ([$cs[] | select(.author.login != $codex and .createdAt > $head_at
+     and (.body | test("@(codex|chatgpt-codex-connector)\\b[^\\n]*review"; "i")))] | length > 0) as $c_req
+
+# ---- SAR: newest Architecture Review comment
+| ([$cs[] | select(.author.login == $sar and (.body | test("^\\s*## [^\\n]{0,12}Architecture Review")))] | last) as $s
+| (if $s == null then {present: false, fresh: false}
+   else ($s.body | capture("^\\s*## (?<t>[^\\n]+)").t | strip) as $title
+   | {present: true, title: $title, at: $s.createdAt, url: $s.url, fresh: ($s.createdAt > $head_at),
+      class: (if ($title | test("🚫|❌|Changes required"; "i")) then "block"
+              elif ($title | test("⚠|Advisory"; "i")) then "advisory"
+              elif ($title | test("✅|🟢|No issues|Approved"; "i")) then "ok" else "unknown" end),
+      severity: (($s.body | capture("\\*\\*Severity\\*\\*:\\s*(?<n>\\d+)\\s*/\\s*(?<m>\\d+)") | {n: (.n | tonumber), m: (.m | tonumber)}) // null),
+      blockers: ([$s.body | capture("\\*\\*Blockers\\*\\*:\\s*(?<b>\\w+)").b | ascii_downcase == "true"] | .[0]),
+      body: $s.body} end) as $sar_o
+| ([$cs[] | select(.author.login != $sar and .createdAt > $head_at and (.body | test("@architect-run")))] | length > 0) as $s_req
+
+# ---- CI on HEAD (architecture-review checks are SAR's business)
+| [($hc.statusCheckRollup.contexts.nodes // [])[]
+   | {name: (.name // .context),
+      state: (if .__typename == "CheckRun" then (if .status == "COMPLETED" then .conclusion else "PENDING" end) else .state end)}
+   | select(.name | test("archit"; "i") | not)] as $checks
+| {total: ($checks | length),
+   failing: [$checks[] | select(.state | failed) | .name],
+   pending: [$checks[] | select(.state == "PENDING" or .state == "EXPECTED" or .state == null) | .name]} as $ci0
+| ($ci0 + {done: (($ci0.pending | length) == 0 and ($ci0.total > 0 or (now - ($head_at | fromdateiso8601)) > 90))}) as $ci_o
+
+| {repo: $repo, number: $p.number, url: $p.url, state: $p.state, draft: $p.isDraft, branch: $p.headRefName,
+   head: $head, head_at: $head_at, opened_at: $auto_at, pushed_after_open: $pushed_after_open, need: $need,
+   codex: ($c0 + {on_head: $c_on_head, done: ($c_on_head and $c0.status == "completed"), trigger: $trig,
+                  requested_since_head: $c_req, findings: $findings}),
+   sar: ($sar_o + {requested_since_head: $s_req}),
+   ci: $ci_o}
+| . as $o
+| [(if needs("codex") and ($o.codex.done | not) then "codex" else empty end),
+   (if needs("sar") and ($o.sar.fresh | not) then "sar" else empty end),
+   (if needs("ci") and ($o.ci.done | not) then "ci" else empty end)] as $waiting
+| [(if $o.codex.done then $o.codex.findings[] | select(.open and (.sev == "P0" or .sev == "P1")) | "codex \(.sev) \(.path):\(.line)" else empty end),
+   (if $o.sar.fresh and ($o.sar.class == "block" or $o.sar.blockers == true or ($o.sar.severity.n // 0) >= 3) then "SAR \($o.sar.title)" else empty end),
+   (if ($o.ci.failing | length) > 0 then "CI failing: \($o.ci.failing | join(", "))" else empty end)] as $block
+| [(if $o.codex.done then $o.codex.findings[] | select(.open and (.sev == "P2" or .sev == "P?")) | "codex \(.sev) \(.path):\(.line)" else empty end),
+   (if $o.sar.fresh and $o.sar.class == "advisory" then "SAR advisory" else empty end)] as $fix
+# bots that will only ever report on HEAD if someone asks, and how long to give them first (s)
+| [(if needs("codex") and ($o.codex.done | not) and $o.codex.status != "running" and ($o.codex.requested_since_head | not)
+     then {bot: "codex", body: "@codex review", grace: (if $pushed_after_open then 75 else 420 end)} else empty end),
+   (if needs("sar") and ($o.sar.fresh | not) and ($o.sar.requested_since_head | not)
+     then {bot: "sar", body: "@architect-run", grace: (if $pushed_after_open then 0 else 900 end)} else empty end)] as $cand
+| . + {waiting: $waiting, blocking: $block, fixes: $fix, trigger_candidates: $cand,
+       verdict: (if ($waiting | length) > 0 then "PENDING" elif ($block | length) > 0 then "BLOCK"
+                 elif ($fix | length) > 0 then "FIX" else "CLEAN" end),
+       progress: ([(if needs("codex") then "codex " + (if $o.codex.done then "done" elif $o.codex.status == "running" then "running@\($o.codex.sha[0:7])" else "not started on HEAD" end) else empty end),
+                   (if needs("sar") then "sar " + (if $o.sar.fresh then "done" elif $o.sar.present then "stale" else "none yet" end) else empty end),
+                   (if needs("ci") then "ci " + (if $o.ci.done then "done" else "\($o.ci.pending | length) pending" end) else empty end)] | join(" · "))}
+JQ
+)
+
+JQ_TEXT=$(cat <<'JQ'
+def hm: if . == null then "?" else .[11:16] + "Z" end;
+def s7: if . == null then "?" else .[0:7] end;
+"PR #\(.number) · \(.repo) · \(.branch) · HEAD \(.head | s7) · \(.state)\(if .draft then " (draft)" else "" end)",
+(.codex as $c
+ | if $c.status == "none" then "codex  · no Codex activity on this PR"
+   elif $c.status == "running" then "codex  … running @\($c.sha | s7)\(if $c.on_head then " (HEAD)" else " — not HEAD" end)"
+   elif ($c.on_head | not) then "codex  ⧗ HEAD not reviewed — last review @\($c.sha | s7) was \(if $c.has_findings then "findings" else "clean" end)"
+   elif ([$c.findings[] | select(.current)] | length) > 0 then
+     ([$c.findings[] | select(.current)]) as $cur
+     | "codex  \(if any($cur[]; .open) then "✗" else "✓" end) \($cur | length) finding(s) @\($c.sha | s7) (\($cur | group_by(.sev) | map("\(.[0].sev)×\(length)") | join(" ")))\(if $c.trigger then " · \($c.trigger)" else "" end)"
+   elif $c.has_findings == true then "codex  ✗ findings @\($c.sha | s7), not among the last 50 threads — open \(.url)"
+   else "codex  ✓ clean @\($c.sha | s7)\(if $c.trigger then " · \($c.trigger)" else "" end)" end),
+(.codex.findings | sort_by(.sev)[]
+ | "         \(.sev) \(.path):\(.line // "?")  \(.title)\(if .resolved then "  [resolved]" elif .replied then "  [replied]" else "" end)\(if .current then "" else "  (older @\(.sha | s7))" end)"),
+(.sar as $s
+ | if ($s.present | not) then "sar    · no Architecture Review on this PR"
+   else "sar    \({"ok": "✓", "advisory": "⚠", "block": "✗"}[$s.class] // "?") \($s.title | sub("^.*Architecture Review\\s*-\\s*"; "")) · severity \($s.severity.n // "?")/\($s.severity.m // "?") · blockers \(if $s.blockers == null then "?" else $s.blockers end) · \($s.at | hm)\(if $s.fresh then "" else " · STALE (before HEAD)" end)" end),
+(.ci as $ci
+ | if $ci.total == 0 then "ci     · no checks"
+   elif ($ci.failing | length) > 0 then "ci     ✗ failing: \($ci.failing | join(", "))\(if ($ci.pending | length) > 0 then " · \($ci.pending | length) pending" else "" end)"
+   elif ($ci.pending | length) > 0 then "ci     … \($ci.pending | length)/\($ci.total) pending"
+   else "ci     ✓ \($ci.total) passed" end),
+"verdict \(.verdict)\(if (.waiting | length) > 0 then " — waiting on: \(.waiting | join(", "))"
+                      elif (.blocking | length) > 0 then " — \(.blocking | join("; "))"
+                      elif (.fixes | length) > 0 then " — \(.fixes | join("; "))" else "" end)"
+JQ
+)
+
+normalize() {
+  NEED_JSON=$(jq -cn --arg n "$NEED" '$n | split(",") | map(select(length > 0))')
+  NORM=$(jq -c --arg repo "$REPO" --arg codex "$CODEX_LOGIN" --arg sar "$SAR_LOGIN" \
+    --argjson need "$NEED_JSON" "$JQ_NORM" "$TMP/raw.json") || die "could not parse PR #$PR"
+  printf '%s' "$NORM" >"$TMP/norm.json"
+}
+field() { jq -r "$1" "$TMP/norm.json"; }
+
+render() {
+  if ((JSON)); then
+    if ((FULL)); then jq . "$TMP/norm.json"; else jq 'del(.sar.body, .codex.findings[]?.body)' "$TMP/norm.json"; fi
+    return
+  fi
+  jq -r "$JQ_TEXT" "$TMP/norm.json"
+  if ((FULL)); then
+    jq -r '(.codex.findings[]? | "\n── codex \(.sev) \(.path):\(.line // "?") ──\n\(.body)"),
+           (if .sar.present then "\n── Architecture Review \(.sar.at) \(.sar.url) ──\n\(.sar.body)" else empty end)' "$TMP/norm.json"
+  fi
+  [[ $(field .draft) == true ]] && hint "draft PR: Codex and the SAR run when it is marked ready for review"
+  [[ $(field '(.trigger_candidates | map(.bot) | index("codex") != null) and .pushed_after_open') == true ]] &&
+    hint "HEAD was pushed after the PR opened; Codex won't re-review it unprompted: $ME wait $PR -R $REPO --trigger"
+  [[ $(field '.sar.present and (.sar.fresh | not) and (.sar.requested_since_head | not)') == true ]] &&
+    hint "the SAR predates HEAD and never re-runs on push: $ME wait $PR -R $REPO --trigger (comments @architect-run)"
+  [[ $(field '.sar.present and (.sar.class != "ok")') == true && $FULL == 0 ]] && hint "full SAR: $ME $PR -R $REPO --full"
+  return 0
+}
+
+exit_for() { case $1 in CLEAN) exit 0 ;; PENDING) exit 2 ;; *) exit 1 ;; esac; }
+
+if [[ $CMD == status ]]; then
+  [[ -n $NEED ]] || {
+    NEED=codex
+    gh api "repos/$REPO/actions/workflows" --jq '.workflows[].path' 2>/dev/null | grep -qi archit && NEED+=,sar
+    NEED+=,ci
+  }
+  fetch; normalize; render
+  exit 0
+fi
+
+# ---- wait
+[[ -n $NEED ]] || {
+  NEED=codex
+  gh api "repos/$REPO/actions/workflows" --jq '.workflows[].path' 2>/dev/null | grep -qi archit && NEED+=,sar
+}
+start=$(date +%s) seen_head="" seen_at=$start last_line="" triggered=" "
+while :; do
+  fetch; normalize
+  now=$(date +%s)
+  head=$(field .head) state=$(field .state) verdict=$(field .verdict) line=$(field .progress)
+  if [[ $head != "$seen_head" ]]; then
+    [[ -n $seen_head ]] && info "HEAD moved ${seen_head:0:7} → ${head:0:7}"
+    seen_head=$head seen_at=$now
+  fi
+  if [[ -z $EXPECT && $AUTO_REPO == 1 && $(git rev-parse --abbrev-ref HEAD 2>/dev/null) == "$(field .branch)" ]]; then
+    local_sha=$(git rev-parse HEAD 2>/dev/null || true)
+    [[ -n $local_sha && $local_sha == "$(git rev-parse '@{u}' 2>/dev/null || true)" ]] && EXPECT=$local_sha
+  fi
+
+  if [[ -n $EXPECT && $head != "$EXPECT"* ]]; then
+    line="waiting for the PR head to reach ${EXPECT:0:7} (GitHub shows ${head:0:7})"
+    if ((now - start > 180)); then
+      render; printf 'x PR head is still %s, not %s; was it pushed?\n' "${head:0:7}" "${EXPECT:0:7}" >&2; exit 2
+    fi
+  elif [[ $state != OPEN ]]; then
+    render; hint "PR is $state"; exit_for "$verdict"
+  elif [[ $verdict != PENDING ]]; then
+    render; exit_for "$verdict"
+  else
+    while IFS=$'\t' read -r bot body grace; do
+      [[ -n $bot ]] && ((now - seen_at >= grace)) || continue
+      if ((TRIGGER)); then
+        [[ $triggered == *" $bot@$head "* ]] && continue
+        if ((DRY)); then info "dry-run: would comment \"$body\" on $REPO#$PR"
+        else gh pr comment "$PR" -R "$REPO" --body "$body" >/dev/null || die "could not comment on $REPO#$PR"; info "commented \"$body\""; fi
+        triggered+="$bot@$head "
+      else
+        render
+        printf 'x %s has not started on HEAD %s and will not without a trigger; re-run with --trigger (or comment "%s")\n' "$bot" "${head:0:7}" "$body" >&2
+        exit 2
+      fi
+    done < <(field '.trigger_candidates[] | [.bot, .body, .grace] | @tsv')
+  fi
+  if ((now - start >= TIMEOUT)); then
+    render; printf 'x timed out after %ss: %s\n' "$TIMEOUT" "$line" >&2; exit 2
+  fi
+  [[ $line != "$last_line" ]] && { info "$line"; last_line=$line; }
+  sleep "$INTERVAL"
+done

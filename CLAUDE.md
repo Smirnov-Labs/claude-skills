@@ -77,72 +77,58 @@ This section grows as patterns and preferences are discovered during work on thi
 - Update frequently to maintain accuracy
 - The Memory Bank is the primary context system for this project
 
-## Skills Marketplace
+## Skills
 
-This repo is a Claude Code skills marketplace hosted at `github:smirnov-labs/claude-skills`.
+This repo is **public**, so it only holds skills anyone may read. A skill that mentions clients, internal hosts or IPs, private repos, credentials, or real business data goes in the maintainer's private skills repo instead. The Architect-Gate review blocks such content here (`.github/claude/prompts/02-public-skills-repo.prompt.md`).
 
 ### Structure
 
-- **`.claude-plugin/marketplace.json`** -- Registry that defines available plugins and their skills. Each plugin entry has a `name`, `description`, `source`, and a list of `skills` paths.
-- **`skills/`** -- Directory containing individual skill definitions. Each skill is a subdirectory with:
-  - `SKILL.md` -- Skill definition with YAML frontmatter (`name`, `description`) and the full skill prompt
-  - Supporting reference files (frameworks, archetypes, analysis guides, etc.)
+- **`skills/<name>/`** -- one directory per skill:
+  - `SKILL.md` -- YAML frontmatter (`name` matching the directory, and a `description` saying when to use it; new skills start it with "Use when") and the skill prompt
+  - supporting reference files
+  - `bin/` (optional) -- executables the skill calls. skillsync links them onto PATH, so names must be unique across the repo
+  - `UPSTREAM` -- only on vendored third-party skills (source, commit, license). Update them by re-copying from upstream, not by editing
+- **`bin/skillsync`** -- symlinks every skill from every skills repo cloned under `~/.local/share/skillsync/` into `~/.claude/skills/`, and every `bin/` executable into `~/.local/bin/`. It must never name a specific repository (that is what keeps private repos private) and must stay compatible with bash 3.2. After changing it, run `tests/skillsync.sh` (sandboxed; it never touches your real directories).
+- **`.claude-plugin/marketplace.json`** -- some of the same skills as Claude Code plugins, for people who install with `/plugin`. The maintainer's machines use skillsync instead; listing a new skill here is optional.
+
+### Installing
+
+```bash
+git clone -q https://github.com/Smirnov-Labs/claude-skills ~/.local/share/skillsync/claude-skills \
+  && ~/.local/share/skillsync/claude-skills/bin/skillsync
+```
+
+After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds another skills repo (a private one, on machines that can clone it). On an authoring machine, make the source a symlink to your working clone so edits are live: `ln -s <working clone> ~/.local/share/skillsync/claude-skills`.
 
 ### Current Skills
 
-| Skill | Plugin | Path | Purpose |
-|-------|--------|------|---------|
-| `presentation-blueprint` | `presentation-tools` | `skills/presentation-blueprint/` | Build pitch/technical/update decks end-to-end (analyze → strategize → outline → style → render) |
-| `codex-plan-review` | `plan-utilities` | `skills/codex-plan-review/` | Send the current plan to Codex 5.4 (high effort, read-only) for an independent architectural review |
-| `detect-overengineering` | `plan-utilities` | `skills/detect-overengineering/` | Audit a plan document for LLM-style overengineering — rubric pass + Codex adversarial pass + merged findings with proposed edits |
-| `git-recon` | `git-recon` | `skills/git-recon/` | 12-month git-history health check — churn, bus factor, bug hotspots, velocity, firefighting |
-| `reading-bot-pr-reviews` | `pr-utilities` | `skills/reading-bot-pr-reviews/` | Read-only fetch + severity-classified report of automated PR reviews (Codex across its 3 endpoints + the Architecture/SAR review) so no finding or clean verdict is missed before merge |
-
-### Current Commands
-
-Commands live at `.claude/commands/<name>.md` and ship automatically with every plugin in this marketplace (since all plugins use `source: "./"`). Listed under a "plugin" column for discoverability.
-
-| Command | Plugin | Path | Purpose |
-|---------|--------|------|---------|
-| `/pr` | `pr-utilities` | `.claude/commands/pr.md` | Commit changes, push, and create or update a PR |
-| `/pr-fix` | `pr-utilities` | `.claude/commands/pr-fix.md` | Loop on a PR: read CI + SAR + inline reviews (including Codex), auto-commit fixes, repeat until clean |
-| `/plan` | n/a (project-local) | `.claude/commands/plan.md` | Enter planning mode with Memory Bank review |
-| `/loop-review` | n/a (project-local) | `.claude/commands/loop-review.md` | Iteratively refine the current plan through senior-architect review loops |
-| `/memory` | n/a (project-local) | `.claude/commands/memory.md` | Update Memory Bank and compress old data if needed |
-
-### marketplace.json Format
-
-```json
-{
-  "name": "smirnovlabs-claude-skills",
-  "plugins": [
-    {
-      "name": "presentation-tools",
-      "description": "...",
-      "source": "./",
-      "skills": ["./skills/presentation-blueprint"]
-    },
-    {
-      "name": "plan-utilities",
-      "description": "...",
-      "source": "./",
-      "skills": ["./skills/codex-plan-review"]
-    },
-    {
-      "name": "git-recon",
-      "description": "...",
-      "source": "./",
-      "skills": ["./skills/git-recon"]
-    }
-  ]
-}
-```
+| Skill | Purpose |
+|-------|---------|
+| `presentation-blueprint` | Build pitch/technical/update decks end-to-end (analyze → strategize → outline → style → render) |
+| `codex-plan-review` | Send the current plan to Codex (high effort, read-only) for an independent architectural review |
+| `detect-overengineering` | Audit a plan document for LLM-style overengineering — rubric pass + Codex adversarial pass + merged findings with proposed edits |
+| `git-recon` | 12-month git-history health check — churn, bus factor, bug hotspots, velocity, firefighting |
+| `watching-pr-bot-reviews` | Wait for and read the PR bots (Codex, SAR, CI) with `prbots` instead of hand-written pollers |
+| `pr-fix` | `/pr-fix`: loop on a PR — fix CI and review feedback, push, wait with `prbots`, repeat until clean (user-invoked only) |
+| `bd-to-br-migration` | Migrate docs from bd (beads) to br (beads_rust) |
+| `debugging-kubernetes-rollouts` | Debug failed Kubernetes rollouts and ArgoCD / GitOps sync problems |
+| `debugging-nodejs-apps` | Systematic debugging of Node.js startup, dependency, and runtime failures |
+| `operating-frappe-on-kubernetes` | Operate, upgrade, and debug Frappe / ERPNext on Kubernetes: config on the sites PVC, first-site bootstrap, major-version upgrades, Error Log / email / PDF debugging |
+| `hyprland-lua` | Script, control, and debug a Hyprland compositor configured in Lua |
+| `quickshell-bar` | Edit and debug a Quickshell (Qt6/QML) status bar on Hyprland |
+| `humanizer` | Remove signs of AI-generated writing (vendored, see `UPSTREAM`) |
+| `nonstop` | Autonomous work mode driven by a Stop hook (vendored, see `UPSTREAM` for the hook line) |
 
 ### Adding a New Skill
 
-1. Create `skills/<skill-name>/SKILL.md` with YAML frontmatter
-2. Add reference files alongside SKILL.md as needed
-3. Add the skill path to the appropriate plugin in `marketplace.json` (or create a new plugin entry)
+1. Create `skills/<skill-name>/SKILL.md` with YAML frontmatter; put reference files and any `bin/` executables alongside.
+2. Workflow skills that take over a session get a `<SUBAGENT-STOP>` block right after the frontmatter (see `git-recon`). Leave it off tool and reference skills that subagents are meant to use, such as `watching-pr-bot-reviews`.
+3. Run `skillsync link` and check the skill shows up in a new Claude Code session.
+4. Open a PR; the Architect-Gate review checks it for private material.
+
+### Project Commands
+
+`.claude/commands/` holds commands that only exist inside this repo: `/pr` (commit, push, create or update a PR), `/plan`, `/loop-review`, `/memory`. Anything meant for every machine belongs in `skills/`, which is why `/pr-fix` moved there.
 
 ---
 
@@ -161,17 +147,12 @@ This project has an automated "Senior Architect in CI" that reviews every PR for
 - Posts System Architecture Review (SAR) as PR comment
 - Blocks merge if severity ≥ 3 or blockers present
 
-### Key Patterns Enforced
-1. **Email Provider Consolidation**: All providers MUST use `EmailProcessingService`
-2. **EventBus Contracts**: New events MUST update `EventBus.js` aggregateId derivation
-3. **Multi-Tenant Isolation**: All queries MUST filter by `organizationId`
-4. **API Routing**: Backend routes have NO `/api` prefix (Caddy handles it)
-5. **Deployment Scripts**: Use `deploy-beta.sh` / `deploy-dev.sh`, not manual Docker
-6. **Password Hashing**: NEVER manual hashing (User model has hook)
-7. **Service Layer**: Follow `Routes → Services → Models` pattern
-8. **Async Operations**: Long operations MUST use Redis queues
-9. **Docker Rebuild**: Code changes require `--build` flag
-10. **Import Pipeline**: Follow 3-phase pattern (Download → Selection → Processing)
+### Rules Enforced
+
+This repo's rules live in `.github/claude/prompts/02-public-skills-repo.prompt.md`:
+1. **Nothing private** (blocker): no client names, internal hosts or IPs, private repo names, credentials, or real business data.
+2. **Skill layout**: `skills/<name>/SKILL.md` with a matching `name`; `bin/` names unique; `bin/skillsync` names no repository.
+3. **Vendored skills**: keep the upstream `LICENSE`; update by re-copying from upstream.
 
 ### Testing Locally
 ```bash

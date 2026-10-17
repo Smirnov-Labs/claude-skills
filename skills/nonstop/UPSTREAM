@@ -1,0 +1,8 @@
+Vendored from https://github.com/andylizf/nonstop at 9511b6f (2026-04-03). MIT, see LICENSE.
+Files taken unmodified: SKILL.md, nonstop.sh, LICENSE, README.md.
+To update: review upstream's diff since that commit, copy the same files over, and update this note.
+
+nonstop.sh is a Stop hook. Register it in ~/.claude/settings.json under hooks.Stop as:
+  f="$HOME/.claude/skills/nonstop/nonstop.sh"; [ ! -f "$f" ] || bash "$f"
+so a machine without this skill installed skips it instead of erroring. It keeps its state
+in ~/.claude/hooks/state.

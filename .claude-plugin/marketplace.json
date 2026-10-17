@@ -39,11 +39,12 @@
     },
     {
       "name": "pr-utilities",
-      "description": "Pull request lifecycle tools — /pr opens or updates a PR; reading-bot-pr-reviews reads and reports (read-only) what the automated reviewers said (Codex across its 3 endpoints + the Architecture/SAR review) so no finding or clean verdict is missed before merge; /pr-fix iteratively drives a PR to clean by reading CI status, SAR review, and inline review comments (including Codex), then auto-committing fixes",
+      "description": "Pull request tools — watching-pr-bot-reviews waits for and reads the automated reviewers (Codex, the Architecture/SAR review, CI) with prbots and gives a CLEAN/FIX/BLOCK/PENDING verdict for HEAD; /pr-fix drives a PR to clean by fixing feedback, pushing, and waiting with prbots",
       "source": "./",
       "strict": false,
       "skills": [
-        "./skills/reading-bot-pr-reviews"
+        "./skills/watching-pr-bot-reviews",
+        "./skills/pr-fix"
       ]
     }
   ]

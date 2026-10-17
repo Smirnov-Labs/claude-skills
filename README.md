@@ -1,38 +1,54 @@
 # Smirnov Labs Claude Skills
 
-A Claude Code **skills marketplace** and **starter template** that bundles reusable AI workflows, a Memory Bank system for persistent project context, custom slash commands, and an automated architecture reviewer -- everything you need to supercharge Claude Code on any project.
+Public Claude Code skills, plus `skillsync`, a small script that installs them on every machine you use and keeps them current. The repo is also a **starter template**: a Memory Bank system for persistent project context, custom slash commands, and an automated architecture reviewer.
 
 ## Quick Start: Install Skills
 
 ```bash
-# 1. Register this marketplace (one-time)
-/plugin marketplace add smirnov-labs/claude-skills
+git clone -q https://github.com/Smirnov-Labs/claude-skills ~/.local/share/skillsync/claude-skills \
+  && ~/.local/share/skillsync/claude-skills/bin/skillsync
+```
 
-# 2. Install any plugin (pick the ones you want)
-/plugin install presentation-tools@smirnovlabs-claude-skills
-/plugin install plan-utilities@smirnovlabs-claude-skills
-/plugin install git-recon@smirnovlabs-claude-skills
+That clones the repo and symlinks each skill into `~/.claude/skills/`, plus the commands the skills ship (`prbots`, and `skillsync` itself) into `~/.local/bin/`. New Claude Code sessions pick the skills up.
+
+| Command | What it does |
+|---------|--------------|
+| `skillsync` | Pull every skills repo, then relink. Add `-q` for cron, e.g. `17 * * * * ~/.local/bin/skillsync -q` |
+| `skillsync add <git-url>` | Add another skills repo, such as a private one. It only installs where the clone succeeds |
+| `skillsync link` | Relink without touching the network |
+| `skillsync list` | Show the repos it manages |
+
+skillsync never overwrites a skill directory or command you made by hand, never links a command that would shadow one already on your PATH, and only removes links that point into its own clones. To keep a skill off one machine, put its name in `~/.config/skillsync/exclude`.
+
+### Or as Claude Code plugins
+
+Some of the skills are also published as plugins (their names get a `plugin:` prefix):
+
+```bash
+/plugin marketplace add smirnov-labs/claude-skills
 /plugin install pr-utilities@smirnovlabs-claude-skills
 ```
 
-Or from the CLI outside a session:
-
-```bash
-claude plugin marketplace add smirnov-labs/claude-skills
-claude plugin install presentation-tools@smirnovlabs-claude-skills
-```
-
-Once installed, skills activate automatically based on what you ask. Say "build a pitch deck for this project", "get a second opinion on this plan", or "run a git recon on this repo" — or invoke directly with `/presentation-blueprint`, `/codex-plan-review`, or `/git-recon`.
+Use one method or the other on a machine, not both, or each skill loads twice.
 
 ### Available Skills
 
-| Skill | Plugin | What it does | Trigger phrases |
-|-------|--------|--------------|-----------------|
-| **presentation-blueprint** | `presentation-tools` | End-to-end presentation consultant: analyzes codebases/websites/projects, crafts strategic blueprints, and renders polished decks via `document-skills:pptx` | "build a deck", "create a presentation", "pitch deck for" |
-| **codex-plan-review** | `plan-utilities` | Sends your current plan to Codex 5.4 (high-effort, read-only) for an independent architectural second opinion before you execute | "review plan with codex", "get a second opinion", "iterate on plan" |
-| **detect-overengineering** | `plan-utilities` | Audits an implementation-plan doc for LLM-style overengineering: a rubric-driven Claude pass plus a Codex adversarial pass, merged into specific edits that slim the plan | "check this plan for bloat", "is this overengineered", "detect overengineering" |
-| **git-recon** | `git-recon` | 12-month git-history health check: surfaces high-churn files, bus factor, bug hotspots, velocity trends, and firefighting patterns before you read any code | "git recon", "codebase health check", "where are the landmines" |
-| **reading-bot-pr-reviews** | `pr-utilities` | Read-only: fetches every automated PR review (Codex across its 3 endpoints + the Architecture/SAR review), filters on exact bot logins, and reports a severity-classified merge verdict so no finding — or clean pass — is missed | "what did the bots say", "read the PR reviews", "did Codex/the SAR pass" |
+| Skill | What it does | Trigger phrases |
+|-------|--------------|-----------------|
+| **presentation-blueprint** | End-to-end presentation consultant: analyzes codebases/websites/projects, crafts strategic blueprints, and renders polished decks via `document-skills:pptx` | "build a deck", "create a presentation", "pitch deck for" |
+| **codex-plan-review** | Sends your current plan to Codex 5.4 (high-effort, read-only) for an independent architectural second opinion before you execute | "review plan with codex", "get a second opinion", "iterate on plan" |
+| **detect-overengineering** | Audits an implementation-plan doc for LLM-style overengineering: a rubric-driven Claude pass plus a Codex adversarial pass, merged into specific edits that slim the plan | "check this plan for bloat", "is this overengineered", "detect overengineering" |
+| **git-recon** | 12-month git-history health check: surfaces high-churn files, bus factor, bug hotspots, velocity trends, and firefighting patterns before you read any code | "git recon", "codebase health check", "where are the landmines" |
+| **watching-pr-bot-reviews** | Waits for and reads the automated PR reviewers (Codex, the Architecture/SAR review, CI) with `prbots`: one background `prbots wait`, then a digest with a CLEAN / FIX / BLOCK / PENDING verdict for the PR's HEAD commit | "what did the bots say", "wait for Codex", before merging |
+| **pr-fix** | `/pr-fix`: drives a PR to clean by fixing CI failures and review feedback, pushing, and waiting with `prbots`, round after round (runs only when you invoke it) | `/pr-fix` |
+| **bd-to-br-migration** | Migrates docs and scripts from bd (beads) to br (beads_rust) | "migrate from bd to br", "beads migration" |
+| **debugging-kubernetes-rollouts** | Systematic debugging of failed rollouts, ArgoCD sync issues, pod failures, and image pulls | "rollout is stuck", "ArgoCD won't sync" |
+| **debugging-nodejs-apps** | Systematic debugging of Node.js startup, dependency, and runtime failures | "service won't start", "npm error" |
+| **operating-frappe-on-kubernetes** | Keeps a Frappe / ERPNext instance on Kubernetes healthy: why runtime config only sticks via `bench set-config -g`, first-site bootstrap, v15→v16 upgrades, Error Log / email / PDF debugging | "bench migrate", "set-config won't take", "Error Log" |
+| **hyprland-lua** | Scripting, controlling, and debugging a Hyprland compositor configured in Lua | "hyprctl", "special workspace won't toggle" |
+| **quickshell-bar** | Editing and debugging a Quickshell (Qt6/QML) status bar on Hyprland | "add a bar module", "bar renders blank" |
+| **humanizer** | Removes signs of AI-generated writing (vendored from [blader/humanizer](https://github.com/blader/humanizer)) | "humanize this text" |
+| **nonstop** | Autonomous work mode driven by a Stop hook (vendored from [andylizf/nonstop](https://github.com/andylizf/nonstop); its `UPSTREAM` file has the hook line) | "/nonstop", "keep working while I'm away" |
 
 ### Prerequisites
 
@@ -46,15 +62,15 @@ The `codex-plan-review` skill requires the [Codex CLI](https://github.com/openai
 
 The `git-recon` skill needs only `git` — runs locally against the repo you're standing in.
 
-The `reading-bot-pr-reviews` skill requires the [GitHub CLI](https://cli.github.com/) (`gh`) authenticated against the repo, and a repo whose PRs are reviewed by Codex and/or an Architecture-Review GitHub Action.
+The `watching-pr-bot-reviews` and `pr-fix` skills require the [GitHub CLI](https://cli.github.com/) (`gh`) authenticated against the repo, and a repo whose PRs are reviewed by Codex and/or an Architecture-Review GitHub Action.
 
 ## What's in This Repo
 
 | Component | Location | Description |
 |-----------|----------|-------------|
-| **Skills Marketplace** | `.claude-plugin/marketplace.json` + `skills/` | Installable skills that other Claude Code instances can pull from `github:smirnov-labs/claude-skills` |
+| **Skills** | `skills/` + `bin/skillsync` | Skills installed with skillsync, or as plugins through `.claude-plugin/marketplace.json` |
 | **Memory Bank** | `.claude/memory-bank/` | Structured documentation templates that give Claude full project context across sessions |
-| **Custom Slash Commands** | `.claude/commands/` | `/plan`, `/pr`, `/memory`, `/loop-review` -- ready-to-use workflows |
+| **Custom Slash Commands** | `.claude/commands/` | `/plan`, `/pr`, `/memory`, `/loop-review` -- workflows for working inside this repo |
 | **Architect-Gate** | `.github/claude/` | Automated architecture review that runs on every PR via CI |
 
 ## Table of Contents
@@ -132,15 +148,22 @@ skills/
 │   └── SKILL.md                 # Skill definition
 ├── git-recon/                   # Git history health-check skill
 │   └── SKILL.md                 # Skill definition
-└── reading-bot-pr-reviews/      # Automated PR-review reader skill
-    └── SKILL.md                 # Skill definition
+├── watching-pr-bot-reviews/     # PR-bot waiter and reader skill
+│   ├── SKILL.md                 # Skill definition
+│   └── bin/prbots               # The prbots command (skillsync puts it on PATH)
+├── pr-fix/                      # /pr-fix loop
+│   └── SKILL.md                 # Skill definition
+└── ...                          # More skills; see the table above
+
+bin/
+└── skillsync                    # Installs and updates skills on a machine
 ```
 
 ### Key Components
 
-1. **Skills Marketplace** (`.claude-plugin/` + `skills/`)
-   - Installable via `github:smirnov-labs/claude-skills`
-   - Ships with four plugins: `presentation-tools`, `plan-utilities`, `git-recon`, and `pr-utilities`
+1. **Skills** (`skills/` + `bin/skillsync`)
+   - Installed with `skillsync` (see Quick Start), or as plugins via `.claude-plugin/marketplace.json`
+   - The plugin marketplace ships four plugins: `presentation-tools`, `plan-utilities`, `git-recon`, and `pr-utilities`
 
 2. **Slash Commands** (`.claude/commands/`)
    - `/plan` -- structured feature planning with clarifying questions
@@ -419,10 +442,10 @@ For team projects:
 ## Adding Your Own Skills
 
 1. Create a new directory under `skills/` (e.g., `skills/my-new-skill/`)
-2. Add a `SKILL.md` with YAML frontmatter (`name` and `description`)
-3. Add any supporting reference files (e.g., frameworks, archetypes, analysis guides)
-4. Register the skill path in `.claude-plugin/marketplace.json`
-5. Push to GitHub
+2. Add a `SKILL.md` with YAML frontmatter (`name` matching the directory, and a `description` starting with "Use when")
+3. Add any supporting reference files, and put executables the skill calls in its `bin/` (skillsync puts them on PATH)
+4. Run `skillsync link` to try it, then open a PR
+5. Optionally list it under a plugin in `.claude-plugin/marketplace.json` for `/plugin` users
 
 ## Troubleshooting
 

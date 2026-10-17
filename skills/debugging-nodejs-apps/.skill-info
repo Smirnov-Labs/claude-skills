@@ -1,0 +1,38 @@
+SKILL: debugging-nodejs-apps
+CREATED: 2025-11-02
+PURPOSE: Help Claude Code systematically debug Node.js applications and escape local minimums
+
+STRUCTURE:
+- SKILL.md (539 lines) - Main skill instructions
+- common-nodejs-errors.md - Comprehensive error catalog
+- debugging-checklist.md - Phase-by-phase debugging checklist
+- README.md - User documentation
+- test-scripts/ - Diagnostic scripts (executable)
+  - test-minimal-server.js
+  - test-database-connection.js
+  - test-environment.js
+
+ACTIVATION TRIGGERS:
+- "debugging node"
+- "node service won't start"
+- "npm error"
+- "stuck on node issue"
+- "runtime failure"
+- "connection problems"
+
+KEY FEATURES:
+1. Systematic debugging workflow
+2. Local minimum escape strategies
+3. Progressive testing approach
+4. Decision trees for common issues
+5. Executable diagnostic scripts
+
+FOLLOWS BEST PRACTICES:
+✓ Gerund name form
+✓ Descriptive invocation-focused description
+✓ SKILL.md under 500 lines
+✓ Progressive disclosure with supporting files
+✓ Intention-revealing file names
+✓ CLI and Node.js focused
+✓ No Python dependencies
+✓ Executable test scripts

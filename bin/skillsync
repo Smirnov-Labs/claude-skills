@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# skillsync: keep ~/.claude/skills in sync with skill repos.
+#
+# Every git clone under $SKILLSYNC_HOME is a source. Each source's
+# skills/<name>/ (anything with a SKILL.md) is symlinked into ~/.claude/skills,
+# and executables in its bin/ and skills/<name>/bin/ into ~/.local/bin.
+# skillsync names no repositories: a box gets exactly the sources cloned onto
+# it, so a private repo only shows up where its clone succeeded.
+#
+# A source that is itself a symlink (an author checkout) is linked but never
+# pulled. Names listed in ~/.config/skillsync/exclude are not linked.
+set -euo pipefail
+shopt -s nullglob
+
+SRC_ROOT="${SKILLSYNC_HOME:-$HOME/.local/share/skillsync}"
+SKILLS_DIR="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+BIN_DIR="${SKILLSYNC_BIN_DIR:-$HOME/.local/bin}"
+EXCLUDE="${XDG_CONFIG_HOME:-$HOME/.config}/skillsync/exclude"
+QUIET=
+seen=$'\n'    # link paths placed by this run; any other link into SRC_ROOT is stale
+
+usage() {
+  cat <<'EOF'
+usage: skillsync [-q] [command]
+  (none)           pull every source, then relink
+  link             relink only, no network
+  add URL [NAME]   clone a new source, then relink
+  list             show sources
+  -q               print errors only (for cron)
+EOF
+}
+
+say()  { [ -n "$QUIET" ] || echo "skillsync: $*"; }
+warn() { echo "skillsync: $*" >&2; }
+notice() { [ -n "$QUIET" ] || warn "$@"; }   # conflicts and skips; -q hides them
+excluded() { [ -f "$EXCLUDE" ] && grep -qxF "$1" "$EXCLUDE"; }
+
+pull() {
+  local src
+  for src in "$SRC_ROOT"/*/; do
+    src=${src%/}
+    if [ -L "$src" ] || [ ! -d "$src/.git" ]; then continue; fi
+    if ! GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes" \
+         git -C "$src" pull -q --ff-only 2>/dev/null; then
+      notice "could not update ${src##*/}, keeping the local copy"
+    fi
+  done
+}
+
+# place NAME TARGET DIR: point DIR/NAME at TARGET unless something else owns it
+place() {
+  local link="$3/$1"
+  case $seen in *$'\n'"$link"$'\n'*)
+    notice "$1 is provided twice, keeping $(readlink "$link")"; return 1 ;;
+  esac
+  seen="$seen$link"$'\n'
+  if [ -e "$link" ] && [ ! -L "$link" ]; then
+    notice "$link is a real file or directory, not replacing it"; return 1
+  fi
+  if [ -L "$link" ]; then
+    case $(readlink "$link") in
+      "$2") return 0 ;;
+      "$SRC_ROOT"/*) ;;
+      *) if [ "$3" = "$BIN_DIR" ]; then
+           notice "$link points at $(readlink "$link"), not replacing it"; return 1
+         fi
+         say "relinking $1 (was $(readlink "$link"))" ;;
+    esac
+  fi
+  ln -sfn "$2" "$link"
+}
+
+link_exes() {
+  local exe name found
+  for exe in "$1"/*; do
+    name=${exe##*/}
+    if [ ! -f "$exe" ] || [ ! -x "$exe" ] || excluded "$name"; then continue; fi
+    # never shadow a command that already exists elsewhere on PATH
+    found=$(command -v "$name" 2>/dev/null || true)
+    if [ -n "$found" ] && [ "$found" != "$BIN_DIR/$name" ] && ! [ "$found" -ef "$exe" ]; then
+      notice "not linking $name, it would shadow $found"; continue
+    fi
+    if place "$name" "$exe" "$BIN_DIR"; then n_bin=$((n_bin + 1)); fi
+  done
+}
+
+# prune DIR: drop links into SRC_ROOT that this run did not place
+prune() {
+  local link
+  for link in "$1"/*; do
+    [ -L "$link" ] || continue
+    case $(readlink "$link") in "$SRC_ROOT"/*) ;; *) continue ;; esac
+    case $seen in *$'\n'"$link"$'\n'*) ;; *) rm -f "$link"; say "removed stale ${link##*/}" ;; esac
+  done
+}
+
+relink() {
+  local src skill n_src=0
+  n_skill=0 n_bin=0
+  mkdir -p "$SKILLS_DIR" "$BIN_DIR"
+  for src in "$SRC_ROOT"/*/; do
+    src=${src%/}
+    n_src=$((n_src + 1))
+    for skill in "$src"/skills/*/; do
+      skill=${skill%/}
+      if [ ! -f "$skill/SKILL.md" ] || excluded "${skill##*/}"; then continue; fi
+      if place "${skill##*/}" "$skill" "$SKILLS_DIR"; then n_skill=$((n_skill + 1)); fi
+      link_exes "$skill/bin"
+    done
+    link_exes "$src/bin"
+  done
+  prune "$SKILLS_DIR"
+  prune "$BIN_DIR"
+  if [ "$n_src" -eq 0 ]; then warn "no sources in $SRC_ROOT (see: skillsync add)"; return; fi
+  say "$n_skill skills, $n_bin commands from $n_src sources"
+}
+
+add() {
+  local url=${1:?usage: skillsync add URL [NAME]} name=${2:-}
+  if [ -z "$name" ]; then name=${url##*/}; name=${name%.git}; fi
+  if [ -e "$SRC_ROOT/$name" ]; then warn "$SRC_ROOT/$name already exists"; exit 1; fi
+  mkdir -p "$SRC_ROOT"
+  git clone -q "$url" "$SRC_ROOT/$name"
+  relink
+}
+
+list() {
+  local src
+  for src in "$SRC_ROOT"/*/; do
+    src=${src%/}
+    set -- "$src"/skills/*/SKILL.md
+    printf '%-18s %3d skills  %s' "${src##*/}" $# "$(git -C "$src" remote get-url origin 2>/dev/null || echo '-')"
+    if [ -L "$src" ]; then printf '  [checkout %s]' "$(readlink "$src")"; fi
+    echo
+  done
+}
+
+if [ "${1:-}" = -q ]; then QUIET=1; shift; fi
+case ${1:-sync} in
+  sync) pull; relink ;;
+  link) relink ;;
+  add) shift; add "$@" ;;
+  list) list ;;
+  -h|--help|help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac
