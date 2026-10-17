@@ -44,6 +44,7 @@ Use one method or the other on a machine, not both, or each skill loads twice.
 | **bd-to-br-migration** | Migrates docs and scripts from bd (beads) to br (beads_rust) | "migrate from bd to br", "beads migration" |
 | **debugging-kubernetes-rollouts** | Systematic debugging of failed rollouts, ArgoCD sync issues, pod failures, and image pulls | "rollout is stuck", "ArgoCD won't sync" |
 | **debugging-nodejs-apps** | Systematic debugging of Node.js startup, dependency, and runtime failures | "service won't start", "npm error" |
+| **operating-frappe-on-kubernetes** | Keeps a Frappe / ERPNext instance on Kubernetes healthy: why runtime config only sticks via `bench set-config -g`, first-site bootstrap, v15→v16 upgrades, Error Log / email / PDF debugging | "bench migrate", "set-config won't take", "Error Log" |
 | **hyprland-lua** | Scripting, controlling, and debugging a Hyprland compositor configured in Lua | "hyprctl", "special workspace won't toggle" |
 | **quickshell-bar** | Editing and debugging a Quickshell (Qt6/QML) status bar on Hyprland | "add a bar module", "bar renders blank" |
 | **humanizer** | Removes signs of AI-generated writing (vendored from [blader/humanizer](https://github.com/blader/humanizer)) | "humanize this text" |

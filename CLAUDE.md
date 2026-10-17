@@ -113,6 +113,7 @@ After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds an
 | `bd-to-br-migration` | Migrate docs from bd (beads) to br (beads_rust) |
 | `debugging-kubernetes-rollouts` | Debug failed Kubernetes rollouts and ArgoCD / GitOps sync problems |
 | `debugging-nodejs-apps` | Systematic debugging of Node.js startup, dependency, and runtime failures |
+| `operating-frappe-on-kubernetes` | Operate, upgrade, and debug Frappe / ERPNext on Kubernetes: config on the sites PVC, first-site bootstrap, major-version upgrades, Error Log / email / PDF debugging |
 | `hyprland-lua` | Script, control, and debug a Hyprland compositor configured in Lua |
 | `quickshell-bar` | Edit and debug a Quickshell (Qt6/QML) status bar on Hyprland |
 | `humanizer` | Remove signs of AI-generated writing (vendored, see `UPSTREAM`) |
