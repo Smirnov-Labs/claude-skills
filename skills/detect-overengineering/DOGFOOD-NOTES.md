@@ -60,3 +60,20 @@ Pattern 8 (over-tested impossible paths): Task 5-7 form a test suite, but the te
 - **Prompt injection via stdin vs. positional arg.** SKILL.md passes the Codex prompt as a positional argument (last arg in the command). For long prompts with embedded plan content this exceeds shell argument length limits on some systems. In practice, piping via stdin (`echo "$PROMPT" | codex exec ...`) worked correctly. The SKILL.md instruction is technically correct per Codex's --help, but a note about the stdin alternative would make the skill more robust.
 
 - **Pass A instruction granularity.** SKILL.md says "For each H2 section in the plan, walk every rubric pattern." This worked, but the rubric patterns are grouped under H2 headers with H3 sub-entries. "Every rubric pattern" means all 13 H3 entries, not the 5 H2 groups. The instruction is slightly ambiguous — could be read as 5 checks (H2 groups) rather than 13 (H3 patterns). Suggest: "Walk all 13 rubric patterns (H3 entries) for each H2 section in the plan."
+
+---
+
+# Dogfood Notes — Two Large Plans (2026-10-16/17)
+
+**Targets:** two large implementation plans (5059 and 4688 lines).
+
+- **Codex CLI 0.163:** `--full-auto` no longer exists (the replacement is `--approve-for-me`;
+  read-only review needs neither), and `-m gpt-5.4-codex` is stale. The runs used the configured
+  default (`gpt-6-astra`) with `--sandbox read-only -C <repo> -o <file> -` and the prompt on stdin.
+- **Codex needs `examples.md`:** the rubric says to cross-reference it before every finding, but
+  the prompt template only includes `rubric.md`. On the second plan Codex refused to report
+  until it had the file, so the prompt for that run concatenated rubric.md and examples.md.
+- **Scale:** for plans over ~2000 lines the rubric pass worked well as a subagent with the
+  plan's H2/H3 line numbers. First plan: 23 rubric + 5 Codex findings, 4 cross-validated; 20
+  applied as-is, 3 reduced, 1 skipped; 5059 → 4749 lines. Applying them was best done by an
+  editor agent that re-compiled the plan's code in a scratch tree.
