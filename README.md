@@ -71,6 +71,7 @@ The `watching-pr-bot-reviews` and `pr-fix` skills require the [GitHub CLI](https
 | Component | Location | Description |
 |-----------|----------|-------------|
 | **Skills** | `skills/` + `bin/skillsync` | Skills installed with skillsync, or as plugins through `.claude-plugin/marketplace.json` |
+| **Architecture notes** | `ARCHITECTURE.md` | How skillsync installs the skills, its safety rules, and the reasons behind the design |
 | **Memory Bank** | `.claude/memory-bank/` | Structured documentation templates that give Claude full project context across sessions |
 | **Custom Slash Commands** | `.claude/commands/` | `/plan`, `/pr`, `/memory`, `/loop-review` -- workflows for working inside this repo |
 | **Architect-Gate** | `.github/claude/` | Automated architecture review that runs on every PR via CI |

@@ -54,19 +54,28 @@ If you encounter pre-existing issues in code you're touching, be a good citizen 
 This section grows as patterns and preferences are discovered during work on this project.
 
 ### Project-Specific Patterns
-[Document patterns as they emerge]
+- How skillsync works, and the shared Codex and PR-bot patterns: see `ARCHITECTURE.md`.
 
 ### User Preferences
-[Document user's working style and preferences]
+- The maintainer puts speed and ease of use first, not publishing everything. Generic skills come here. Anything private goes to the maintainer's private skills repo.
+- Skills reach machines only through skillsync. Not through dotfiles, and not through `/plugin install` on a machine where `settings.json` is a dotfiles symlink.
+- Plain English in anything a reader acts on. Run `python3 skills/de-slopping/ste_lint.py <file>` on PR and commit text, and fix every hard finding.
 
 ### Lessons Learned
-[Document key insights from work sessions]
+- A skill that calls a CLI breaks when the CLI changes. codex-cli 0.163 removed `--full-auto`. With `2>/dev/null`, the exit status 2 became an empty result, and the skill carried on without Codex. Keep stderr in a log and check the exit status.
+- Pinned model names go stale: `gpt-5.4-codex`, then `gpt-5.5`. Pin with a fallback, and keep a dated table of the models that you tested.
+- The Architect-Gate review blocks indirect hints of private work too: "a private repo", the name of a private feature, step numbers from a private plan (#13).
 
 ### Known Gotchas
-[Document tricky areas or common pitfalls]
+- **The working clone can be live.** On an authoring machine, the skillsync source is a symlink to the working clone. Every Claude Code session on that machine loads the files that are checked out. Never switch branches in that clone. Do PR work in a worktree: `git worktree add -b <branch> /tmp/<dir> origin/main`. Other sessions can have uncommitted edits in the clone. Leave them alone.
+- **`prbots` waits for Codex by default**, and Codex is not enabled here. Use `prbots wait <PR> --need sar --trigger`.
+- **The review does not run again on push.** `--trigger` or an `@architect-run` comment starts it.
 
 ### Effective Approaches
-[Document what works well for this project]
+- **Test a skill change like code.** First run the old instructions as written, and watch them fail. Then copy the code blocks out of the new SKILL.md and run them with only the placeholders filled in. (#9 and #15 were tested this way.)
+- **Leak-scan before every push.** Run `detect-secrets scan <files>`. Also grep the added lines for client names, internal hostnames, RFC1918 IPs, private repo names, tokens and home-directory paths.
+- **After a change to `bin/skillsync`,** run `tests/skillsync.sh`. On macOS, also run it under `/bin/bash` (3.2).
+- **Merges:** squash, with a subject that ends in `(#N)`, then delete the branch. Machines pick up main at their next `skillsync`.
 
 ---
 
@@ -80,6 +89,8 @@ This section grows as patterns and preferences are discovered during work on thi
 ## Skills
 
 This repo is **public**, so it only holds skills anyone may read. A skill that mentions clients, internal hosts or IPs, private repos, credentials, or real business data goes in the maintainer's private skills repo instead. The Architect-Gate review blocks such content here (`.github/claude/prompts/02-public-skills-repo.prompt.md`).
+
+How skillsync works, and why it is built that way: `ARCHITECTURE.md`.
 
 ### Structure
 
