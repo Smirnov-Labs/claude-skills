@@ -38,9 +38,11 @@ If multiple matches in the top-priority directory have mtimes within 24h of each
 
 ### 2. Pass A — Rubric pass (Claude in-session)
 
+Start Pass B's Codex run in the background first, and do this pass while it runs.
+
 Read `./rubric.md` and `./examples.md`.
 
-For each H2 section in the plan, walk every rubric pattern:
+For each H2 section in the plan, walk all 13 rubric patterns (the H3 entries in `rubric.md`):
 - Look for the pattern's plan-level signal in the section text
 - If matched, check `examples.md` for "don't flag" look-alikes — suppress if the matched text fits a don't-flag case better than a flag case
 - Otherwise emit a finding
@@ -61,32 +63,29 @@ Each finding is a structured record:
 
 ### 3. Pass B — Codex adversarial pass
 
-Run Codex with this exact command (matches `codex-plan-review` for consistency — non-spark model, high effort, read-only):
+Codex gets the rubric, the examples and the full plan in one prompt, on stdin. A long plan does not fit in a shell argument. Build the prompt with `cat`, so the plan is not retyped:
 
 ```bash
-codex exec \
-  -m gpt-5.4-codex \
-  --config model_reasoning_effort="high" \
-  --sandbox read-only \
-  --skip-git-repo-check \
-  --full-auto \
-  2>/dev/null \
-  "<prompt>"
-```
-
-The prompt sent to Codex must follow this template:
-
-```
+SKILL_DIR=<this skill's base directory>
+PLAN=<path to the plan>
+d=$(mktemp -d)
+{
+  cat <<'EOF'
 You are auditing an implementation plan for LLM-style overengineering —
 features that LLM-authored plans tend to over-include but that don't
 serve the actual goal. Use this rubric as a lens but feel free to flag
-patterns it misses:
+patterns it misses. The examples after the rubric show, for each
+pattern, a case to flag and a look-alike not to flag.
 
-<RUBRIC CONTENT FROM rubric.md>
+RUBRIC:
 
-PLAN:
-
-<FULL PLAN CONTENT>
+EOF
+  cat "$SKILL_DIR/rubric.md"
+  printf '\nEXAMPLES:\n\n'
+  cat "$SKILL_DIR/examples.md"
+  printf '\nPLAN:\n\n'
+  cat "$PLAN"
+  cat <<'EOF'
 
 For each issue, return:
 - Plan section (exact heading from the plan)
@@ -96,7 +95,21 @@ For each issue, return:
 
 Skip generic architectural advice. Focus only on bloat the author should
 cut before writing code. Be direct and opinionated.
+EOF
+} > "$d/prompt.md"
+
+codex exec \
+  -m gpt-6-astra \
+  -c model_reasoning_effort="high" \
+  --sandbox read-only \
+  --skip-git-repo-check \
+  -o "$d/codex.md" \
+  - < "$d/prompt.md" > "$d/codex.log" 2>&1
 ```
+
+Run it in the background: on a long plan it takes several minutes. It uses the same model, effort and sandbox as `codex-plan-review`.
+
+Codex's findings are in `$d/codex.md`. If the exit status is not 0, read the end of `$d/codex.log`. A 400 "model is not supported" means the `gpt-6-astra` pin is stale. Then rerun once without `-m`, so Codex uses the model in `~/.codex/config.toml`, and say so in the report.
 
 Parse Codex's prose response into the same finding shape with `source: "codex"`.
 
@@ -172,13 +185,14 @@ Re-run /detect-overengineering to verify? (y/N)
 
 - **Zero findings:** report says so, no edit prompt.
 - **Plan has uncommitted changes:** warn the user but proceed; they own the diff.
-- **Plan file >2000 lines:** chunk the rubric pass by H2 section. Codex still gets the full plan (handles long context natively).
+- **Plan file >2000 lines:** give the rubric pass to a subagent, with the plan's H2/H3 headings and their line numbers (`grep -n '^##' <plan>`), so it reads one section at a time. Codex still gets the full plan.
+- **Many approved edits on a long plan:** give them to one editor subagent. If the plan contains code, have it build that code in a scratch tree after the edits, to catch an edit that breaks it.
 - **Codex unavailable / fails:** continue with rubric pass only. Report header notes "adversarial pass unavailable."
 - **No plan auto-discovered:** prompt the user for a path. Do not pick a default.
 
 ## Key rules
 
-- **Always read rubric.md AND examples.md** before the rubric pass — examples suppress false positives.
+- **Always use rubric.md AND examples.md**, in Pass A and in the Codex prompt. The examples suppress false positives.
 - **Always use exact-match edits** — never regex or replace_all.
 - **Never apply edits without explicit user approval** — even in "all" mode, the user is approving the batch.
 - **Present Codex output faithfully** — don't filter criticisms; merge what overlaps with rubric findings, keep the rest.
