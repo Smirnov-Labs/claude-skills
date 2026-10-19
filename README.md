@@ -36,7 +36,7 @@ Use one method or the other on a machine, not both, or each skill loads twice.
 | Skill | What it does | Trigger phrases |
 |-------|--------------|-----------------|
 | **presentation-blueprint** | End-to-end presentation consultant: analyzes codebases/websites/projects, crafts strategic blueprints, and renders polished decks via `document-skills:pptx` | "build a deck", "create a presentation", "pitch deck for" |
-| **codex-plan-review** | Sends your current plan to Codex 5.4 (high-effort, read-only) for an independent architectural second opinion before you execute | "review plan with codex", "get a second opinion", "iterate on plan" |
+| **codex-plan-review** | Sends your current plan to Codex (`gpt-6-astra`, high effort, read-only) for an independent architectural second opinion before you execute | "review plan with codex", "get a second opinion", "iterate on plan" |
 | **detect-overengineering** | Audits an implementation-plan doc for LLM-style overengineering: a rubric-driven Claude pass plus a Codex adversarial pass, merged into specific edits that slim the plan | "check this plan for bloat", "is this overengineered", "detect overengineering" |
 | **git-recon** | 12-month git-history health check: surfaces high-churn files, bus factor, bug hotspots, velocity trends, and firefighting patterns before you read any code | "git recon", "codebase health check", "where are the landmines" |
 | **watching-pr-bot-reviews** | Waits for and reads the automated PR reviewers (Codex, the Architecture/SAR review, CI) with `prbots`: one background `prbots wait`, then a digest with a CLEAN / FIX / BLOCK / PENDING verdict for the PR's HEAD commit | "what did the bots say", "wait for Codex", before merging |
@@ -60,7 +60,7 @@ The `presentation-blueprint` skill requires `document-skills:pptx` for rendering
 /plugin install document-skills@anthropic-agent-skills
 ```
 
-The `codex-plan-review` skill requires the [Codex CLI](https://github.com/openai/codex) on your `PATH` with a `gpt-5.4-codex` model available.
+The `codex-plan-review` skill requires the [Codex CLI](https://github.com/openai/codex) on your `PATH`, signed in to an account that can use `gpt-6-astra`. `detect-overengineering` uses it too, for its second pass.
 
 The `git-recon` skill needs only `git` — runs locally against the repo you're standing in.
 

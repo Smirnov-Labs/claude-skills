@@ -9,7 +9,7 @@ If you were dispatched as a subagent to execute a specific delegated task, do NO
 
 # Codex Plan Review
 
-Send the current working plan to Codex 5.4 for an independent second opinion. This skill is used to iterate on plans before committing to implementation.
+Send the current working plan to Codex (`gpt-6-astra`) for an independent second opinion. This skill is used to iterate on plans before committing to implementation.
 
 ## When to Use
 
@@ -40,29 +40,23 @@ Read the full plan file. Construct a prompt for Codex that includes:
 
 ### 3. Send to Codex
 
-Run Codex with these exact settings — **non-spark model, high effort, read-only**:
+Codex reads the prompt on stdin. A long plan does not fit in a shell argument. Build the prompt with `cat`, so the plan is not retyped:
 
 ```bash
-codex exec \
-  -m gpt-5.4-codex \
-  --config model_reasoning_effort="high" \
-  --sandbox read-only \
-  --skip-git-repo-check \
-  --full-auto \
-  2>/dev/null \
-  "<prompt>"
-```
-
-**The prompt sent to Codex must follow this template:**
-
-```
+PLAN=<path to the plan>
+d=$(mktemp -d)
+{
+  cat <<'EOF'
 You are a senior architect reviewing an implementation plan. Your job is to find weaknesses, missing considerations, and improvements. Be direct and specific.
 
 PROJECT CONTEXT:
-<brief project description from CLAUDE.md or memory bank>
+<two or three lines on the project, from CLAUDE.md or the memory bank>
 
 PLAN TO REVIEW:
-<full plan content>
+
+EOF
+  cat "$PLAN"
+  cat <<'EOF'
 
 Review this plan and provide:
 
@@ -73,7 +67,19 @@ Review this plan and provide:
 5. **Specific Improvements** — Concrete suggestions, not vague advice. Reference specific plan sections.
 
 Be critical. The goal is to strengthen the plan, not validate it.
+EOF
+} > "$d/prompt.md"
+
+codex exec \
+  -m gpt-6-astra \
+  -c model_reasoning_effort="high" \
+  --sandbox read-only \
+  --skip-git-repo-check \
+  -o "$d/review.md" \
+  - < "$d/prompt.md" > "$d/codex.log" 2>&1
 ```
+
+Run it in the background: a high-effort review of a long plan takes several minutes. The review is in `$d/review.md`. If the exit status is not 0, read the end of `$d/codex.log`. For a 400 "model is not supported", see Model below.
 
 ### 4. Present the Review
 
@@ -90,11 +96,33 @@ If the user wants to update the plan:
 1. Edit the plan file with the agreed changes
 2. Optionally re-run Codex for another pass (ask first — avoid infinite loops)
 
+## Model
+
+`gpt-6-astra` is the pin: the frontier model on ChatGPT-account auth. Checked 2026-10-19 with codex-cli 0.163:
+
+| Model | Use |
+|---|---|
+| `gpt-6-astra` | The pin. Frontier model, 272K context. |
+| `gpt-6.1-sol` | Newest workhorse, 500K context. Use it if the plan does not fit in 272K. |
+| `gpt-6-sol`, `gpt-5.6-sol`, `gpt-5.6-terra` | Older workhorse and balanced models. Don't pin them. |
+| `gpt-6-luna`, `gpt-5.6-luna` | Fast and cheap. Too light for a review. |
+| `gpt-5.5`, `gpt-5.4`, `gpt-5.4-codex`, `gpt-5.5-codex` | HTTP 400: "not supported when using Codex with a ChatGPT account". |
+
+A 400 "model is not supported" means the pin is stale. Then:
+
+1. Rerun once without `-m`. Codex then uses the model in `~/.codex/config.toml`.
+2. Tell the user that the pin is stale.
+3. List the current models, to choose a new pin:
+
+   ```bash
+   codex debug models | jq -r '.models[] | select(.visibility=="list") | .slug'
+   ```
+
 ## Key Rules
 
-- **Always use `gpt-5.4-codex`** (not spark, not 5.3)
+- **Always use `gpt-6-astra`**. If Codex rejects it, see Model.
 - **Always use `high` reasoning effort**
 - **Always use `read-only` sandbox** — this is a review, not an edit
 - **Never skip the plan lookup step** — if there's no plan, ask for one
 - **Present Codex output faithfully** — don't filter or summarize away criticisms
-- **Remind the user** they can run `codex resume` for follow-up questions
+- **Remind the user** they can ask Codex follow-up questions with `codex resume --include-non-interactive --last`. A plain `codex resume` hides `codex exec` sessions.
