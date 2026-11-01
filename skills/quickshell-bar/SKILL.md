@@ -11,7 +11,7 @@ The default hexane bar is **Quickshell 0.3.0** (Qt6/QML), running as **`qs`** (r
 
 **Core principle:** hot-reload is unreliable through Edit-tool writes + the dir symlink, so **never trust "I edited it, it's live" — RELAUNCH `qs` and QA visually with a screenshot.** Most "it didn't work" moments are a stale process or a locked screen, not your code.
 
-**Source of truth for facts/gotchas:** `~/docs/docs/systems/hexane/hyprland-bars.md` (KB) and the design spec `~/.dotfiles/docs/superpowers/specs/2026-08-05-quickshell-bar-design.md`. This skill is the *how-to-work-on-it* companion.
+**Source of truth for facts/gotchas:** the brain's bars article `~/brain/library/hosts/hexane-desktop/bars.md` (KB) and the design spec `~/.dotfiles/docs/superpowers/specs/2026-08-05-quickshell-bar-design.md`. This skill is the *how-to-work-on-it* companion.
 
 ## When this applies
 
@@ -94,7 +94,7 @@ The default hexane bar is **Quickshell 0.3.0** (Qt6/QML), running as **`qs`** (r
 ## Commit hygiene ⚠️
 
 - `~/.dotfiles` is git **`master`** and **multiple agent sessions edit it concurrently**. **Stage only your explicit files** (`git add quickshell/Foo.qml …`) — **never `git add -A`/`-am`**. The user keeps *uncommitted* edits in `hypr/hyprland.lua`, `waybar/config.jsonc`, `claude/settings.json` — **don't touch/stage them**.
-- Durable facts → the KB `~/docs/docs/systems/hexane/hyprland-bars.md` (source of truth). `~/docs` is its own git repo with its own churn — commit only your one doc file there too.
+- Durable facts → a note in the brain inbox (`~/brain/inbox/hexane/claude/`); the curator files it into the bars article (source of truth).
 - Calendar tokens/creds must **never** enter the dotfiles (they live in `~/.config/gws`).
 - End commit messages with the `Co-Authored-By: Claude …` trailer.
 
