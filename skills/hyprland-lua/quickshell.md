@@ -2,7 +2,7 @@
 
 How a Quickshell/QML status bar **reads and drives Hyprland** on a Lua-configured compositor. This is the Hyprland-side slice only.
 
-> **For the bar itself** — its modules, i3blocks-style blocklets, the dev loop (edit → relaunch `qs` → screenshot), the calendar/`gws` chain, and the Quickshell 0.3.0 **rendering gotchas** (QTBUG-137166 blank-bar, minimal PATH breaking `~/.local/bin` tools, PopupWindow anchoring, icon-resolution no-op, file shadowing) — use the dedicated **`quickshell-bar`** skill. This file does not repeat them.
+> This file does not cover the bar itself: its modules, i3blocks-style blocklets and dev loop. It also leaves out Quickshell 0.3.0's bar gotchas. Examples: the QTBUG-137166 blank bar, a minimal `PATH` that hides `~/.local/bin` tools, `PopupWindow` anchoring, the `DesktopEntries.heuristicLookup` no-op, and `.qml` files that shadow Quickshell types.
 
 ## Driving Hyprland from QML
 
