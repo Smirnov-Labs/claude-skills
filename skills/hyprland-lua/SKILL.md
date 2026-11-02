@@ -26,7 +26,7 @@ Detect via: `~/.config/hypr/hyprland.lua` exists / no `hyprland.conf`, or a fail
 | File | For |
 |---|---|
 | `launcher.md` | Building a **Wayland-native switcher/launcher** (fuzzel over rofi), the two focus-landing bugs, workspace rename/move |
-| `quickshell.md` | **Hyprland ↔ Quickshell/QML** integration — driving Hyprland from QML, the special-workspace badge + `activespecial` refresh (bar internals & rendering gotchas live in the separate `quickshell-bar` skill) |
+| `quickshell.md` | **Hyprland ↔ Quickshell/QML** integration: driving Hyprland from QML, the special-workspace badge + `activespecial` refresh (the Hyprland side only, not bar internals or Quickshell's own gotchas) |
 
 ## Runtime dispatch — the wrapper
 

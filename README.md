@@ -46,7 +46,6 @@ Use one method or the other on a machine, not both, or each skill loads twice.
 | **debugging-nodejs-apps** | Systematic debugging of Node.js startup, dependency, and runtime failures | "service won't start", "npm error" |
 | **operating-frappe-on-kubernetes** | Keeps a Frappe / ERPNext instance on Kubernetes healthy: why runtime config only sticks via `bench set-config -g`, first-site bootstrap, v15→v16 upgrades, Error Log / email / PDF debugging | "bench migrate", "set-config won't take", "Error Log" |
 | **hyprland-lua** | Scripting, controlling, and debugging a Hyprland compositor configured in Lua | "hyprctl", "special workspace won't toggle" |
-| **quickshell-bar** | Editing and debugging a Quickshell (Qt6/QML) status bar on Hyprland | "add a bar module", "bar renders blank" |
 | **de-slopping** | Tightens a written deliverable (PR or commit message, design doc, README, runbook, report, release note): cuts hedges and filler, and checks Simplified Technical English rules with the bundled `ste_lint.py`. Includes an optional `slop_guard` Stop hook | "de-slop this", "tighten this", before finalizing a write-up |
 | **minto-pyramid** | Restructures a write-up answer-first with the Minto Pyramid: the conclusion, then grouped supporting points | "restructure this", "de-waffle", "lead with the answer" |
 | **humanizer** | Removes signs of AI-generated writing (vendored from [blader/humanizer](https://github.com/blader/humanizer)) | "humanize this text" |
