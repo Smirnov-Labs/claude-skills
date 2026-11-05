@@ -8,7 +8,7 @@ How a Quickshell/QML status bar **reads and drives Hyprland** on a Lua-configure
 
 - **Switch workspace:** call the object method `HyprlandWorkspace.activate()` — correct on Lua Hyprland. `Hyprland.dispatch("workspace N")` (string dispatch) writes the same IPC path that's flaky/dead under the Lua parser, so don't hand-roll dispatch strings for switching.
 - **Fire a dispatch/script the API doesn't expose:** `Quickshell.execDetached(["/path/to/script"])` (e.g. run a `hyprctl eval` Lua toggle). Note the split: the **read/event** side (`rawEvent`, `refreshMonitors`, `lastIpcObject`) is unaffected by the Lua-dispatch problem — only the **write/dispatch** side is.
-- **Per-monitor model:** `Hyprland.monitorFor(barScreen)` → `hlMonitor`; workspaces via `Hyprland.workspaces.values.filter(w => w.monitor === hlMonitor)`. Sort **numeric names first (by value), then named ones by DESCENDING id** — Hyprland gives move-script-created named spaces increasingly-negative ids, so the newest appends at the end and existing pills don't reshuffle.
+- **Per-monitor model:** `Hyprland.monitorFor(barScreen)` → `hlMonitor`; workspaces via `Hyprland.workspaces.values.filter(w => w.monitor === hlMonitor)`. Sort **numeric names first (by value)**. Before 0.57, sorting named ones by DESCENDING id kept them stable: named spaces got increasingly negative ids, so the newest appended at the end. Since 0.57 named workspaces have no id, and that sort gives no stable order. Named pills reshuffle when qs restarts or a workspace appears, so they need another order source.
 
 ## ⚠️ Special workspaces don't light up the normal pills
 

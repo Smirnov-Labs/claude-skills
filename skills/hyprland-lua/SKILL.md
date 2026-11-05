@@ -1,6 +1,6 @@
 ---
 name: hyprland-lua
-description: Use when scripting, controlling, debugging, or building UI for a Hyprland (Wayland) compositor configured in Lua (hyprland.lua — native since Hyprland 0.55, not hyprland.conf). Symptoms — `hyprctl dispatch`/`keyword` fail with Lua parse errors; a special/scratchpad workspace toggles the wrong (default `special:special`) workspace or won't hide; follow_mouse steals focus or a toggle hits the wrong monitor; a rofi/fuzzel launcher can't see native Wayland windows; a Quickshell/QML bar won't switch or track workspaces; or you need runtime `hyprctl eval` + `hl.dispatch(hl.dsp…)`, live inspection (`hyprctl -j` + jq + grim), and GUI-spawn workarounds.
+description: Use when scripting, controlling, debugging, or building UI for a Hyprland (Wayland) compositor configured in Lua (hyprland.lua, native since Hyprland 0.55, not hyprland.conf). Symptoms: `hyprctl dispatch`/`keyword` fail with Lua parse errors. A special/scratchpad workspace toggles the wrong (default `special:special`) workspace or won't hide. follow_mouse steals focus, or a toggle hits the wrong monitor. A named workspace's `id` reads `null`, a rename fails with `'workspace' is required`, or `name:<new>` finds nothing after a rename. A rofi/fuzzel launcher can't see native Wayland windows. A Quickshell/QML bar won't switch or track workspaces. Or you need runtime `hyprctl eval` + `hl.dispatch(hl.dsp…)`, live inspection (`hyprctl -j` + jq + grim), and GUI-spawn workarounds.
 ---
 
 # Controlling a Lua-configured Hyprland
@@ -49,7 +49,7 @@ hyprctl eval 'hl.dispatch(hl.dsp.<path>(<args>))'
 | Focus window by address | `hl.dispatch(hl.dsp.focus({ window = "address:0x…" }))` |
 | **Toggle named special ws** | `hl.dispatch(hl.dsp.workspace.toggle_special("scratch"))` ← **STRING** |
 | Move current ws to monitor | `hl.dispatch(hl.dsp.workspace.move({ monitor = "DP-2" }))` |
-| Rename workspace | `hl.dispatch(hl.dsp.workspace.rename({ workspace = <id>, name = "x" }))` |
+| Rename workspace (label only, see below) | `hl.dispatch(hl.dsp.workspace.rename({ workspace = "name:<address>", name = "x" }))`; numbered: `workspace = <id>` |
 | Center active floating window | `hl.dispatch(hl.dsp.window.center())` |
 | Move window to workspace | `hl.dispatch(hl.dsp.window.move({ workspace = "name:x", follow = false }))` |
 | Warp cursor (absolute px) | `hl.dispatch(hl.dsp.cursor.move({ x = 1920, y = 1080 }))` |
@@ -82,11 +82,19 @@ Fixes:
 - Deterministic toggle on a chosen monitor: save `hyprctl cursorpos`, `cursor.move` onto that monitor's center, toggle, then warp the cursor back.
 - After a focus dispatch, warp the cursor onto the target's center in the **same** eval so no cursor-driven re-focus sneaks in between.
 
+## Workspace ids and addresses (0.57+)
+
+- Only numbered workspaces have an `id` in `-j` output. Named and special ones have no `id` key, so `jq -r .id` prints `null`.
+- Every workspace has an `address`: the name Hyprland created it with (`special:<name>` for a special one). `type` is `normal` or `special`.
+- A `name:<x>` selector matches the **address**, not the current `name`. Target a named workspace by `"name:<address>"` and a special one by `"special:<name>"`. A bare name throws `Invalid workspace`.
+- `hl.dsp.workspace.rename` changes only `name`. Afterwards `name:<new>` finds nothing: `rename` warns `no such workspace`, and `focus` or `window.move` create a second workspace with that label.
+- `hl.dsp.workspace.change_id` takes a numeric `id` only, so it can't re-address a named workspace.
+- To give a workspace a new name that selectors find, move its windows onto `name:<new>` and follow. The recipe is in `launcher.md`.
+
 ## Special workspaces (multi-monitor)
 
 - A monitor shows **exactly one** special workspace at a time.
 - A new special ws **auto-binds to a monitor at creation** — it can land on the wrong / tiny display (centering a tall window on a short monitor shoves it off-screen). **Pin** it: `hl.workspace_rule({ workspace = "special:scratch", monitor = "DP-2" })`. ⚠️ The pin applies at **creation only** — it won't relocate an already-existing special ws (destroy it first: close its windows so the empty ws auto-removes when hidden, then respawn).
-- Named + special workspaces have **negative ids** → target by `"name:<name>"` / `"special:<name>"`, never a bare name (throws `Invalid workspace`).
 
 ## Live-compositor debugging workflow
 
@@ -124,3 +132,5 @@ Fixes:
 | Guessing dispatcher names/signatures | Enumerate `hl.dsp.<table>` via the `error()` trick |
 | Trusting one racy `hyprctl` read | `grim` the output; re-query after it settles |
 | `pkill -f <pattern in your own command>` | kill by PID from `hyprctl clients -j` |
+| Reading `.id` of a named workspace (0.57+) | It's `null`. Read `.address` and target `"name:<address>"` |
+| `rename`, then target `name:<new>` | Selectors match the creation-time address. Move the windows onto `name:<new>` instead |
