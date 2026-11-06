@@ -1,6 +1,10 @@
 ---
 name: operating-frappe-on-kubernetes
-description: Use when operating, upgrading or debugging Frappe/ERPNext on Kubernetes: config that won't take (bench set-config), a first site (encryption_key), bench migrate or a major upgrade, a Helm chart bump (Valkey), the Error Log, email, PDF / chromium errors, or a report that looks permission-locked.
+description: >-
+  Use when operating, upgrading or debugging Frappe/ERPNext on Kubernetes:
+  config that won't take (bench set-config), a first site (encryption_key),
+  bench migrate or a major upgrade, a Helm chart bump (Valkey), the Error Log,
+  email, PDF / chromium errors, or a report that looks permission-locked.
 ---
 
 # Operating Frappe / ERPNext on Kubernetes
