@@ -408,7 +408,7 @@ check "CMake execute_process is HIGH" 'jhas high install-hook c/CMakeLists.txt 2
 check "a single-quoted Cargo build path is HIGH" 'jhas high install-hook r/Cargo.toml 3'
 
 # --- install entry points: lifecycle hooks, executable overrides and metadata ------------
-for hook in dependencies predependencies postdependencies prepack postpack publish; do
+for hook in dependencies predependencies postdependencies prepack postpack publish prepublishOnly; do
   R=$T/npm-$hook; mkdir -p "$R"
   printf '{\n  "name": "x", "version": "1.0.0",\n  "scripts": {"%s": "node prepare.js"}\n}\n' "$hook" > "$R/package.json"
   printf 'require("child_process").execFileSync("sh", ["-c", "echo hook >> \\"$CANARY\\""]);\n' > "$R/prepare.js"
@@ -424,6 +424,11 @@ R=$T/npm-no-scripts; mkdir -p "$R"
 printf '{"dependencies":{"dependencies":"1.0.0","prepack":"1.0.0","install":"1.0.0"}}\n' > "$R/package.json"
 scanj "$R"
 check "dependency names are not lifecycle keys when scripts is absent" 'jnone package.json && jcount high 0'
+
+R=$T/npm-same-name; mkdir -p "$R"
+printf '{\n  "dependencies": {"prepack": "1.0.0"},\n  "scripts": {"prepack": "node prepare.js"}\n}\n' > "$R/package.json"
+scanj "$R"
+check "a hook's evidence is the script, not a dependency with the same name" 'jhas high install-hook package.json 3 && ! jhas high install-hook package.json 2'
 
 R=$T/npm-git-override; mkdir -p "$R/tools"
 printf 'ignore-scripts=true\ngit=./tools/git-wrapper\n' > "$R/.npmrc"
@@ -463,6 +468,14 @@ R=$T/pnpm-loader; mkdir -p "$R"
 printf 'nodeOptions: "--experimental-loader ./tools/loader.mjs"\n' > "$R/pnpm-workspace.yaml"
 scanj "$R"
 check "any pnpm nodeOptions is HIGH, like node-options in .npmrc" 'jhas high install-hook pnpm-workspace.yaml 1'
+# One key per file: the report folds a second finding of the same rule in a file into "more".
+for pair in '"git"=./tools/git-wrapper|  scriptShell: ./tools/shell' "'node-gyp'=./tools/build.cjs|  nodeOptions: --require ./tools/preload.cjs"; do
+  R=$T/quoted-and-indented-${#pair}; mkdir -p "$R"
+  printf '%s\n' "${pair%%|*}" > "$R/.npmrc"
+  printf '%s\n' "${pair#*|}" > "$R/pnpm-workspace.yaml"
+  scanj "$R"
+  check "a quoted .npmrc key and an indented pnpm root mapping are HIGH: ${pair%%=*}" 'jhas high install-hook .npmrc 1 && jhas high install-hook pnpm-workspace.yaml 1'
+done
 R=$T/package-manager-data; mkdir -p "$R"
 printf '# git=./tools/git-wrapper\n; node-gyp=./tools/build.cjs\nregistry=https://registry.npmjs.org\n' > "$R/.npmrc"
 printf '# script-shell "./shell"\nregistry "https://registry.yarnpkg.com"\n' > "$R/.yarnrc"
@@ -508,6 +521,17 @@ for metadata in cfg toml-inline toml-table; do
     scanj "$R"
     check "setuptools $metadata attr metadata can import local code" 'jhas high install-hook pyproject.toml 10 && has "statically"'
   fi
+done
+for hatch in version hook; do
+  R=$T/hatch-toml-$hatch; mkdir -p "$R"
+  printf '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n' > "$R/pyproject.toml"
+  if [ "$hatch" = version ]; then
+    printf '[version]\nsource = "code"\npath = "version.py"\n' > "$R/hatch.toml"
+  else
+    printf '[build.hooks.custom]\npath = "hooks.py"\n' > "$R/hatch.toml"
+  fi
+  scanj "$R"
+  check "a Hatch code $hatch in hatch.toml is HIGH" 'jhas high install-hook hatch.toml'
 done
 R=$T/python-static-metadata; mkdir -p "$R"
 printf '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n[tool.hatch.version]\nsource = "regex"\npath = "version.py"\n[tool.other]\nsource = "code"\nattr = "version.__version__"\n[tool.setuptools.dynamic]\nversion = {file = "VERSION"}\n' > "$R/pyproject.toml"

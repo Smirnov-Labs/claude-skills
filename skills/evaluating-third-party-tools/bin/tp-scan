@@ -293,6 +293,7 @@ NPM_NOTES = {'preinstall': 'npm runs it before npm install', 'install': 'npm run
              'prepare': 'npm runs it on a plain npm install in this folder, and when installed from git',
              'postprepare': 'npm runs it on a plain npm install in this folder',
              'prepublish': 'npm runs it on a plain npm install or npm ci in this folder',
+             'prepublishOnly': 'pnpm runs it on install when another workspace package injects this one',
              'prepack': 'Yarn runs it when packing a Git dependency during install; pnpm can also run it when preparing a Git dependency',
              'postpack': 'Yarn runs it after packing a Git dependency during install',
              'publish': 'pnpm runs it when preparing a Git dependency with a prepare script or a missing main file',
@@ -893,6 +894,8 @@ class Scan:
                 offset += len(line)
 
         build_note = 'pip runs it when it builds or installs this package from source'
+        hatch_note = ('Hatch imports the Python file named by path and evaluates its version expression '
+                      'when resolving a dynamic version during metadata preparation or build')
         attr_note = ('setuptools may import the module named by attr while preparing build metadata '
                      'if it cannot read the attribute statically')
         if low == 'package.json':
@@ -917,14 +920,16 @@ class Scan:
         elif low == 'pyproject.toml':
             each(PYPROJECT_RE, 'HIGH', 'install-hook', 'build code from this repo (an in-tree backend or a '
                  'build hook): ' + build_note)
-            setting('tool.hatch.version', r'[ \t]*source[ \t]*=[ \t]*["\']code["\']',
-                    'Hatch imports the Python file named by path and evaluates its version expression '
-                    'when resolving a dynamic version during metadata preparation or build')
+            setting('tool.hatch.version', r'[ \t]*source[ \t]*=[ \t]*["\']code["\']', hatch_note)
             setting('tool.setuptools.dynamic',
                     r'[ \t]*version[ \t]*=[ \t]*\{[^}\n]*\battr["\']?[ \t]*=', attr_note)
             setting('tool.setuptools.dynamic.version', r'[ \t]*attr[ \t]*=', attr_note)
             license_field(r'(?m)^[ \t]*license[ \t]*=[ \t]*(?:"([^"\n]+)"|\'([^\'\n]+)\''
                           r'|\{[^}\n]*?\btext[ \t]*=[ \t]*"([^"\n]+)")')
+        elif low == 'hatch.toml':
+            each(r'(?m)^[ \t]*\[?[^\n=\]]*\bhooks\.custom\b', 'HIGH', 'install-hook',
+                 'Hatch runs this build hook from the repo: ' + build_note)
+            setting('version', r'[ \t]*source[ \t]*=[ \t]*["\']code["\']', hatch_note)
         elif low in ('sitecustomize.py', 'usercustomize.py'):
             add('HIGH', 'install-hook', rel, None, '', 'once installed, Python imports %s at every start' % low)
         elif low == 'gemfile' or ext == '.gemspec':
@@ -964,20 +969,20 @@ class Scan:
             each(r'(?m)^[ \t]*import[ \t]', 'HIGH', 'install-hook',
                  'once installed, a .pth line that starts with import runs on every Python start')
         elif low == '.npmrc':
-            each(r'(?m)^[ \t]*(?:node-options|script-shell|onload-script)[ \t]*=', 'HIGH', 'install-hook',
+            each(r'(?m)^[ \t]*["\']?(?:node-options|script-shell|onload-script)["\']?[ \t]*=', 'HIGH', 'install-hook',
                  'npm reads this .npmrc in this folder and runs the code it names')
-            each(r'(?m)^[ \t]*git[ \t]*=', 'HIGH', 'install-hook',
+            each(r'(?m)^[ \t]*["\']?git["\']?[ \t]*=', 'HIGH', 'install-hook',
                  'npm runs this Git executable when resolving Git dependencies, even with --ignore-scripts')
-            each(r'(?m)^[ \t]*node-gyp[ \t]*=', 'HIGH', 'install-hook',
+            each(r'(?m)^[ \t]*["\']?node-gyp["\']?[ \t]*=', 'HIGH', 'install-hook',
                  'npm runs this node-gyp program when an install builds a native dependency')
-            each(r'(?m)^[ \t]*(?:global-?)?pnpmfile[ \t]*=', 'HIGH', 'install-hook',
+            each(r'(?m)^[ \t]*["\']?(?:global-?)?pnpmfile["\']?[ \t]*=', 'HIGH', 'install-hook',
                  'pnpm runs the pnpmfile this names on pnpm install, even with --ignore-scripts')
         elif low == 'pnpm-workspace.yaml':
             each(r'(?m)^[ \t]*(?:global)?[pP]npmfile[ \t]*:', 'HIGH', 'install-hook',
                  'pnpm runs the pnpmfile this names on pnpm install, even with --ignore-scripts')
-            each(r'(?m)^["\']?scriptShell["\']?[ \t]*:', 'HIGH', 'install-hook',
+            each(r'(?m)^[ \t]*["\']?scriptShell["\']?[ \t]*:', 'HIGH', 'install-hook',
                  'pnpm uses this executable as the shell for lifecycle scripts during install')
-            each(r'(?m)^["\']?nodeOptions["\']?[ \t]*:', 'HIGH', 'install-hook',
+            each(r'(?m)^[ \t]*["\']?nodeOptions["\']?[ \t]*:', 'HIGH', 'install-hook',
                  'pnpm passes these Node options to the scripts it runs on install; --require, --import '
                  'and --loader load code')
         elif low in ('.yarnrc.yml', '.yarnrc'):
@@ -1036,10 +1041,13 @@ class Scan:
             # fields in a valid manifest are not lifecycle scripts.
             scripts = {} if isinstance(data, dict) else None
         nt = Text(unescape(t.s))
+        # Look for a script's evidence after the last "scripts" key, which JSON keeps, so a
+        # dependency with the same name as a hook does not stand in for the script.
+        start = ([m.end() for m in re.finditer(r'"scripts"\s*:\s*\{', nt.s)] or [0])[-1] if scripts else 0
         for name in NPM_NOTES:
             if scripts is not None and name not in scripts:
                 continue
-            m = re.search(r'"%s"\s*:\s*"' % name, nt.s)
+            m = re.compile(r'"%s"\s*:\s*"' % re.escape(name)).search(nt.s, start)
             if m is None and scripts is None:
                 continue
             line = nt.line_no(m.start()) if m else None
