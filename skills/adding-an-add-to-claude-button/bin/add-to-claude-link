@@ -38,10 +38,10 @@ space is %20, never +. The characters ! ' ( ) * are encoded too, so the link
 also works inside a Markdown link. The html format writes each & in the link
 as &amp;. The other formats use a plain &.
 
-A doubled slash in the URL path, such as https://mcp.example.com//mcp from an
-origin with a trailing slash, becomes one slash, with a warning. A slash at the
-end of the URL stays, because the URL must equal the "resource" value in the
-server's OAuth metadata exactly.
+A doubled slash at the start of the URL path, such as
+https://mcp.example.com//mcp from an origin with a trailing slash, becomes one
+slash, with a warning. All other slashes stay, because the URL must equal the
+"resource" value in the server's OAuth metadata exactly.
 
 Warnings go to stderr and do not change the exit status: a URL that is not
 https, and a host that Claude cannot reach over the internet (localhost, a
@@ -157,16 +157,18 @@ def check_url(raw):
         raise UsageError(f"URL must be an absolute https URL, {example}: {url}")
 
     warnings = []
+    # An origin that ends in / joined to /mcp gives //mcp, so fold the slashes
+    # at the start of the path. Later ones stay: a path can hold a URL.
     # The path starts right after "scheme://netloc" and runs to the ? or #.
     start = len(parts.scheme) + 3 + len(parts.netloc)
     end = start + len(parts.path)
-    path = re.sub(r"/{2,}", "/", parts.path)
+    path = re.sub(r"^/{2,}", "/", parts.path)
     if url[start:end] == parts.path and path != parts.path:
         fixed = url[:start] + path + url[end:]
         warnings.append(
-            f"warning: the URL path had a doubled slash, so the link uses {fixed} "
-            f"instead of {url}. If the server builds URLs from an origin that ends "
-            "in /, remove that slash there too."
+            f"warning: the URL path started with a doubled slash, so the link uses "
+            f"{fixed} instead of {url}. If the server builds URLs from an origin "
+            "that ends in /, remove that slash there too."
         )
         url = fixed
     if parts.scheme.lower() != "https":

@@ -122,7 +122,9 @@ check "spaces around NAME and URL are trimmed" '[ $rc -eq 0 ] && decodes url "$U
 run Example https://mcp.example.com//mcp
 check "an origin's trailing slash (//mcp) becomes /mcp, with a warning" '[ $rc -eq 0 ] && decodes url "$USER" Example "$U" && [[ $err == *"doubled slash"* ]]'
 run Example "https://mcp.example.com:8443///v1//mcp"
-check "every doubled slash in the path goes, the port stays" 'decodes url "$USER" Example "https://mcp.example.com:8443/v1/mcp"'
+check "only the slashes at the start of the path fold, and the port stays" 'decodes url "$USER" Example "https://mcp.example.com:8443/v1//mcp"'
+run Example "https://gw.example.com/proxy/https://upstream.example/mcp"
+check "a URL inside the path keeps its //, with no warning" 'decodes url "$USER" Example "https://gw.example.com/proxy/https://upstream.example/mcp" && [ -z "$err" ]'
 run Example "https://mcp.example.com//mcp?next=https://a.example//b"
 check "doubled slashes in the query are left alone" 'decodes url "$USER" Example "https://mcp.example.com/mcp?next=https://a.example//b"'
 run Example https://mcp.example.com/mcp/
