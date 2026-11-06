@@ -37,8 +37,11 @@ RELEASES = {   # pages of releases, newest first as GitHub sends them
                    rel("v9.9.9", draft=True), rel("nightly", prerelease=True)],
                   [rel("v1.2.0"), rel("v1.1.0")]],
     "acme/flagged": [[rel("v3.0.0", prerelease=True), rel("v2.5.0")]],
-    "acme/deep": [[rel("v1.0.5"), rel("v1.0.4")], [rel("v2.0.0"), rel("v1.0.3")],
-                  [rel("v0.1.0")], [rel("v0.0.1")]],
+    "acme/deep": [[rel("v1.0.5"), rel("v1.0.4")], [rel("v1.0.3")], [rel("v2.0.0")],
+                  [rel("v0.3.0")], [rel("v0.2.0")], [rel("v0.1.0")]],
+    "acme/mono": [[rel("storage/v1.42.5"), rel("other/v9.0.0")], [rel("other/v8.0.0")],
+                  [rel("storage/v1.43.0")], [rel("storage/v1.0.0")], [rel("storage/v0.1.0")],
+                  [rel("storage/v0.0.1")]],
     "acme/norel": [[]],
     "acme/drafts": [[rel("v5.0.0", draft=True)]],
     "acme/prefixed": [[rel("jq-1.7.1"), rel("jq-1.8.0"), rel("jq-1.10.0rc1", prerelease=True)]],
@@ -57,8 +60,11 @@ REG = {   # tag lists in lexical order, as registries send them
     "library/caddy": ["2.10.0", "2.10.0-alpine", "2.10.0-builder-alpine", "2.8.4", "2.9.1", "latest"],
     "user/app": ["0.1.0", "0.2.0"],
     "org/open": ["1.0.0", "1.1.0"],
+    "org/dates": ["20241105", "20241201", "latest"],
+    "org/shas": ["1234567", "a1b2c3d", "latest", "sha-89abcde"],
 }
-PAGE = 4
+BIG = sorted(["1.0.%d" % i for i in range(10000)] + ["2.0.0"])   # 2.0.0 sorts last
+PAGE = 5
 INDEX, PLATFORM = b'{"index":true}', b'{"platform":true}'
 NOHEAD = b'{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}'
 NAME_UNKNOWN = {"errors": [{"code": "NAME_UNKNOWN", "message": "repository name not known to registry"}]}
@@ -151,10 +157,14 @@ class H(BaseHTTPRequestHandler):
         host = self.headers.get("Host")
         if repo == "org/basic":
             return self.send(401, {"errors": []}, {"WWW-Authenticate": 'Basic realm="fake"'})
+        if repo == "org/front" and host.startswith("127.0.0.1"):   # a redirector, like registry.k8s.io
+            return self.send(307, b"", {"Location": f"http://{host.replace('127.0.0.1', 'localhost')}{self.path}"})
         if repo != "org/open" and self.headers.get("Authorization") != f"Bearer tok-{host}-{repo}":
+            bearer = f'Bearer realm="http://{host}/token",service="fake-registry",scope="repository:{repo}:pull"'
+            if repo == "org/combined":   # two challenges in one header, a comma inside quotes
+                bearer = 'Basic realm="fake, really", ' + bearer
             return self.send(401, {"errors": [{"code": "UNAUTHORIZED", "message": "authentication required"}]},
-                             {"WWW-Authenticate": f'Bearer realm="http://{host}/token",'
-                                                  f'service="fake-registry",scope="repository:{repo}:pull"'})
+                             {"WWW-Authenticate": bearer})
         if repo == "org/moved":   # a token here, then off to another host
             other = host.replace("127.0.0.1", "localhost")
             return self.send(307, b"", {"Location": f"http://{other}/v2/org/img/tags/list"})
@@ -171,15 +181,21 @@ class H(BaseHTTPRequestHandler):
         if repo == "org/loop":
             return self.send(200, {"name": repo, "tags": ["1.0.0"]},
                              {"Link": '</v2/org/loop/tags/list?n=4&last=x>; rel="next"'})
+        if repo == "org/nolink":   # full pages of n tags, never a Link header
+            start = BIG.index(q["last"]) + 1 if q.get("last") in BIG else 0
+            return self.send(200, {"name": repo, "tags": BIG[start:start + int(q.get("n", "50"))]})
+        if repo == "org/ignorant":   # ignores n and last: every tag, every time
+            return self.send(200, {"name": repo, "tags": BIG})
         if repo == "org/strict" and int(q.get("n", "0")) > 100:
             return self.send(400, {"errors": [{"code": "PAGINATION_NUMBER_INVALID", "message": "n too big"}]})
-        tags = REG.get("org/img" if repo == "org/strict" else repo)
+        tags = REG.get("org/img" if repo in ("org/strict", "org/combined", "org/front") else repo)
         if tags is None:
             return self.send(404, NAME_UNKNOWN)
         start = tags.index(q["last"]) + 1 if q.get("last") in tags else 0
         chunk, headers = tags[start:start + PAGE], {}
         if start + PAGE < len(tags):
-            headers["Link"] = f'</v2/{repo}/tags/list?n={PAGE}&last={urllib.parse.quote(chunk[-1])}>; rel="next"'
+            front = f"http://{host.replace('localhost', '127.0.0.1')}" if repo == "org/front" else ""
+            headers["Link"] = f'<{front}/v2/{repo}/tags/list?n={PAGE}&last={urllib.parse.quote(chunk[-1])}>; rel="next"'
         self.send(200, {"name": repo, "tags": chunk}, headers)
 
     def manifest(self, repo, ref):
@@ -267,8 +283,11 @@ check "a plain tag marked pre-release is skipped" '[ $rc -eq 0 ] && [ "$out" = v
 run acme/flagged --pre
 check "a plain tag marked pre-release ranks as the newest with --pre" '[ $rc -eq 0 ] && [ "$out" = v3.0.0 ]'
 : > "$LOG"; run acme/deep
-check "a higher version on a later page still wins" '[ $rc -eq 0 ] && [ "$out" = v2.0.0 ]'
-check "paging stops once a page adds nothing to the top" '[ "$(logged "page=3")" -eq 1 ] && [ "$(logged "page=4")" -eq 0 ]'
+check "a higher version after a page that adds nothing still wins" '[ $rc -eq 0 ] && [ "$out" = v2.0.0 ]'
+check "paging stops after two pages in a row that add nothing" '[ "$(logged "page=5")" -eq 1 ] && [ "$(logged "page=6")" -eq 0 ]'
+: > "$LOG"; run acme/mono --match '^storage/(.+)$'
+check "a page with no matching release does not count toward the stop" '[ $rc -eq 0 ] && [ "$out" = storage/v1.43.0 ]'
+check "with --match, two pages of lower matches stop the paging" '[ "$(logged "page=5")" -eq 1 ] && [ "$(logged "page=6")" -eq 0 ]'
 run acme/norel
 check "no releases falls back to tags" '[ $rc -eq 0 ] && [ "$out" = v0.10.0 ]'
 run acme/norel --match zzz
@@ -384,7 +403,22 @@ check "a tag list that is not JSON exits 2" '[ $rc -eq 2 ] && [[ $err == *"not J
 run "$R/org/loop"
 check "a registry that repeats a page exits 2" '[ $rc -eq 2 ] && [[ $err == *"same page twice"* ]]'
 run "$R/org/endless"
-check "an endless tag list stops at the page cap and warns" '[ $rc -eq 0 ] && [ "$out" = 0.0.100 ] && [[ $err == *"warning"* ]]'
+check "an endless tag list exits 2 at the page cap, with no answer" '[ $rc -eq 2 ] && [ -z "$out" ] && [[ $err == *"stopped after 1000 pages"* ]]'
+: > "$LOG"; run "$R/org/nolink"
+check "a full page without a Link header asks for the tags after it" '[ $rc -eq 0 ] && [ "$out" = 2.0.0 ] && [ "$(logged "last=1.0.9999")" -eq 1 ]'
+run "$R/org/ignorant"
+check "a registry that ignores last ends when no tag is new" '[ $rc -eq 0 ] && [ "$out" = 2.0.0 ]'
+run "$R/org/combined"
+check "a Bearer challenge after a Basic one in the same header" '[ $rc -eq 0 ] && [ "$out" = v1.10.1 ]'
+: > "$LOG"; run "$R/org/front"
+check "a front end that redirects every page" '[ $rc -eq 0 ] && [ "$out" = v1.10.1 ]'
+check "the cached token serves the redirected pages" '[ "$(grep -c "host=localhost:[0-9]* path=/token" "$LOG")" -eq 1 ]'
+run "$R/org/dates"
+check "date tags alone are set aside, with a --match hint" '[ $rc -eq 1 ] && [ -z "$out" ] && [[ $err == *"one-number tags such as 20241105"* ]]'
+run "$R/org/dates" --match '^[0-9]+$'
+check "--match picks date tags" '[ $rc -eq 0 ] && [ "$out" = 20241201 ]'
+run "$R/org/shas"
+check "an all-digit short sha is not a version" '[ $rc -eq 1 ] && [ -z "$out" ]'
 run 127.0.0.1:1/org/img
 check "a connection error exits 2" '[ $rc -eq 2 ] && [ -z "$out" ]'
 

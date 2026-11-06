@@ -55,8 +55,15 @@ HOW TAGS ARE SORTED
   word, such as -alpine or -slim, makes a variant, and so does a number-only
   suffix such as -1: variants show only with --match. Tags with the same
   version (13.3 and 13.3.0) print once, as the longer tag. Tags that are not
-  versions (latest, main, sha-1a2b3c4) are set aside, and so is a one-number
-  tag such as 20241105 when no N.N tag has the same first number.
+  versions (latest, main, sha-1a2b3c4) are set aside. A one-number tag (2,
+  20241105) counts only beside an N.N tag with the same first number; when
+  there is no N.N tag at all, it counts only with --match.
+
+PAGES
+  Registry tags and GitHub tags are read to the last page. GitHub releases
+  come newest first, so reading stops after two pages in a row whose
+  versions all rank below the N newest found so far. A list longer than
+  1000 pages exits 2, because the newest is then unknown.
 
 EXIT STATUS
   0 found   1 nothing matched   2 network or API error   3 usage error
@@ -71,7 +78,8 @@ ENVIRONMENT (for tests)
 
 EXIT_FOUND, EXIT_NONE, EXIT_ERROR, EXIT_USAGE = 0, 1, 2, 3
 TIMEOUT = 30          # seconds per HTTP request
-MAX_PAGES = 100       # per listing; more than that is reported, not hidden
+MAX_PAGES = 1000      # per listing; past that the answer is unknown: exit 2
+NO_LINK_PAGE = 10000  # the page size asked of registries, see Registry.tags
 UA = "latest-version/1.0"
 GITHUB_HEADERS = {"Accept": "application/vnd.github+json",
                   "X-GitHub-Api-Version": "2022-11-28"}
@@ -213,7 +221,7 @@ class Pool:
 
     def __init__(self, match, pre):
         self.rx, self.pre = match, pre
-        self.versions, self.other, self.warnings = [], [], []
+        self.versions, self.other, self.lone = [], [], []
         self.seen = self.unmatched = 0
 
     def add(self, tag, prerelease=False, extra=None):
@@ -240,11 +248,17 @@ class Pool:
     def ranked(self):
         """The shown versions, newest first, one entry per version."""
         cands = [v for v in self.versions if self.shown(v)]
-        # A one-number tag (2, 20241105, an all-digit short sha) only counts
-        # next to N.N tags when one of them shares its number.
+        # A one-number tag (2, 20241105, an all-digit short sha) counts only
+        # beside an N.N tag with the same first number. With no N.N tag at
+        # all, it counts only when --match picked it.
         majors = {v.nums[0] for v in cands if len(v.nums) > 1}
-        if majors:
-            cands = [v for v in cands if len(v.nums) > 1 or v.nums[0] in majors]
+        keep, self.lone = [], []
+        for v in cands:
+            if len(v.nums) == 1 and not (v.nums[0] in majors if majors else self.rx is not None):
+                self.lone.append(v.tag)
+            else:
+                keep.append(v)
+        cands = keep
         width = max((len(v.nums) for v in cands), default=0)
 
         def value(v):
@@ -275,6 +289,8 @@ class Pool:
             parts.append(f"{len(pre)} pre-releases such as {pre[0]} (add --pre)")
         if var and not self.rx:
             parts.append(f"{len(var)} variants such as {var[0]} (pick them with --match)")
+        if self.lone:
+            parts.append(f"{len(self.lone)} one-number tags such as {self.lone[0]} (pick them with --match)")
         if self.other:
             parts.append(f"{len(self.other)} tags that are not versions, such as "
                          + ", ".join(self.other[:3]))
@@ -355,7 +371,7 @@ def github_versions(owner, repo, opts, pool, bare):
     api, slug = GitHub(), f"{owner}/{repo}"
     base = f"{api.base}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}"
     if not opts.tags:
-        url, pages, published = f"{base}/releases?per_page=100", 0, 0
+        url, pages, published, quiet = f"{base}/releases?per_page=100", 0, 0, 0
         while url:
             resp = api.get(url)
             if resp.status != 200:
@@ -373,14 +389,18 @@ def github_versions(owner, repo, opts, pool, bare):
                 if pool.add(r.get("tag_name") or "", bool(r.get("prerelease")), extra):
                     page.add(r.get("tag_name"))
             pages, url = pages + 1, next_link(resp)
-            # Releases come newest first. Stop once a page adds nothing to the
-            # top N: older pages hold older releases.
-            top = pool.ranked()[:opts.n]
-            if url and len(top) >= opts.n and not any(v.tag in page for v in top):
+            # Releases come newest first, so stop after two pages in a row
+            # whose versions all rank below the top N. A page with no ranked
+            # version (common with --match) proves nothing.
+            ranked = pool.ranked()
+            if any(v.tag in page for v in ranked[:opts.n]):
+                quiet = 0
+            elif any(v.tag in page for v in ranked[opts.n:]):
+                quiet += 1
+            if url and quiet >= 2:
                 break
             if url and pages >= MAX_PAGES:
-                pool.warnings.append(f"read only the newest {pages} pages of releases")
-                break
+                raise Fail(f"{slug}: stopped after {pages} pages of releases; the newest is unknown")
         if published:
             return "github-releases"
     url, pages = f"{base}/tags?per_page=100", 0
@@ -395,23 +415,30 @@ def github_versions(owner, repo, opts, pool, bare):
             pool.add(t.get("name") or "")
         pages, url = pages + 1, next_link(resp)
         if url and pages >= MAX_PAGES:
-            pool.warnings.append(f"read only the first {pages} pages of tags; the newest may be missing")
-            break
+            raise Fail(f"{slug}: stopped after {pages} pages of tags; the newest is unknown")
     return "github-tags"
 
 
 # ---------------------------------------------------------------- registries
 
 def bearer_challenge(values):
-    """realm, service and scope from a WWW-Authenticate Bearer challenge."""
+    """The parameters of the first Bearer challenge in WWW-Authenticate
+    values. One value can hold several challenges (Basic realm="x", Bearer
+    realm="y"), and a quoted string can hold commas."""
     for value in values:
-        m = re.match(r"\s*Bearer\s+(.*)", value, re.I | re.S)
-        if not m:
-            continue
-        params = {}
-        for k, quoted, plain in re.findall(r'(\w+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^\s,]*))', m.group(1)):
-            params.setdefault(k.lower(), re.sub(r"\\(.)", r"\1", quoted) if quoted else plain)
-        return params
+        scheme, params = None, {}
+        for m in re.finditer(r'([\w.~+/-]+)(?:\s*=\s*("(?:[^"\\]|\\.)*"|[^\s,]*))?', value):
+            key, val = m.group(1), m.group(2)
+            if val is None:   # a bare word starts the next challenge
+                if scheme and scheme.lower() == "bearer":
+                    return params
+                scheme, params = key, {}
+            elif scheme:
+                if val.startswith('"'):
+                    val = re.sub(r"\\(.)", r"\1", val[1:-1])
+                params.setdefault(key.lower(), val)
+        if scheme and scheme.lower() == "bearer":
+            return params
     return None
 
 
@@ -434,15 +461,18 @@ class Registry:
     def get(self, method, url, headers):
         """One request, answering a 401 Bearer challenge with an anonymous token."""
         refreshed = set()
-        for _ in range(4):   # a token per host, and a redirect may add a host
-            h = dict(headers)
-            token = self.tokens.get(_netloc(url))
+        for _ in range(6):   # a token per host, and a redirect may add a host
+            h, here = dict(headers), _netloc(url)
+            token = self.tokens.get(here)
             if token:
                 h["Authorization"] = f"Bearer {token}"
             resp = fetch(method, url, h)
             if resp.status != 401:
                 return resp
             where = _netloc(resp.url)
+            if where != here and where in self.tokens:
+                url = resp.url   # the redirect dropped the token: send the one we have
+                continue
             if where in refreshed:
                 raise Fail(f"{self.name}: access denied with an anonymous token; "
                            "the image may be private or not exist")
@@ -478,13 +508,13 @@ class Registry:
         # GHCR sends 1000 and quay 100. A registry that refuses the size (400)
         # is asked again without it. Later pages follow the Link header.
         plain = f"{self.base}/v2/{self.path}/tags/list"
-        url, seen = plain + "?n=10000", set()
+        url, seen, known = f"{plain}?n={NO_LINK_PAGE}", set(), set()
         while url:
             if url in seen:
                 raise Fail(f"{self.name}: the registry sent the same page twice")
             seen.add(url)
             resp = self.get("GET", url, {"Accept": "application/json"})
-            if resp.status == 400 and url == plain + "?n=10000":
+            if resp.status == 400 and url == f"{plain}?n={NO_LINK_PAGE}":
                 url = plain
                 continue
             if resp.status == 404:
@@ -493,12 +523,20 @@ class Registry:
                 detail = registry_error(resp) or f"HTTP {resp.status}"
                 raise Fail(f"{self.name}: the registry refused the tag list ({detail})")
             data = load_json(resp, self.name)
-            for tag in (data.get("tags") if isinstance(data, dict) else None) or []:
-                pool.add(str(tag))
+            tags = [str(t) for t in (data.get("tags") if isinstance(data, dict) else None) or []]
+            new = [t for t in tags if t not in known]
+            known.update(new)
+            for tag in new:
+                pool.add(tag)
+            asked = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get("n", [""])[0]
             url = next_link(resp)
+            if url is None and new and asked.isdigit() and len(tags) >= int(asked):
+                # The spec lets a full page come without a Link header: ask
+                # for the tags after the last one. A registry that ignores
+                # last sends no new tags, which ends the list.
+                url = f"{plain}?" + urllib.parse.urlencode({"n": asked, "last": tags[-1]})
             if url and len(seen) >= MAX_PAGES:
-                pool.warnings.append(f"read only the first {len(seen)} pages of tags; the newest may be missing")
-                break
+                raise Fail(f"{self.name}: stopped after {len(seen)} pages of tags; the newest is unknown")
 
     def digest(self, tag):
         """(digest, media type) of IMAGE:TAG, or None when the tag does not exist."""
@@ -642,8 +680,6 @@ def run(opts):
         Registry(a, b, name).tags(pool)
         source = "registry"
     top = pool.ranked()[:opts.n]
-    for w in pool.warnings:
-        print(f"latest-version: warning: {name}: {w}", file=sys.stderr)
     if opts.json:
         versions = []
         for v in top:
@@ -651,8 +687,8 @@ def run(opts):
             entry.update({k: x for k, x in (v.extra or {}).items() if x is not None})
             versions.append(entry)
         print(json.dumps({"target": name, "source": source, "versions": versions,
-                          "other_tags": pool.other[:20], "other_count": len(pool.other),
-                          "warnings": pool.warnings}, indent=2))
+                          "other_tags": pool.other[:20], "other_count": len(pool.other)},
+                         indent=2))
     else:
         for v in top:
             print(v.tag)
