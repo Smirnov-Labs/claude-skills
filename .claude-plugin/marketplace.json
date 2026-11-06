@@ -25,7 +25,8 @@
       "strict": false,
       "skills": [
         "./skills/codex-plan-review",
-        "./skills/detect-overengineering"
+        "./skills/detect-overengineering",
+        "./skills/codex-review"
       ]
     },
     {
