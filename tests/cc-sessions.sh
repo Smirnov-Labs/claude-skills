@@ -110,6 +110,18 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "i6", "name": "Bash", "input": {"command": "curl -b session=abcpw788;ninja -v"}},
         {"type": "tool_use", "id": "i7", "name": "Bash", "input": {"command": "curl -XPUT https://keepput.example"}},
         {"type": "tool_use", "id": "i8", "name": "Bash", "input": {"command": "http -a alice:hpw789 GET https://example.test"}},
+        {"type": "tool_use", "id": "j1", "name": "Bash", "input": {"command": "echo run curl -u alice:prosepw801 https://example.test"}},
+        {"type": "tool_use", "id": "j2", "name": "Bash", "input": {"command": "bash -c 'curl -u alice:nestpw802 https://example.test'"}},
+        {"type": "tool_use", "id": "j3", "name": "Bash", "input": {"command": "ssh host 'curl -u alice:sshpw803 https://example.test'"}},
+        {"type": "tool_use", "id": "j4", "name": "Bash", "input": {"command": "# curl -u alice:cmtpw804 https://example.test\ngit status"}},
+        {"type": "tool_use", "id": "j5", "name": "Bash", "input": {"command": "curl 2>&1 -u alice:redirpw805 https://example.test"}},
+        {"type": "tool_use", "id": "j6", "name": "Bash", "input": {"command": "sudo -S cat<<<herepw806"}},
+        {"type": "tool_use", "id": "j7", "name": "Bash", "input": {"command": "PASSWORD='ab'\\''cdpw807' ./deploy; PASSWORD=orchid\\ spacepw808 ./deploy"}},
+        {"type": "tool_use", "id": "j8", "name": "Bash", "input": {"command": "curl --header='Authorization: ApiKey apikeypw809' https://example.test"}},
+        {"type": "tool_use", "id": "j9", "name": "Bash", "input": {"command": "curl --cookie=session=ckpw810 https://keepck.example && cargo build"}},
+        {"type": "tool_use", "id": "k1", "name": "Bash", "input": {"command": "\"curl\" -u alice:quotedpw811 https://example.test"}},
+        {"type": "tool_use", "id": "k2", "name": "Bash", "input": {"command": "curl -u alice:orchid\\\nconpw812 https://example.test"}},
+        {"type": "tool_use", "id": "k3", "name": "Bash", "input": {"command": "visudo -cf /etc/sudoers.d/90-x-nopasswd\npasswd -l bob; TOKENIZERS_PARALLELISM=1 nproc; GITHUB_TOKEN=ghtokpw813 nproc"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -152,7 +164,7 @@ check "a quoted pipe invents no command" '[[ $out != *"notes.txt"* ]]'
 check "comments do not swallow the lines after them" '[[ $out == *"pytest 1"* ]] && [[ $out == *"make 1"* ]]'
 check "an assignment with a quoted space still finds the command" '[[ $out == *"rustc 1"* ]]'
 check "quotes inside an option value invent no command" '[[ $out != *zzfake* ]] && [[ $out != *yyfake* ]]'
-check "a Cookie header does not hide the commands after it" '[[ $out == *"cargo 1"* ]]'
+check "a Cookie header does not hide the commands after it" '[[ $out == *"cargo 2"* ]]'
 check "a sudo -S password does not hide the commands before it" '[[ $out == *"jq 1"* ]]'
 check "a line continuation keeps the command countable" '[[ $out == *"apt-get 1"* ]]'
 check "wrapper long options and clusters: psql and git, not postgres or TERM" '[[ $out == *"psql "* ]] && [[ $out == *"git "* ]] && [[ $out != *postgres* ]] && [[ $out != *TERM* ]]'
@@ -173,7 +185,7 @@ check "stats parses sudo -u and if/then: psql and git, not postgres" '[[ $out ==
 check "a mask-file value is masked in every stats line" '[[ $out != *PrivateClient* ]]'
 check "stats lists repeated short prompts with session counts" '[[ $out == *"2   2  keep going"* ]]'
 run stats --json --top 50
-check "a masked curl value leaves the next command countable" 'echo "$out" | python3 -c "import json,sys; d=dict(json.load(sys.stdin)[\"commands_sessions\"]); sys.exit(0 if d.get(\"rustup\") and d.get(\"ninja\") else 1)"'
+check "a masked curl value leaves the next command countable" 'echo "$out" | python3 -c "import json,sys; d=dict(json.load(sys.stdin)[\"commands_sessions\"]); sys.exit(0 if d.get(\"rustup\") and d.get(\"ninja\") and d.get(\"cat\") else 1)"'
 check "stats --json is valid JSON, even with repeated Cookie prompts" 'echo "$out" | python3 -c "import json,sys; json.load(sys.stdin)"'
 check "stats --json never shows the cookie values" '[[ $out != *"refresh=def"* ]]'
 run stats --no-subagents
@@ -200,6 +212,14 @@ check "an apostrophe in an earlier double-quoted header does not shift the cooki
 check "a masked value ends at a shell operator" '! grep -q -E "abcpw787|abcpw788" "$T/ev.jsonl" && grep -q -F "&&rustup show" "$T/ev.jsonl" && grep -q -F ";ninja -v" "$T/ev.jsonl"'
 check "-XPUT is a method, not a credential option" 'grep -q keepput.example "$T/ev.jsonl"'
 check "httpie -a credentials are masked" '! grep -q hpw789 "$T/ev.jsonl"'
+check "a command inside prose, a nested shell or a comment is masked" '! grep -q -E "prosepw801|nestpw802|sshpw803|cmtpw804" "$T/ev.jsonl"'
+check "a redirection does not hide a credential (2>&1, cat<<<pw)" '! grep -q -E "redirpw805|herepw806" "$T/ev.jsonl"'
+check "a sensitive assignment is masked whole, however it is quoted" '! grep -q -E "cdpw807|spacepw808" "$T/ev.jsonl"'
+check "--header= is masked like -H, whatever the scheme" '! grep -q apikeypw809 "$T/ev.jsonl"'
+check "--cookie= is masked and keeps the rest of the command" '! grep -q ckpw810 "$T/ev.jsonl" && grep -q -F "keepck.example && cargo build" "$T/ev.jsonl"'
+check "a quoted executable name is still read as curl" '! grep -q quotedpw811 "$T/ev.jsonl"'
+check "a continuation inside a credential joins it, as the shell does" '! grep -q conpw812 "$T/ev.jsonl"'
+check "a key word with no separator masks nothing (nopasswd, then visudo; TOKENIZERS_)" 'grep -q -F "nopasswd\\npasswd -l bob; TOKENIZERS_PARALLELISM=1 nproc" "$T/ev.jsonl" && ! grep -q ghtokpw813 "$T/ev.jsonl"'
 check "export masks sudo by path, quoted pipes, quoted passwords and quoted cookies" '! grep -q -E "pathpw11|tulipkey|horse battery|quotedck1|quotedck2" "$T/ev.jsonl"'
 check "export masks literals and cookies inside MCP inputs before JSON escaping" '! python3 -c "
 import json,sys
