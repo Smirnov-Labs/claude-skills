@@ -1,0 +1,1038 @@
+#!/usr/bin/env python3
+"""cc-sessions: find, read and count your Claude Code sessions from their local transcripts.
+
+  cc-sessions find WORDS...  [--days N] [--project TEXT] [--limit N]   which session did that, and how to resume it
+  cc-sessions show SESSION   [--prompts N]                            one session: prompts, tools, files, PRs
+  cc-sessions stats          [--days N] [--project TEXT] [--top N] [--json]
+                                                                     usage: tools, skills, commands, agents, errors
+  cc-sessions export FILE    [--days N] [--project TEXT]              one masked JSON event per line, for your own analysis
+
+common  --root DIR       transcripts (default: $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects)
+        --mask-file F    literal values to mask, one per line, # comments (also $CC_SESSIONS_MASK_FILE)
+        --no-subagents   leave out subagent transcripts (stats, export)
+SESSION is a session id or a unique prefix of one. --days N keeps transcripts whose file changed in the last N days.
+
+Every line it prints or exports goes through a masker first: API keys, tokens, auth headers, long random
+strings, passwords piped into `sudo -S`, `sshpass -p`, and the values in --mask-file. The transcripts
+themselves keep everything, so treat them as secret. Claude Code deletes a transcript after
+cleanupPeriodDays (default 30) without activity.
+"""
+import argparse
+import calendar
+import collections
+import glob
+import json
+import os
+import re
+import shlex
+import sys
+import time
+
+SKIP_TYPES = ('"type":"api-request', '"type":"attachment"', '"type":"file-history', '"type":"queue-operation"')
+
+# ---- masking -------------------------------------------------------------------------------------------
+PFX = re.compile(r"(sk-[A-Za-z0-9_\-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|xox[abprs]-[A-Za-z0-9\-]{8,}"
+                 r"|AKIA[A-Z0-9]{8,}|glpat-[A-Za-z0-9_\-]{8,}|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-.]+)")
+SENSITIVE = r"(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|passw(?:or)?d|passwd|pwd|authorization|bearer|cookie|client[_-]?secret)"
+QUOTED_KV = re.compile(r"(?i)(" + SENSITIVE + r"(?:\\?[\"'])?\s*[:=]\s*)"
+                       r"(\\\"(?:[^\"\\\n]|\\\\.)*?\\\"|\"(?:[^\"\\\n]|\\.)*\"|'[^'\n]*')")   # \"shell-escaped\", "JSON", 'x'
+KV = re.compile(r"(?i)(" + SENSITIVE + r"(?:\\?[\"'])?(?:\s*[:=]\s*|[ \t]+)(?:bearer\s+|token\s+|basic\s+)?(?:\\?[\"'])?)"
+                r"((?!<redacted>|<masked>|<long>)[^\s\"'&,;)\\]{6,})")     # never a value masked already
+# "Password: rose,pw990" in prose or YAML: a label, a colon and a space, then the whole word is the secret
+LABELLED = re.compile(r"(?i)\b(" + SENSITIVE + r")(\s*:[ \t]+)(?!<redacted>|<masked>|<long>)([^\s'\"]+)")
+# username=a&password=rose,pw1: a form or query field, to the next &, space, quote or #
+FORMKV = re.compile(r"(?i)(?<![\w.-])(" + SENSITIVE + r"=)(?!<redacted>|<masked>|<long>)([^&\s'\"#]+)")
+LONG = re.compile(r"[A-Za-z0-9+_\-]{32,}={0,2}")
+SUDO_S = r"(?<![\w.-])sudo\b[^|;&\n]*?\s(?:-[A-Za-z]*S[A-Za-z]*|--stdin)\b"   # -S, -kS, --stdin, /usr/bin/sudo
+ARGS = r"((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^|;&\n'\"\\])*?)"           # one command: quoted pipes stay inside
+WORDV = r"((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^\s'\"\\|;&()<>])+)"        # one shell word, 'a'\''b' too
+SUDO_PIPE = re.compile(r"(\b(?:printf|echo)\b)" + ARGS + r"(\|\s*(?:command\s+)?" + SUDO_S + ")")
+SUDO = re.compile(SUDO_S)
+HERE = re.compile(r"(" + SUDO_S + r"[^|;&\n]*?<<<\s*)" + WORDV)      # only in the sudo -S command itself
+SSHPASS = re.compile(r"(\bsshpass\b[^|;&\n]*?\s-p\s*)" + WORDV)
+COOKIE = re.compile(r"(?i)\b(?:(?:set-)?cookie|(?:proxy-)?authorization)\s*:\s*")   # a header's whole value
+URLCRED = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@'\"]+:)([^@\s/'\"]+)(@)")          # scheme://user:PASS@
+HTTP_SPAN = re.compile(r"(?<![\w./-])(curl|wget|https?|xh)\b((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^|;&\n'\"\\])*)")
+RAWWORD = re.compile(r"(?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^\s'\"\\])+")
+SHELL_HINT = re.compile(r"\b(?:curl|wget|xh|sshpass|sudo)\b|(?:^|[\s;&|(`'\"])https?(?=[\s'\"])|\\[\"']")
+SHELL_MAX = 20000          # shorter text always gets the shell pass; longer text only with a hint (speed)
+ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=", re.S)
+HEREDOC = re.compile(r"(?P<head><<-?[ \t]*(['\"]?)(?P<d>\w+)\2[^\n]*\n)(?P<body>.*?)(?P<tail>\n[ \t]*(?P=d)[ \t]*(?:\n|$))",
+                     re.S)
+# DB_PASSWORD=rose&petal in a .env body or an env dump: the whole rest of the line is the value
+ENVLINE = re.compile(r"(?m)^([ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*)(?!<redacted>|<masked>)(\S.*)$")
+ENVDATA = re.compile(r"(?m)^([ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=)(?!<redacted>|<masked>)(\S+)[ \t]*$")
+SECRET_NAME = re.compile(r"(?i)(?:" + SENSITIVE + r")(?:_|$)")    # GITHUB_TOKEN, PGPASSWORD; not TOKENIZERS_
+SECRET_HEADER = re.compile(r"(?i)^\s*((?:set-)?cookie|(?:proxy-)?authorization)\s*:")
+CRED_OPTS = {   # program: ((short options that take a secret, long ones), every short option that takes a value)
+    "curl": (("ubU", ("user", "proxy-user", "cookie", "oauth2-bearer", "pass", "proxy-pass")),
+             "AbcCdDeEFHKmoPQrtTuUwxXyYz"),   # pragma: allowlist secret (curl's short options)
+    "wget": (("", ("user", "password", "http-user", "http-password", "proxy-user", "proxy-password", "ftp-user",
+                   "ftp-password")), "oaOetTwQPUiB"),
+    "http": (("a", ("auth",)), "aAops"), "https": (("a", ("auth",)), "aAops"),
+    "xh": (("a", ("auth", "bearer")), "aAops"),
+    "sshpass": (("p", ()), "pfdP"),
+}
+
+
+def open_quote(prefix):
+    """The quote still open at the end of prefix by shell rules: None, ' or \". A backslash is literal inside '."""
+    q, esc = None, False
+    for c in prefix:
+        if esc:
+            esc = False
+        elif q == "'":
+            q = None if c == "'" else q
+        elif c == "\\":
+            esc = True
+        elif q == '"':
+            q = None if c == '"' else q
+        elif c in "'\"":
+            q = c
+    return q
+
+
+def close_quote(s, k, q):
+    """Index of the quote that closes q at or after k, skipping \" inside double quotes; -1 if there is none."""
+    while k < len(s):
+        if q == '"' and s[k] == "\\":
+            k += 2
+            continue
+        if s[k] == q:
+            return k
+        k += 1
+    return -1
+
+
+def mask_cookies(s):
+    """A Cookie header's value: to the closing quote when the header sits inside a quoted argument, else to the
+    end of the line."""
+    out, pos = [], 0
+    for m in COOKIE.finditer(s):
+        if (m.start() < pos or s[max(0, m.start() - 2):m.start()] == "--"
+                or re.match(r"<redacted>(?:['\"]|\n|$)|[ \t]*(?:\n|$)", s[m.end():])):
+            continue                                     # --cookie= is an option; a header masked whole stays
+        line_start = s.rfind("\n", 0, m.start()) + 1
+        quote = open_quote(s[line_start:m.start()])
+        end = close_quote(s, m.end(), quote) if quote else -1
+        if end < 0:
+            end = s.find("\n", m.end())
+            end = len(s) if end < 0 else end
+        out.append(s[pos:m.end()] + "<redacted>")
+        pos = end
+    out.append(s[pos:])
+    return "".join(out)
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+LITERALS = []
+
+
+SENSITIVE_KEY = re.compile(r"(?i)(password|passwd|secret|token|cookie|authorization|api[_-]?key)")
+
+
+def mask_obj(o, redact=False):
+    """Mask every string in a structure before it is serialized (JSON escaping would hide literals). Everything
+    under a sensitive key (Cookie, password, token...) is redacted, lists and maps included."""
+    if isinstance(o, str):
+        return "<redacted>" if redact else mask(o)
+    if isinstance(o, (int, float)) and redact:
+        return "<redacted>"
+    if isinstance(o, dict):
+        return {mask(str(k)): mask_obj(v, redact or bool(SENSITIVE_KEY.search(str(k)))) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [mask_obj(v, redact) for v in o]
+    return o
+
+
+def out(text=""):
+    print(mask(text))
+
+
+def fail(text, code=3):
+    sys.stderr.write(mask("cc-sessions: " + text) + "\n")
+    sys.exit(code)
+
+
+def load_mask_file(path):
+    if not path:
+        return
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8", errors="replace") as fh:
+            vals = {l.rstrip("\n") for l in fh if l.strip() and not l.lstrip().startswith("#")}
+    except OSError as e:
+        sys.exit("cc-sessions: cannot read the mask file: %s" % e.strerror)
+    LITERALS.extend(sorted(vals, key=len, reverse=True))
+
+
+def mask_regex(line):
+    """The regex layer for one line: it catches commands the shell pass cannot see as commands (in prose, comments,
+    or text that does not parse), after the shell pass has done what it can."""
+    if SUDO.search(line):                              # else SUDO_PIPE would rescan from every echo
+        line = SUDO_PIPE.sub(lambda m: m.group(1) + " <redacted> " + m.group(3), line)
+    line = HERE.sub(lambda m: m.group(1) + "<redacted>", line)
+    line = SSHPASS.sub(lambda m: m.group(1) + "<redacted>", line)
+    return HTTP_SPAN.sub(lambda m: m.group(1) + mask_opts(m.group(2), m.group(1)), line)
+
+
+def mask_opts(args, prog):
+    """The credential options in ARGS, the text after an HTTP client's name, by the shell pass's rules: -u x, -ux,
+    -sSu x, --user=x. -XPUT stays, because -X takes the value."""
+    (shorts, longs), vals = CRED_OPTS[prog]
+    words, out, pos, j = list(RAWWORD.finditer(args)), [], 0, 0
+
+    def put(m, text):
+        nonlocal pos
+        out.append(args[pos:m.start()] + text)
+        pos = m.end()
+    while j < len(words):
+        w = words[j].group(0)
+        if w.startswith("--") and "=" in w and w[2:w.index("=")] in longs:
+            put(words[j], w[:w.index("=") + 1] + "<redacted>")
+        elif w.startswith("--") and w[2:] in longs:
+            if j + 1 < len(words):
+                put(words[j + 1], "<redacted>")
+            j += 1
+        elif re.match(r"-[A-Za-z0-9]", w):
+            for k, ch in enumerate(w[1:], 1):
+                if ch in vals:
+                    if ch in shorts and w[k + 1:]:
+                        put(words[j], w[:k + 1] + "<redacted>")
+                    elif ch in shorts and j + 1 < len(words):
+                        put(words[j + 1], "<redacted>")
+                    j += 0 if w[k + 1:] else 1           # the value is the next word
+                    break
+        j += 1
+    out.append(args[pos:])
+    return "".join(out)
+
+
+def mask_text(s):
+    """The header, key=value and token patterns, for one shell word. Headers go first: a label pass would mask only
+    the first word of 'Authorization: Bearer x'."""
+    s = mask_cookies(s)
+    s = (URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s) if "://" in s else s)
+    s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
+    s = LABELLED.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", s)
+    s = FORMKV.sub(lambda m: m.group(1) + "<redacted>", s)
+    s = PFX.sub("<redacted>", s)
+    return KV.sub(lambda m: m.group(1) + "<redacted>", s)
+
+
+def sudo_reads_stdin(words):
+    """True when these words run sudo -S (or --stdin): sudo then reads a password from stdin."""
+    for k, w in enumerate(words):
+        if w.rsplit("/", 1)[-1] != "sudo":
+            continue
+        j, shorts = k + 1, WRAP_ARG["sudo"][0]
+        while j < len(words) and words[j].startswith("-") and words[j] != "--":
+            o, j = words[j], j + 1
+            if o == "--stdin":
+                return True
+            if o.startswith("--"):
+                j += 0 if ("=" in o or o[2:] not in WRAP_ARG["sudo"][1]) else 1
+                continue
+            for n, ch in enumerate(o[1:], 1):
+                if ch == "S":
+                    return True
+                if ch in shorts:                         # -u root takes a value: -uroot, or the next word
+                    j += 0 if n < len(o) - 1 else 1
+                    break
+    return False
+
+
+def mask_shell(s, depth=0):
+    """Mask credentials by shell word, so quoting, escapes and operators can neither hide a secret nor let a mask
+    swallow the next command: option values of HTTP clients and sshpass, Cookie and Authorization headers, a
+    password piped or here-stringed into sudo -S, and key=value secrets that shell escaping hid. None when s does not
+    parse as shell (an open quote)."""
+    blanked = HEREDOC.sub(lambda m: m.group("head") + re.sub(r"[^\n]", " ", m.group("body")) + m.group("tail"), s)
+    assert len(blanked) == len(s)                    # edits below use offsets into s
+    toks = scan(blanked)
+    if toks is None:
+        return None
+    edits, assign_at = [], set()
+    cmds, cur = [], []
+    for tok in toks:
+        if tok[1]:
+            cmds.append((cur, tok[0]))
+            cur = []
+        else:
+            cur.append(tok)
+    cmds.append((cur, None))
+    for n, (cmd, op) in enumerate(cmds):
+        words = [tok[0] for tok in cmd]
+        i = program_at(words)
+        prog = words[i].rsplit("/", 1)[-1] if i < len(words) else ""
+        assign_at.update(cmd[k][2] for k in range(min(i, len(cmd))))
+        if prog in ("export", "declare", "local", "readonly", "typeset", "env"):
+            assign_at.update(tok[2] for tok in cmd[i + 1:])
+        after = [tok[0] for tok in cmds[n + 1][0]] if n + 1 < len(cmds) else []
+        say = next((k for k, w in enumerate(words) if w.rsplit("/", 1)[-1] in ("echo", "printf")), None)
+        if say is not None and op in ("|", "|&") and say + 1 < len(cmd) and sudo_reads_stdin(after):
+            edits.append((cmd[say + 1][2], cmd[-1][3], "<redacted>"))        # what echo prints is the password
+            continue
+        if sudo_reads_stdin(words):
+            for j, w in enumerate(words):
+                if w.endswith("<<<") and j + 1 < len(cmd):
+                    edits.append((cmd[j + 1][2], cmd[j + 1][3], "<redacted>"))
+                elif "<<<" in w and not w.endswith("<<<"):    # cat<<<pw: the here-string is part of the word
+                    edits.append((cmd[j][2], cmd[j][3], shlex.quote(w[:w.index("<<<")]) + "<<<<redacted>"))
+        creds, vals = CRED_OPTS.get(prog, (None, None))
+
+        def header(tok, value, keep=""):
+            hdr = SECRET_HEADER.match(value) if prog != "sshpass" else None
+            if hdr:                                      # -H 'Cookie: ...', or httpie's Authorization:...
+                edits.append((tok[2], tok[3], keep + shlex.quote(hdr.group(1) + ": <redacted>")))
+            return bool(hdr)
+        j = i + 1
+        while creds is not None and j < len(cmd):
+            w, tok = words[j], cmd[j]
+            if header(tok, w):
+                pass
+            elif w.startswith(("--header=", "--proxy-header=")):
+                header(tok, w.split("=", 1)[1], w.split("=", 1)[0] + "=")
+            elif w.startswith("--") and "=" in w and w[2:w.index("=")] in creds[1]:
+                edits.append((tok[2], tok[3], w[:w.index("=") + 1] + "<redacted>"))
+            elif w.startswith("--") and w[2:] in creds[1]:
+                if j + 1 < len(cmd):
+                    edits.append((cmd[j + 1][2], cmd[j + 1][3], "<redacted>"))
+                j += 1
+            elif w.startswith("-") and not w.startswith("--") and len(w) > 1:
+                for k, ch in enumerate(w[1:], 1):
+                    if ch not in vals:
+                        continue
+                    rest = w[k + 1:]                     # this option takes a value: the rest of the word, or the next
+                    if rest:
+                        if ch in creds[0]:
+                            edits.append((tok[2], tok[3], w[:k + 1] + "<redacted>"))
+                        else:
+                            header(tok, rest, w[:k + 1])
+                    elif j + 1 < len(cmd):
+                        if ch in creds[0]:
+                            edits.append((cmd[j + 1][2], cmd[j + 1][3], "<redacted>"))
+                        else:
+                            header(cmd[j + 1], words[j + 1])
+                        j += 1                           # the next word is this option's value
+                    break
+            j += 1
+    for tok in toks:
+        if tok[1]:
+            continue
+        text, a = tok[0], ASSIGN.match(tok[0])
+        if a and tok[2] in assign_at and SECRET_NAME.search(a.group(1)):   # PASSWORD=..., however it is quoted
+            edits.append((tok[2], tok[3], a.group(1) + "=<redacted>"))
+            continue
+        src, inner = s[tok[2]:tok[3]], text
+        if src != text and any(v in text for v in LITERALS):      # "private\"client" hides a literal from the scan
+            for v in LITERALS:
+                inner = inner.replace(v, "<masked>")
+        if depth < 3 and " " in text and SHELL_HINT.search(text):    # bash -c '...', ssh host '...', $(...)
+            inner = re.sub(r"\$\(([^()]*)\)", lambda m: "$(" + (mask_shell(m.group(1), depth + 1) or m.group(1)) + ")",
+                           inner) if inner.startswith("$(") or "=$(" in inner else (mask_shell(inner, depth + 1) or inner)
+        if re.match(r"^[\w.-]+=", text) and tok[2] not in assign_at:   # name=value&...: a form body or a field
+            fields = text.split("&")
+            masked = "&".join(f.split("=", 1)[0] + "=<redacted>" if "=" in f and SECRET_NAME.search(f.split("=", 1)[0])
+                              else f for f in fields)
+            if masked != text:
+                edits.append((tok[2], tok[3], masked if src == text and "<" not in src else shlex.quote(masked)))
+                continue
+        if inner == text and src == text:              # a plain word: the patterns, kept inside this word
+            plain = mask_text(src)
+            if plain != src:
+                edits.append((tok[2], tok[3], plain))
+            continue
+        if inner != text or src != text:               # nested, or a secret that shell escaping hid
+            plain = mask_text(src)
+            if inner == text and plain != src:          # the patterns see it in the source: keep the source's quoting
+                edits.append((tok[2], tok[3], plain))
+                continue
+            inner = mask_text(inner)
+            if inner != text:
+                edits.append((tok[2], tok[3], shlex.quote(inner)))
+    out, pos = [], 0
+    for start, end, text in sorted(edits, key=lambda e: (e[0], -e[1])):
+        if start < pos:
+            continue                                     # inside an edit already made
+        out.append(s[pos:start] + text)
+        pos = end
+    out.append(s[pos:])
+    return "".join(out)
+
+
+def mask(s):
+    if not s:
+        return s
+    s = s.replace("\\\n", "")                           # a line continuation joins its lines, as the shell does
+    for v in LITERALS:
+        if v in s:
+            s = s.replace(v, "<masked>")
+    s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)   # {"Cookie": "x"}: before the word pass splits it
+    s = ENVDATA.sub(lambda m: m.group(1) + "<redacted>" if SECRET_NAME.search(m.group(2)) else m.group(0), s)
+    if len(s) <= SHELL_MAX or SHELL_HINT.search(s):
+        whole = mask_shell(s)
+        s = whole if whole is not None else "\n".join(mask_shell(line) or line for line in s.split("\n"))
+    s = "\n".join(mask_regex(line) for line in s.split("\n"))
+    s = mask_cookies(s)
+    s = (URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s) if "://" in s else s)
+    s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
+    s = ENVLINE.sub(lambda m: m.group(1) + "<redacted>" if SECRET_NAME.search(m.group(2)) else m.group(0), s)
+    s = LABELLED.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", s)
+    s = FORMKV.sub(lambda m: m.group(1) + "<redacted>", s)
+    s = PFX.sub("<redacted>", s)
+    s = KV.sub(lambda m: m.group(1) + "<redacted>", s)
+
+    def long_token(m):
+        t = m.group(0)
+        if re.search(r"\d", t) and re.search(r"[A-Za-z]", t) and not UUID.fullmatch(t):
+            return "<long>"
+        return t
+    return LONG.sub(long_token, s)
+
+
+# ---- reading transcripts -------------------------------------------------------------------------------
+def root_dir(arg):
+    if arg:
+        return os.path.expanduser(arg)
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    return os.path.join(base, "projects")
+
+
+def transcript_files(root, days=None, subagents=True):
+    cutoff = time.time() - days * 86400 if days else None
+    for f in glob.glob(os.path.join(root, "*", "*.jsonl")):
+        if cutoff is None or os.path.getmtime(f) >= cutoff:
+            yield f, False
+    if subagents:
+        for f in glob.glob(os.path.join(root, "*", "*", "subagents", "*.jsonl")):
+            if cutoff is None or os.path.getmtime(f) >= cutoff:
+                yield f, True
+
+
+def records(path):
+    try:
+        fh = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    with fh:
+        for line in fh:
+            head = line[:60]
+            if any(t in head for t in SKIP_TYPES) or len(line) > 4_000_000:
+                continue
+            try:
+                yield json.loads(line)
+            except ValueError:
+                continue
+
+
+def prompt_text(o):
+    """The text of a prompt a person typed, or None for tool results, notifications and meta records."""
+    if o.get("type") != "user" or o.get("isMeta"):
+        return None
+    origin = o.get("origin")
+    if isinstance(origin, dict) and origin.get("kind") != "human":
+        return None
+    c = (o.get("message") or {}).get("content")
+    if isinstance(c, str):
+        text = c
+    elif isinstance(c, list):
+        if any(isinstance(x, dict) and x.get("type") == "tool_result" for x in c):
+            return None
+        text = "\n".join(x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text")
+    else:
+        return None
+    if not text.strip() or (origin is None and text.lstrip().startswith(("<task-notification", "<system-reminder"))):
+        return None
+    return text
+
+
+WRAP = {"command", "sudo", "doas", "timeout", "env", "time", "nohup", "exec", "builtin", "nice", "ionice", "xargs",
+        "stdbuf", "chronic", "unbuffer", "caffeinate", "systemd-run"}
+WRAP_ARG = {   # per wrapper: short options that take a value, and long ones
+    "sudo": ("ugCDhprtUT", ("user", "group", "close-from", "chdir", "host", "prompt", "role", "type", "other-user",
+                            "command-timeout")),
+    "doas": ("uC", ()), "nice": ("n", ("adjustment",)), "ionice": ("cnp", ("class", "classdata", "pid")),
+    "env": ("uCS", ("unset", "chdir", "split-string")),
+    "xargs": ("InPdLsaE", ("max-args", "max-procs", "delimiter", "arg-file", "replace", "max-lines", "max-chars")),
+    "timeout": ("sk", ("signal", "kill-after")), "stdbuf": ("ioe", ("input", "output", "error")),
+}
+CONTROL = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "time", "coproc"}
+SHELL = {"fi", "done", "esac", "}", ")", "case", "for", "in", "select", "function", "export", "local", "set", "true",
+         "false", "return", "break", "continue", "echo", "printf", "read", "wait", "exit", "trap", "shift", "source",
+         ".", "cd", "[", "[[", "]]", "eval", "declare", "unset", "let", "alias"}
+
+
+OPS = {";", "&&", "||", "|", "&", "(", ")", "|&", ";;"}
+
+
+OPS2 = ("&&", "||", ";;", "|&")
+
+
+def subst_end(cmd, i):
+    """Index of the character that closes the $( or ` at i, quotes and nesting respected; -1 if none."""
+    if cmd[i] == "`":
+        j = i + 1
+        while j < len(cmd):
+            if cmd[j] == "\\":
+                j += 2
+                continue
+            if cmd[j] == "`":
+                return j
+            j += 1
+        return -1
+    depth, q, j = 0, None, i + 1
+    while j < len(cmd):
+        c = cmd[j]
+        if q == "'":
+            q = None if c == "'" else q
+        elif c == "\\":
+            j += 1
+        elif q == '"':
+            q = None if c == '"' else q
+        elif c in "'\"":
+            q = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return -1
+
+
+def tokenize(cmd):
+    toks = scan(cmd)
+    return None if toks is None else [(text, is_op) for text, is_op, _, _ in toks]
+
+
+def scan(cmd):
+    """(text, is_operator, start, end) for each shell word, where cmd[start:end] is its source: quotes can start
+    anywhere in a word, quoted text is never an operator, an unquoted # starts a comment that ends at the newline,
+    and an unquoted newline separates commands. None when a quote is left open."""
+    toks, cur, has, q, esc, i, start = [], [], False, None, False, 0, 0
+
+    def push():
+        nonlocal cur, has
+        if has:
+            toks.append(("".join(cur), False, start, i))
+        cur, has = [], False
+    while i < len(cmd):
+        c = cmd[i]
+        if esc:
+            if c != "\n":                                 # backslash-newline is a continuation, not a character
+                cur.append(c)
+                has = True
+            esc = False
+        elif q == "'":
+            if c == "'":
+                q = None
+            else:
+                cur.append(c)
+        elif q == '"':
+            if c == '"':
+                q = None
+            elif c == "\\":
+                esc = True
+            elif c in "$`" and (c == "`" or cmd[i + 1:i + 2] == "("):
+                j = subst_end(cmd, i)
+                if j < 0:
+                    return None
+                cur.append(cmd[i:j + 1])
+                i = j
+            else:
+                cur.append(c)
+        elif c == "\\":
+            start = i if not has else start
+            esc, has = True, True
+        elif c in "'\"":
+            start = i if not has else start
+            q, has = c, True
+        elif c in "$`" and (c == "`" or cmd[i + 1:i + 2] == "("):    # $(...) and `...` stay inside the word
+            j = subst_end(cmd, i)
+            if j < 0:
+                return None
+            start = i if not has else start
+            cur.append(cmd[i:j + 1])
+            has, i = True, j
+        elif c == "#" and not has and (i == 0 or cmd[i - 1] in " \t\n;&|()"):
+            while i < len(cmd) and cmd[i] != "\n":
+                i += 1
+            continue
+        elif c in " \t\r":
+            push()
+        elif c == "\n":
+            push()
+            toks.append((";", True, i, i + 1))
+        elif c == "&" and ((i > 0 and cmd[i - 1] in "<>" and cmd[i + 1:i + 2] in tuple("0123456789-"))
+                           or (cmd[i + 1:i + 2] == ">" and cmd[i - 1:i] != "&")):
+            start = i if not has else start              # 2>&1, <&3, >&-, &>file: a redirection, not a separator
+            cur.append(c)
+            has = True
+        elif c in ";&|()":
+            push()
+            op = cmd[i:i + 2] if cmd[i:i + 2] in OPS2 else c
+            toks.append((op, True, i, i + len(op)))
+            i += len(op)
+            continue
+        else:
+            start = i if not has else start
+            cur.append(c)
+            has = True
+        i += 1
+    if q:
+        return None
+    push()
+    return toks
+
+
+def segments(cmd):
+    """Commands split at unquoted shell operators; [] when the quoting does not parse."""
+    cmd = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?.*?\n.*?\n\1\b", " ", cmd, flags=re.S)   # drop heredoc bodies
+    toks = tokenize(cmd)
+    if toks is None:
+        return []
+    out, cur = [], []
+    for text, is_op in toks:
+        if is_op:
+            if cur:
+                out.append(cur)
+            cur = []
+        else:
+            cur.append(text)
+    if cur:
+        out.append(cur)
+    return out
+
+
+def skip_options(wrapper, toks, i):
+    """Index of the first token after a wrapper's options (and timeout's DURATION)."""
+    shorts, longs = WRAP_ARG.get(wrapper, ("", ()))
+    while i < len(toks) and toks[i].startswith("-") and toks[i] != "-":
+        tok = toks[i]
+        if tok == "--":
+            i += 1
+            break
+        if tok.startswith("--"):
+            i += 1 if ("=" in tok or tok[2:] not in longs) else 2
+            continue
+        step = 1
+        for j, ch in enumerate(tok[1:], 1):
+            if ch in shorts:
+                step = 1 if j < len(tok) - 1 else 2          # -uroot carries its value; -Hu takes the next
+                break
+        i += step
+    if wrapper == "timeout" and i < len(toks) and re.fullmatch(r"\d+(\.\d+)?[smhd]?", toks[i]):
+        i += 1                                               # timeout [options] DURATION command
+    return i
+
+
+def program_at(toks):
+    """Index of the program in one command's words, past assignments, control words and wrappers such as sudo."""
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        base = tok.rsplit("/", 1)[-1]
+        if tok in CONTROL or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok):
+            i += 1
+        elif base in WRAP:
+            i = skip_options(base, toks, i + 1)
+        else:
+            break
+    return i
+
+
+def programs(cmd, depth=0):
+    found = []
+    for toks in segments(cmd):
+        for tok in toks if depth < 3 else ():
+            for body in re.findall(r"\$\(([^()]*)\)", tok):      # cd $(git rev-parse ...): git counts
+                found += programs(body, depth + 1)
+        i = program_at(toks)
+        if i < len(toks):
+            p = re.split(r"[<>]", toks[i])[0].rsplit("/", 1)[-1]
+            if p not in SHELL and re.fullmatch(r"[A-Za-z][\w.+-]*", p):
+                found.append(p)
+    return found
+
+
+class Session:
+    def __init__(self, path, sub):
+        self.path, self.sub = path, sub
+        parts = path.split(os.sep)
+        self.sid = os.path.basename(path)[:-6]
+        self.parent = parts[-3] if sub else None
+        self.project = parts[-4] if sub else parts[-2]
+        self.cwd = self.title = None
+        self.first = self.last = None
+        self.prompts = []                 # (ts, text)
+        self.tools = collections.Counter()
+        self.progs = collections.Counter()
+        self.skills = collections.Counter()
+        self.agents = []
+        self.mcp = collections.Counter()
+        self.edits = collections.Counter()
+        self.errors = collections.Counter()
+        self.prs = {}
+        self.cmds = []
+
+    def feed(self, o, keep_cmds=False):
+        t = o.get("type")
+        ts = o.get("timestamp")
+        if ts:
+            self.first = min(self.first or ts, ts)
+            self.last = max(self.last or ts, ts)
+        if self.cwd is None and o.get("cwd"):
+            self.cwd = o["cwd"]
+        if t == "ai-title":
+            self.title = o.get("aiTitle") or self.title
+        elif t == "pr-link" and o.get("prUrl"):
+            self.prs[o["prUrl"]] = (o.get("prRepository"), o.get("prNumber"))
+        elif t == "user":
+            text = prompt_text(o)
+            if text is not None:
+                self.prompts.append((ts, text))
+            c = (o.get("message") or {}).get("content")
+            if isinstance(c, list):
+                for x in c:
+                    if isinstance(x, dict) and x.get("type") == "tool_result" and x.get("is_error"):
+                        self.errors[self.pending.get(x.get("tool_use_id"), "?")] += 1
+        elif t == "assistant":
+            for x in (o.get("message") or {}).get("content") or []:
+                if not isinstance(x, dict) or x.get("type") != "tool_use":
+                    continue
+                name, inp = x.get("name") or "?", x.get("input") or {}
+                self.pending[x.get("id")] = name
+                self.tools[name] += 1
+                if name == "Bash":
+                    cmd = inp.get("command", "")
+                    for p in set(programs(mask(cmd))):             # masked first: no secret becomes a "command"
+                        self.progs[p] += 1
+                    if keep_cmds:
+                        self.cmds.append((cmd + " " + inp.get("description", "")).lower())
+                elif name == "Skill":
+                    self.skills[inp.get("skill") or "?"] += 1
+                elif name in ("Agent", "Task"):
+                    self.agents.append((inp.get("subagent_type") or "general-purpose", inp.get("description") or ""))
+                elif name in ("Edit", "Write", "NotebookEdit", "MultiEdit") and inp.get("file_path"):
+                    self.edits[inp["file_path"]] += 1
+                elif name.startswith("mcp__"):
+                    self.mcp["__".join(name.split("__")[:2])] += 1
+
+    pending = None
+
+
+def load(path, sub, keep_cmds=False):
+    s = Session(path, sub)
+    s.pending = {}
+    for o in records(path):
+        s.feed(o, keep_cmds)
+    return s
+
+
+def tilde(p):
+    home = os.path.expanduser("~")
+    return ("~" + p[len(home):]) if p and (p == home or p.startswith(home + os.sep)) else (p or "?")
+
+
+def utc_to_local(ts):
+    """ISO UTC timestamp to local 'YYYY-MM-DD HH:MM'."""
+    if not ts:
+        return "?"
+    try:
+        epoch = calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return ts[:16]
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(epoch))
+
+
+def one_line(text, n):
+    text = mask(text)                                  # mask the whole text first, then shape it
+    text = re.sub(r"<command-[a-z]+>(.*?)</command-[a-z]+>", r"\1 ", text, flags=re.S)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:n] + ("…" if len(text) > n else "")
+
+
+def resume_line(s):
+    if not s.cwd:
+        return "claude --resume %s   (run it in the session's directory)" % shlex.quote(mask(s.sid))
+    return "cd -- %s && claude --resume %s" % (shlex.quote(mask(s.cwd)), shlex.quote(mask(s.sid)))
+
+
+def selected(root, days, project, subagents=True):
+    for path, sub in transcript_files(root, days, subagents):
+        if project:
+            pd = path.split(os.sep)[-4 if sub else -2]
+            if project.lower() not in pd.lower():
+                continue
+        yield path, sub
+
+
+# ---- verbs ---------------------------------------------------------------------------------------------
+def cmd_find(a):
+    terms = [w.lower() for w in a.words if len(w) >= 2]
+    if not terms:
+        fail("find needs at least one word of two or more letters")
+    hits = []
+    for path, sub in selected(a.root, a.days, a.project, subagents=False):
+        s = load(path, sub, keep_cmds=True)
+        fields = {
+            "title": (5, [(s.title or "").lower()]),
+            "prompts": (3, [t.lower() for _, t in s.prompts]),
+            "files": (2, [p.lower() for p in s.edits]),
+            "commands": (1, s.cmds),
+        }
+        score, matched, missing = 0, {}, False
+        for term in terms:
+            found = False
+            for field, (w, texts) in fields.items():
+                n = sum(x.count(term) for x in texts)
+                if n:
+                    found = True
+                    score += w * min(n, 10)
+                    matched[field] = matched.get(field, 0) + n
+            if not found:
+                missing = True
+                break
+        if not missing and score:
+            hits.append((score, s.last or "", s, matched))
+    if not hits:
+        out("no session matches all of: %s (try fewer or other words, or --days)" % " ".join(a.words))
+        return 1
+    hits.sort(key=lambda h: (h[0], h[1]), reverse=True)
+    for score, _, s, matched in hits[:a.limit]:
+        first = one_line(s.prompts[0][1], 160) if s.prompts else "(no typed prompt)"
+        out("%s  %s  %s  %s" % (utc_to_local(s.last), s.sid[:8], tilde(s.cwd), mask(s.title or "(untitled)")))
+        out("    first prompt: " + first)
+        out("    matched: " + ", ".join("%s (%d)" % kv for kv in matched.items()))
+        out("    resume: " + resume_line(s))
+    if len(hits) > a.limit:
+        out("(%d more; --limit to see them)" % (len(hits) - a.limit))
+    return 0
+
+
+def find_session(root, ref):
+    found = [f for f in glob.glob(os.path.join(root, "*", "*.jsonl")) if os.path.basename(f).startswith(ref)]
+    if not found:
+        fail("no session id starts with %r" % ref)
+    if len(found) > 1:
+        fail("%r matches %d sessions; give more of the id" % (ref, len(found)))
+    return found[0]
+
+
+def cmd_show(a):
+    path = find_session(a.root, a.session)
+    s = load(path, False)
+    subs = glob.glob(os.path.join(os.path.dirname(path), s.sid, "subagents", "*.jsonl"))
+    out("%s  %s" % (s.sid, mask(s.title or "(untitled)")))
+    out("dir      %s   (project %s)" % (tilde(s.cwd), s.project))
+    out("when     %s to %s" % (utc_to_local(s.first), utc_to_local(s.last)))
+    out("size     %d typed prompts · %d tool calls · %d subagents · %d tool errors"
+          % (len(s.prompts), sum(s.tools.values()), len(subs), sum(s.errors.values())))
+    out("resume   " + resume_line(s))
+    if s.prompts:
+        out("\nprompts (first %d of %d)" % (min(a.prompts, len(s.prompts)), len(s.prompts)))
+        for ts, text in s.prompts[:a.prompts]:
+            out("  %s  %s" % (utc_to_local(ts)[11:], one_line(text, 300)))
+    def top(label, counter, n=12):
+        if counter:
+            out("\n%s\n  %s" % (label, ", ".join("%s %d" % (mask(str(k)), v) for k, v in counter.most_common(n))))
+    top("tools", s.tools)
+    top("commands (Bash calls that use each)", s.progs)
+    top("skills", s.skills)
+    top("MCP servers", s.mcp)
+    if s.agents:
+        kinds = collections.Counter(k for k, _ in s.agents)
+        top("subagents by type", kinds)
+    if s.edits:
+        out("\nfiles edited")
+        for p, n in s.edits.most_common(15):
+            out("  %3d  %s" % (n, tilde(p)))
+    if s.prs:
+        out("\npull requests")
+        for url in s.prs:
+            out("  " + url)
+    if s.errors:
+        top("tool errors", s.errors)
+    return 0
+
+
+def cmd_stats(a):
+    main = subs = 0
+    tools, skills, skill_s, progs_s, mcp_s, agents, errors, slash = (collections.Counter() for _ in range(8))
+    short, short_s, prompts = collections.Counter(), collections.defaultdict(set), 0
+    for path, sub in selected(a.root, a.days, a.project, subagents=a.subagents):
+        s = load(path, sub)
+        key = s.parent or s.sid
+        if sub:
+            subs += 1
+        else:
+            main += 1
+            prompts += len(s.prompts)
+            for _, text in s.prompts:
+                for m in re.findall(r"<command-name>/?([^<]+)</command-name>", text):
+                    slash[m] += 1
+                t = re.sub(r"<[^>]+>.*?</[^>]+>", "", mask(text), flags=re.S).strip().lower()   # mask first
+                t = re.sub(r"\d+", "N", re.sub(r"\s+", " ", t))
+                if 0 < len(t) <= 70:
+                    short[t] += 1
+                    short_s[t].add(key)
+        tools.update(s.tools)
+        errors.update(s.errors)
+        for k, v in s.skills.items():
+            skills[k] += v
+            skill_s[(k, key)] = 1
+        for p in s.progs:
+            progs_s[(p, key)] = 1
+        for m in s.mcp:
+            mcp_s[(m, key)] = 1
+        agents.update(k for k, _ in s.agents)
+
+    def by_sessions(pairs):
+        c = collections.Counter()
+        for (k, _), _v in pairs.items():
+            c[k] += 1
+        return c
+    data = {
+        "sessions": main, "subagent_transcripts": subs, "typed_prompts": prompts,
+        "tool_calls": sum(tools.values()),
+        "tools": tools.most_common(a.top),
+        "skills_calls": skills.most_common(a.top),
+        "skills_sessions": by_sessions(skill_s).most_common(a.top),
+        "commands_sessions": by_sessions(progs_s).most_common(a.top * 2),
+        "mcp_servers_sessions": by_sessions(mcp_s).most_common(a.top),
+        "agent_types": agents.most_common(a.top),
+        "tool_errors": errors.most_common(a.top),
+        "slash_commands": slash.most_common(a.top),
+        "repeated_short_prompts": [(t, n, len(short_s[t])) for t, n in short.most_common(a.top * 2) if n >= 2],
+    }
+    if a.json:
+        print(json.dumps(mask_obj(data), indent=1))      # masked as a structure; masking the text would break the JSON
+        return 0
+    window = ("last %d days" % a.days) if a.days else "every transcript on disk"
+    out("%d sessions, %d subagent transcripts, %d typed prompts, %d tool calls (%s%s)"
+          % (main, subs, prompts, data["tool_calls"], window, ", project ~ %s" % a.project if a.project else ""))
+    def row(label, items, fmt="%s %d"):
+        if items:
+            out("\n%s\n  %s" % (label, ", ".join(mask(fmt % tuple(i)) for i in items)))
+    row("tools (calls)", data["tools"])
+    row("skills (calls)", data["skills_calls"])
+    row("skills (sessions that used them)", data["skills_sessions"])
+    row("commands (sessions that ran them)", data["commands_sessions"])
+    row("MCP servers (sessions)", data["mcp_servers_sessions"])
+    row("subagent types (spawns)", data["agent_types"])
+    row("tool errors", data["tool_errors"])
+    row("slash commands", data["slash_commands"])
+    if data["repeated_short_prompts"]:
+        out("\nrepeated short prompts (times, sessions)")
+        for t, n, k in data["repeated_short_prompts"]:
+            out("  %3d %3d  %s" % (n, k, mask(t)))
+    return 0
+
+
+def cmd_export(a):
+    try:
+        fd = os.open(a.file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)   # refuses existing files and symlinks
+    except FileExistsError:
+        fail("%s already exists; pick a new file name (export never overwrites)" % a.file)
+    except OSError as e:
+        fail("cannot create %s: %s" % (a.file, e.strerror))
+    n = 0
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        def emit(**k):
+            nonlocal n
+            fh.write(json.dumps(mask_obj(k)) + "\n")
+            n += 1
+        for path, sub in selected(a.root, a.days, a.project, subagents=a.subagents):
+            sid = os.path.basename(path)[:-6]
+            if sub:
+                sid = path.split(os.sep)[-3] + "/" + sid
+            proj = path.split(os.sep)[-4 if sub else -2]
+            pending = {}
+            for o in records(path):
+                t, ts = o.get("type"), o.get("timestamp")
+                base = dict(s=sid, p=proj, sub=sub, ts=ts)
+                if t == "ai-title":
+                    emit(k="title", text=mask(o.get("aiTitle", ""))[:200], **base)
+                elif t == "pr-link":
+                    emit(k="pr", url=o.get("prUrl"), **base)
+                elif t == "user":
+                    text = prompt_text(o)
+                    if text is not None:
+                        emit(k="prompt", text=mask(text)[:2000], n=len(text), cwd=o.get("cwd"), **base)
+                    c = (o.get("message") or {}).get("content")
+                    if isinstance(c, list):
+                        for x in c:
+                            if isinstance(x, dict) and x.get("type") == "tool_result" and x.get("is_error"):
+                                cc = x.get("content")
+                                if isinstance(cc, list):
+                                    cc = " ".join(y.get("text", "") for y in cc if isinstance(y, dict))
+                                emit(k="err", tool=pending.get(x.get("tool_use_id")), text=mask(str(cc))[:300], **base)
+                elif t == "assistant":
+                    for x in (o.get("message") or {}).get("content") or []:
+                        if not isinstance(x, dict) or x.get("type") != "tool_use":
+                            continue
+                        name, inp = x.get("name"), x.get("input") or {}
+                        pending[x.get("id")] = name
+                        d = dict(k="tool", name=name, **base)
+                        if name == "Bash":
+                            d.update(cmd=mask(inp.get("command", ""))[:2000], desc=mask(inp.get("description", ""))[:200])
+                        elif name in ("Read", "Edit", "Write", "NotebookEdit", "MultiEdit"):
+                            d.update(path=inp.get("file_path"))
+                        elif name == "Skill":
+                            d.update(skill=inp.get("skill"))
+                        elif name in ("Agent", "Task"):
+                            d.update(atype=inp.get("subagent_type"), desc=mask(inp.get("description", ""))[:200],
+                                     prompt=mask(inp.get("prompt", ""))[:3000])
+                        elif name and name.startswith("mcp__"):
+                            d.update(input=json.dumps(mask_obj(inp))[:400])
+                        emit(**d)
+    out("wrote %d events to %s (mode 600)" % (n, a.file))
+    return 0
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        fail("%s (cc-sessions --help)" % message)
+
+
+def early_mask_file(argv):
+    for i, arg in enumerate(argv):
+        if arg == "--mask-file" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--mask-file="):
+            return arg.split("=", 1)[1]
+    return os.environ.get("CC_SESSIONS_MASK_FILE")
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    load_mask_file(early_mask_file(sys.argv[1:]))       # before any error can echo an argument
+    common = Parser(add_help=False)
+    common.add_argument("--root")
+    common.add_argument("--mask-file", default=os.environ.get("CC_SESSIONS_MASK_FILE"))
+    common.add_argument("--days", type=int)
+    common.add_argument("--project")
+    common.add_argument("--no-subagents", dest="subagents", action="store_false")
+    ap = Parser(prog="cc-sessions", add_help=False)
+    sub = ap.add_subparsers(dest="verb", parser_class=Parser)
+    f = sub.add_parser("find", parents=[common], add_help=False)
+    f.add_argument("words", nargs="+")
+    f.add_argument("--limit", type=int, default=8)
+    s = sub.add_parser("show", parents=[common], add_help=False)
+    s.add_argument("session")
+    s.add_argument("--prompts", type=int, default=10)
+    st = sub.add_parser("stats", parents=[common], add_help=False)
+    st.add_argument("--top", type=int, default=15)
+    st.add_argument("--json", action="store_true")
+    e = sub.add_parser("export", parents=[common], add_help=False)
+    e.add_argument("file")
+    a = ap.parse_args()
+    a.root = root_dir(a.root)
+    if not os.path.isdir(a.root):
+        fail("no transcripts at %s (set --root or CLAUDE_CONFIG_DIR)" % a.root)
+    return {"find": cmd_find, "show": cmd_show, "stats": cmd_stats, "export": cmd_export}[a.verb](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
