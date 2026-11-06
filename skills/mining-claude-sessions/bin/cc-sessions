@@ -45,8 +45,11 @@ HERE = re.compile(r"(<<<\s*)('[^']*'|\"[^\"]*\"|\S+)")
 SSHPASS = re.compile(r"(\bsshpass\b[^|;&\n]*?\s-p\s*)('[^']*'|\"[^\"]*\"|[^\s'\"]+)")
 COOKIE = re.compile(r"(?i)\b(?:set-)?cookie\s*[:=]\s*")
 URLCRED = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@'\"]+:)([^@\s/'\"]+)(@)")          # scheme://user:PASS@
-USEROPT = re.compile(r"(\b(?:curl|wget|http|https|xh)\b[^|;&\n]*?\s(?:-u|--user|--http-user|--http-password|--password|"
-                     r"-b|--cookie)(?:\s+|=)?)('[^']*'|\"[^\"]*\"|[^\s'\"]+)")            # -u x, -ux, --user=x, -b, --cookie
+HTTP_TOOL = re.compile(r"\b(?:curl|wget|http|https|xh)\b")
+# every credential option on a line that runs an HTTP client: -u x, -ux, -sSu x, --user x, --user=x, -b, --cookie.
+# A long option must end at = or a space, so --user-agent is not --user.
+USEROPT = re.compile(r"(?<!\S)(-[A-Za-z0-9]*[ubU]|--user|--cookie|--http-user|--http-password|--password|--proxy-user)"
+                     r"(=|\s+|(?<=[ubU])(?=[^\s-]))('[^']*'|\"[^\"]*\"|[^\s'\"]+)")
 
 
 def mask_cookies(s):
@@ -57,9 +60,16 @@ def mask_cookies(s):
         if m.start() < pos:
             continue
         line_start = s.rfind("\n", 0, m.start()) + 1
-        before = s[line_start:m.start()]
+        before = re.sub(r"\\.", "", s[line_start:m.start()])           # escaped quotes do not open or close
         quote = "'" if before.count("'") % 2 else ('"' if before.count('"') % 2 else None)
-        end = s.find(quote, m.end()) if quote else -1
+        end = -1
+        if quote:
+            k = m.end()
+            while True:
+                end = s.find(quote, k)
+                if end < 0 or quote == "'" or s[end - 1] != "\\":
+                    break
+                k = end + 1                                             # skip \" inside a double-quoted argument
         if end < 0:
             end = s.find("\n", m.end())
             end = len(s) if end < 0 else end
@@ -121,7 +131,9 @@ def mask(s):
     s = SSHPASS.sub(lambda m: m.group(1) + "<redacted>", s)
     s = mask_cookies(s)
     s = URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s)
-    s = USEROPT.sub(lambda m: m.group(1) + "<redacted>", s)
+    if HTTP_TOOL.search(s):
+        s = "\n".join(USEROPT.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", line) if HTTP_TOOL.search(line)
+                      else line for line in s.split("\n"))
     s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
     s = PFX.sub("<redacted>", s)
     s = KV.sub(lambda m: m.group(1) + "<redacted>", s)

@@ -95,6 +95,11 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "g3", "name": "Bash", "input": {"command": "curl -b 'session=bck663; refresh=bck664' https://example.test"}},
         {"type": "tool_use", "id": "g4", "name": "Bash", "input": {"command": "echo checking; jq --version; echo sudopw665 | sudo -S systemctl restart nginx"}},
         {"type": "tool_use", "id": "g5", "name": "Bash", "input": {"command": "sudo \\\n  apt-get update"}},
+        {"type": "tool_use", "id": "h1", "name": "Bash", "input": {"command": "curl -b 'session=hck771' -u alice:hupw772 https://example.test"}},
+        {"type": "tool_use", "id": "h2", "name": "Bash", "input": {"command": "curl --user-agent Mozilla/5.0 https://keepagent.example"}},
+        {"type": "tool_use", "id": "h4", "name": "Bash", "input": {"command": "curl -sSu bob:sspw775 https://example.test"}},
+        {"type": "tool_use", "id": "h5", "name": "Bash", "input": {"command": "curl -H \"Content-Type: text/plain; charset=utf-8\" -u carol:ctpw776 https://example.test"}},
+        {"type": "tool_use", "id": "h3", "name": "Bash", "input": {"command": "curl -H \"Cookie: session=\\\"esck773\\\"; refresh=esck774\" https://keepesc.example"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -173,6 +178,11 @@ check "export masks -uUSER:PASS, -u after a continuation, and curl -b cookies" '
 check "export keeps the command before a sudo -S password" 'grep -q "echo checking; jq --version; echo <redacted>" "$T/ev.jsonl"'
 check "export masks a Cookie value but keeps the rest of the command" '! grep -q -E "ck553|ck554" "$T/ev.jsonl" && grep -q "keepme.example && cargo build" "$T/ev.jsonl"'
 check "export redacts list values under a sensitive key" '! grep -q listck555 "$T/ev.jsonl"'
+check "every credential option on a curl line is masked" '! grep -q -E "hck771|hupw772" "$T/ev.jsonl"'
+check "--user-agent is not taken for --user" 'grep -q -- "--user-agent Mozilla/5.0" "$T/ev.jsonl"'
+check "a credential option at the end of a group of short flags is masked" '! grep -q sspw775 "$T/ev.jsonl"'
+check "a quoted semicolon before -u does not end the command" '! grep -q ctpw776 "$T/ev.jsonl"'
+check "escaped quotes inside a Cookie header do not end the mask early" '! grep -q -E "esck773|esck774" "$T/ev.jsonl" && grep -q -F "curl -H \\\"Cookie: <redacted>\\\" https://keepesc.example" "$T/ev.jsonl"'
 check "export masks sudo by path, quoted pipes, quoted passwords and quoted cookies" '! grep -q -E "pathpw11|tulipkey|horse battery|quotedck1|quotedck2" "$T/ev.jsonl"'
 check "export masks literals and cookies inside MCP inputs before JSON escaping" '! python3 -c "
 import json,sys
