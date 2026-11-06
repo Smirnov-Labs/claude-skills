@@ -278,7 +278,8 @@ NPM_NOTES = {'preinstall': 'npm runs it before npm install', 'install': 'npm run
              'preprepare': 'npm runs it on a plain npm install in this folder',
              'prepare': 'npm runs it on a plain npm install in this folder, and when installed from git',
              'postprepare': 'npm runs it on a plain npm install in this folder',
-             'prepublish': 'older npm versions run it on npm install'}
+             'prepublish': 'older npm versions run it on npm install',
+             'pnpm:devPreinstall': 'pnpm runs it before it installs dependencies on a local pnpm install'}
 SHELL_RC = {'.envrc', '.bashrc', '.zshrc', '.kshrc', '.cshrc', '.tcshrc', '.mkshrc'}
 LICENSE_NAME = re.compile(r'(?:licen[cs]e|copying|unlicense)(?:[-_.][\w.-]*)?$')
 
@@ -915,6 +916,11 @@ class Scan:
         elif low == '.npmrc':
             each(r'(?m)^[ \t]*(?:node-options|script-shell|onload-script)[ \t]*=', 'HIGH', 'install-hook',
                  'npm reads this .npmrc in this folder and runs the code it names')
+            each(r'(?m)^[ \t]*(?:global-?)?pnpmfile[ \t]*=', 'HIGH', 'install-hook',
+                 'pnpm runs the pnpmfile this names on pnpm install, even with --ignore-scripts')
+        elif low == 'pnpm-workspace.yaml':
+            each(r'(?m)^[ \t]*(?:global)?[pP]npmfile[ \t]*:', 'HIGH', 'install-hook',
+                 'pnpm runs the pnpmfile this names on pnpm install, even with --ignore-scripts')
         elif low in ('.yarnrc.yml', '.yarnrc'):
             each(r'(?m)^[ \t]*(?:["\']?yarnPath["\']?[ \t]*:|["\']?yarn-path["\']?[ \t])', 'MEDIUM', 'dev-env',
                  'yarn runs this committed file for every yarn command in this folder')
@@ -926,7 +932,8 @@ class Scan:
             each(r'(?m)^[ \t]*(?:build\.)?(?:rustc(?:-workspace)?-wrapper|rustc|rustdoc|linker|runner)[ \t]*=',
                  'HIGH', 'install-hook', 'cargo runs the program this setting names when it builds or runs')
         elif ext in ('.csproj', '.vbproj', '.fsproj', '.props', '.targets'):
-            each(r'<Exec\s', 'HIGH', 'install-hook', 'MSBuild runs this command when you build')
+            each(r'<Exec\s|<UsingTask\b[^>]*\bTaskFactory\s*=', 'HIGH', 'install-hook',
+                 'MSBuild runs this command or inline task code when you build')
         elif low == 'tasks.json' and at(rel, '.vscode/tasks.json'):
             each(r'"runOn"\s*:\s*"folderOpen"', 'HIGH', 'auto-run', 'VS Code runs this task when you open the folder')
         elif low in ('devcontainer.json', '.devcontainer.json'):

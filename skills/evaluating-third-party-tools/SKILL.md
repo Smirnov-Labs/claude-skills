@@ -20,7 +20,7 @@ Answer "is this useful to us?" without running anything first.
 
 | Step | Command |
 |---|---|
-| Clone, with no hooks or filters | `env -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.hooksPath=/dev/null clone --filter=blob:none <url> <dir>` |
+| Clone, with no hooks or filters | `env -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT -u GIT_TEMPLATE_DIR GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.hooksPath=/dev/null clone --template= --filter=blob:none <url> <dir>` |
 | Scan | `tp-scan <dir>`; `--all` also scans `node_modules` and `vendor` |
 | Releases | `gh release list -R <owner>/<repo> -L 10` |
 | Open issues, last push, license | `gh repo view <owner>/<repo> --json issues,pushedAt,licenseInfo,isArchived` |

