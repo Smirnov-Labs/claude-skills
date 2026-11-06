@@ -77,6 +77,7 @@ This section grows as patterns and preferences are discovered during work on thi
 - **After a change to `bin/skillsync`,** run `tests/skillsync.sh`. On macOS, also run it under `/bin/bash` (3.2).
 - **After a change to `codex-review`,** run `tests/codex-review.sh`. A fake `codex` on PATH plays each failure the real one has shown.
 - **After a change to `prland`,** run `tests/prland.sh`. Fake `gh` and `prbots` on PATH, real git repos and worktrees in a temp dir.
+- **After a change to `cc-sessions`,** run `tests/cc-sessions.sh`. It builds synthetic transcripts and never reads your real ones.
 - **After a change to `add-to-claude-link`,** run `tests/add-to-claude-link.sh`. It decodes each format in Python before it compares, so a stray `&amp;` or a `+` for a space fails it.
 - **After a change to `latest-version`,** run `tests/latest-version.sh`. A local fake server plays the GitHub API and a registry with a token challenge, and a fake `gh` lends a token (`gh auth token`).
 - **Merges:** `prland <PR> --need sar` (the pr-land skill): squash, with a subject that ends in `(#N)`, then the branch and worktree go. Machines pick up main at their next `skillsync`.
@@ -124,6 +125,7 @@ After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds an
 | `codex-plan-review` | Send the current plan to Codex through `codex-review` for an independent architectural review |
 | `detect-overengineering` | Audit a plan document for LLM-style overengineering — rubric pass + Codex adversarial pass + merged findings with proposed edits |
 | `git-recon` | 12-month git-history health check — churn, bus factor, bug hotspots, velocity, firefighting |
+| `mining-claude-sessions` | `cc-sessions`: find and resume a past session, sum one up, or count usage across sessions, with masked output |
 | `watching-pr-bot-reviews` | Wait for and read the PR bots (Codex, SAR, CI) with `prbots` instead of hand-written pollers |
 | `pr` | `/pr`: commit, push, open or update the PR, after checking what the push will carry (user-invoked only) |
 | `pr-fix` | `/pr-fix`: loop on a PR — fix CI and review feedback, push, wait with `prbots`, repeat until clean (user-invoked only) |
