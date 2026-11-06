@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""add-to-claude-link: print a claude.ai link that opens the Add custom
+connector dialog with a remote MCP server's name and URL filled in, or a
+README, HTML or React button that uses the link.
+
+The link format is from https://claude.com/docs/connectors/building/directory-vs-custom
+"""
+
+import argparse
+import html
+import ipaddress
+import json
+import re
+import sys
+from urllib.parse import quote, urlsplit
+
+USER_PAGE = "https://claude.ai/customize/connectors"
+ADMIN_PAGE = "https://claude.ai/admin-settings/connectors"
+LABEL = "Add to Claude"
+ADMIN_LABEL = "Add to Claude for your organization"
+# White text on #B05730 is 4.9:1 (WCAG AA). The badge is also 3.8:1 against
+# GitHub's dark page, where a near-black badge, which has no border, disappears.
+BADGE_COLOR = "B05730"
+TUNNELS_DOC = "https://claude.com/docs/connectors/mcp-tunnels/overview"
+LOCAL_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
+FORMATS = ("url", "markdown", "badge", "html", "react")
+
+EPILOG = """\
+formats:
+  url       the link only (the default)
+  markdown  a Markdown text link, for a README
+  badge     a Markdown shields.io badge that links to it, for a README
+  html      a <style> block and an <a> button, for a web page
+  react     a JSX component, then the CSS for your stylesheet
+
+NAME and URL are percent-encoded as JavaScript's encodeURIComponent does, so a
+space is %20, never +. The characters ! ' ( ) * are encoded too, so the link
+also works inside a Markdown link. The html format writes each & in the link
+as &amp;. The other formats use a plain &.
+
+A doubled slash in the URL path, such as https://mcp.example.com//mcp from an
+origin with a trailing slash, becomes one slash, with a warning. A slash at the
+end of the URL stays, because the URL must equal the "resource" value in the
+server's OAuth metadata exactly.
+
+Warnings go to stderr and do not change the exit status: a URL that is not
+https, and a host that Claude cannot reach over the internet (localhost, a
+private, loopback or link-local IP, a single-label name, or a name that ends
+in .localhost, .local, .internal, .lan or .home.arpa).
+
+exit status:
+  0  printed the link or snippet (warnings included)
+  3  usage error, such as a missing argument or a URL that is not http(s)
+
+examples:
+  add-to-claude-link Example https://mcp.example.com/mcp
+  add-to-claude-link Example https://mcp.example.com/mcp --format badge
+  add-to-claude-link Example https://mcp.example.com/mcp --admin --format html
+"""
+
+CSS = """\
+.add-to-claude {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 10px 20px;
+  border: 1px solid #87867F;
+  border-radius: 8px;
+  background: #1F1E1D;
+  color: #FAF9F5;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-decoration: none;
+}
+.add-to-claude:hover {
+  background: #3D3C39;
+}
+.add-to-claude:focus-visible {
+  outline: 2px solid #1F1E1D;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px #FAF9F5;
+}
+.add-to-claude-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+"""
+
+NEW_TAB = " (opens in a new tab)"
+
+
+class UsageError(Exception):
+    pass
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise UsageError(message)
+
+
+def encode(value):
+    """Percent-encode a query value as UTF-8, leaving only A-Z a-z 0-9 - _ . ~.
+
+    That is encodeURIComponent plus ! ' ( ) *. Every decoder reads the result
+    the same way, and Markdown cannot mistake a ( or ) for the end of the link.
+    """
+    return quote(value, safe="")
+
+
+def check_name(raw):
+    name = raw.strip()
+    if not name:
+        raise UsageError("NAME is empty")
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in name):
+        raise UsageError("NAME contains a control character, such as a newline")
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        raise UsageError("NAME is not valid UTF-8")
+    return name
+
+
+def is_local(host):
+    """True when Claude, which connects from Anthropic's servers, cannot reach host."""
+    host = host.rstrip(".").lower()
+    if host == "localhost" or host.endswith(LOCAL_SUFFIXES):
+        return True
+    try:
+        return not ipaddress.ip_address(host).is_global
+    except ValueError:
+        return "." not in host
+
+
+def check_url(raw):
+    """Return the URL to put in the link and the warnings about it."""
+    url = raw.strip()
+    example = "such as https://mcp.example.com/mcp"
+    if not url:
+        raise UsageError(f"URL is empty: give the MCP server URL, {example}")
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in url):
+        raise UsageError("URL contains a space or a control character: percent-encode it")
+    try:
+        url.encode("utf-8")
+        parts = urlsplit(url)
+        host = parts.hostname
+        parts.port  # raises ValueError for a port that is not a number
+    except (UnicodeEncodeError, ValueError) as err:
+        raise UsageError(f"URL is not a valid URL ({err}): {url}")
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        raise UsageError(f"URL must be an absolute https URL, {example}: {url}")
+
+    warnings = []
+    # The path starts right after "scheme://netloc" and runs to the ? or #.
+    start = len(parts.scheme) + 3 + len(parts.netloc)
+    end = start + len(parts.path)
+    path = re.sub(r"/{2,}", "/", parts.path)
+    if url[start:end] == parts.path and path != parts.path:
+        fixed = url[:start] + path + url[end:]
+        warnings.append(
+            f"warning: the URL path had a doubled slash, so the link uses {fixed} "
+            f"instead of {url}. If the server builds URLs from an origin that ends "
+            "in /, remove that slash there too."
+        )
+        url = fixed
+    if parts.scheme.lower() != "https":
+        warnings.append(
+            "warning: the URL is not https. Claude asks for the HTTPS address "
+            "of the MCP server."
+        )
+    if is_local(host):
+        warnings.append(
+            f"warning: {host} is not reachable from the internet. Claude connects "
+            "to custom connectors from Anthropic's servers, not from the user's "
+            "computer. Use a public https URL, or an MCP tunnel for a server in "
+            f"a private network: {TUNNELS_DOC}"
+        )
+    return url, warnings
+
+
+def build_link(name, url, admin):
+    page = ADMIN_PAGE if admin else USER_PAGE
+    return (
+        f"{page}?modal=add-custom-connector"
+        f"&connectorName={encode(name)}&connectorUrl={encode(url)}"
+    )
+
+
+def shields_text(text):
+    """Escape text for a shields.io static badge path: - is --, _ is __, space is _."""
+    return encode(text.replace("-", "--").replace("_", "__").replace(" ", "_"))
+
+
+def render(fmt, link, label):
+    if fmt == "url":
+        return link
+    if fmt == "markdown":
+        return f"[{label}]({link})"
+    if fmt == "badge":
+        image = (
+            f"https://img.shields.io/badge/{shields_text(label)}-{BADGE_COLOR}"
+            "?style=for-the-badge"
+        )
+        return f"[![{label}]({image})]({link})"
+    if fmt == "html":
+        return (
+            f"<style>\n{CSS}</style>\n"
+            f'<a class="add-to-claude" href="{html.escape(link)}" '
+            'target="_blank" rel="noopener noreferrer">'
+            f"{html.escape(label)}"
+            f'<span class="add-to-claude-sr">{NEW_TAB}</span></a>'
+        )
+    # react
+    return (
+        "// AddToClaudeButton.jsx. Put the CSS at the end in your stylesheet.\n"
+        f"const ADD_TO_CLAUDE_HREF =\n  {json.dumps(link)};\n"
+        "\n"
+        "export function AddToClaudeButton() {\n"
+        "  return (\n"
+        "    <a\n"
+        '      className="add-to-claude"\n'
+        "      href={ADD_TO_CLAUDE_HREF}\n"
+        '      target="_blank"\n'
+        '      rel="noopener noreferrer"\n'
+        "    >\n"
+        f"      {label}\n"
+        f'      <span className="add-to-claude-sr">{NEW_TAB}</span>\n'
+        "    </a>\n"
+        "  );\n"
+        "}\n"
+        "\n"
+        "/* add-to-claude.css */\n"
+        f"{CSS}"
+    ).rstrip("\n")
+
+
+def main(argv):
+    parser = Parser(
+        prog="add-to-claude-link",
+        description=(
+            "Print a claude.ai link that opens the Add custom connector dialog "
+            "with NAME and URL filled in, or a button that uses it."
+        ),
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
+    )
+    parser.add_argument("name", metavar="NAME", help="connector name the user sees, such as Example")
+    parser.add_argument("url", metavar="URL", help="MCP server URL, such as https://mcp.example.com/mcp")
+    parser.add_argument(
+        "--admin",
+        action="store_true",
+        help="link to Organization settings, where Team and Enterprise Owners add connectors",
+    )
+    parser.add_argument("--format", choices=FORMATS, default="url", help="what to print (default: url)")
+    try:
+        args = parser.parse_args(argv)
+        name = check_name(args.name)
+        url, warnings = check_url(args.url)
+    except UsageError as err:
+        parser.print_usage(sys.stderr)
+        print(f"add-to-claude-link: {err}", file=sys.stderr)
+        return 3
+    for warning in warnings:
+        print(warning, file=sys.stderr)
+    link = build_link(name, url, args.admin)
+    print(render(args.format, link, ADMIN_LABEL if args.admin else LABEL))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
