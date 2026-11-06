@@ -340,6 +340,8 @@ class GitHub:
         self.gh = None if base else shutil.which("gh")
 
     def get(self, url):
+        if not _secure(url):             # checked before gh too: gh attaches the token by host name alone
+            raise Fail(f"refusing {url}: it is not https")
         if self.gh:
             resp = self._gh_api(url)
             if resp is not None:

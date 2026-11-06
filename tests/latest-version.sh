@@ -47,6 +47,7 @@ RELEASES = {   # pages of releases, newest first as GitHub sends them
     "acme/drafts": [[rel("v5.0.0", draft=True)]],
     "acme/drafttag": [[rel("v1.0.0")], [rel("v2.0.0", draft=True), rel("v0.9.0")]],
     "acme/sparse": [[rel("v1.0.0")], [rel("v0.9.0")], [rel("v1.5.0")]],
+    "acme/plainlink": [[rel("v1.0.0")], [rel("v0.9.0")], [rel("v1.5.0")]],   # its next pages say plain http
     "acme/prefixed": [[rel("jq-1.7.1"), rel("jq-1.8.0"), rel("jq-1.10.0rc1", prerelease=True)]],
     "acme/alias": [[rel("2.0.0", prerelease=True), rel("v1.9.0")], [rel("v2.0.0")]],
     "acme/alias2": [[rel("v1.9.0")], [rel("2.0.0", prerelease=True), rel("v2.0.0")]],
@@ -59,6 +60,7 @@ GH_TAGS = {   # tags with no published release; release tags are added below
     "acme/drafts": ["v4.0.0"],
     "acme/drafttag": ["v2.0.0"],
     "acme/sparse": ["v2.%d.0" % i for i in range(25)],
+    "acme/plainlink": ["v2.%d.0" % i for i in range(25)],
     "acme/onenum": ["4.0"],
 }
 IDS = {s: i for i, s in enumerate(sorted(set(RELEASES) | set(GH_TAGS)), start=1)}
@@ -165,6 +167,8 @@ class H(BaseHTTPRequestHandler):
         headers = {}
         if page < len(pages):
             base = f"http://{self.headers.get('Host')}/gh/repositories/{IDS[slug]}/{kind}?per_page=100"
+            if slug == "acme/plainlink":
+                base = f"http://api.github.com/repositories/{IDS[slug]}/{kind}?per_page=100"
             headers["Link"] = f'<{base}&page={page + 1}>; rel="next", <{base}&page={len(pages)}>; rel="last"'
         self.send(200, items, headers)
 
@@ -391,6 +395,8 @@ check "a reply that is not JSON exits 2" '[ $rc -eq 2 ] && [[ $err == *"not JSON
   check "gh api: every call uses -i, the tag list and lookups too" '[ "$(grep -c "^api -i" "$T/gh.log")" -eq "$(wc -l < "$T/gh.log")" ] && grep -q "matching-refs" "$T/gh.log" && grep -q "releases/tags/v1.2.0" "$T/gh.log"'
   : > "$LOG"; : > "$T/gh.log"; run acme/sparse
   check "gh api: the fallback follows the absolute Link URL" '[ $rc -eq 0 ] && [ "$out" = v1.5.0 ] && grep -q "https://api.github.com/repositories/" "$T/gh.log"'
+  : > "$LOG"; : > "$T/gh.log"; run acme/plainlink
+  check "gh api: a next page over plain http is refused before gh sees it" '[ $rc -eq 2 ] && [[ $err == *"not https"* ]] && ! grep -q "http://api.github.com" "$T/gh.log"'
   : > "$LOG"; run acme/missing
   check "gh api: a 404 exits 2 and does not retry without a token" '[ $rc -eq 2 ] && [[ $err == *"no such repo"* ]] && [ "$(logged CONNECT)" -eq 0 ]'
   : > "$LOG"; FAKE_GH=loggedout run acme/tool
