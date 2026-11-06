@@ -43,7 +43,7 @@ needs a voice. A de-slop pass with no light mode is a footgun.
 
 For a deliverable, run the passes in this order:
 
-1. minto-pyramid, if the text argues, reports or asks for a decision (a PR description, a report, a proposal, an update): put the answer first with its restructure move. Keep every fact: move a detail lower instead of cutting it. Skip this pass for reference docs, runbooks and narrative, as that skill says.
+1. minto-pyramid's buried-lede move, if the text argues, reports or asks for a decision (a PR description, a report, a proposal, an update): put the conclusion first. Keep every fact (move a detail lower instead of cutting it), and do not invent reasons to reach three. Skip this pass for reference docs, runbooks and narrative, as that skill says.
 2. de-slopping (this skill): cut the slop and the hedges. Every fact stays.
 3. humanizer: remove the AI tells that remain.
 4. Run the linter again and fix every `hard` finding. The last two passes can bring back long sentences.
