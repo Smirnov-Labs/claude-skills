@@ -75,6 +75,7 @@ This section grows as patterns and preferences are discovered during work on thi
 - **Test a skill change like code.** First run the old instructions as written, and watch them fail. Then copy the code blocks out of the new SKILL.md and run them with only the placeholders filled in. (#9 and #15 were tested this way.)
 - **Leak-scan before every push.** Run `detect-secrets scan <files>`. Also grep the added lines for client names, internal hostnames, RFC1918 IPs, private repo names, tokens and home-directory paths.
 - **After a change to `bin/skillsync`,** run `tests/skillsync.sh`. On macOS, also run it under `/bin/bash` (3.2).
+- **After a change to `codex-review`,** run `tests/codex-review.sh`. A fake `codex` on PATH plays each failure the real one has shown.
 - **Merges:** squash, with a subject that ends in `(#N)`, then delete the branch. Machines pick up main at their next `skillsync`.
 
 ---
@@ -116,7 +117,8 @@ After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds an
 | Skill | Purpose |
 |-------|---------|
 | `presentation-blueprint` | Build pitch/technical/update decks end-to-end (analyze → strategize → outline → style → render) |
-| `codex-plan-review` | Send the current plan to Codex (high effort, read-only) for an independent architectural review |
+| `codex-review` | One read-only Codex review of a plan, spec, diff or prompt: pinned model with a fallback, a parsed verdict and exit status |
+| `codex-plan-review` | Send the current plan to Codex through `codex-review` for an independent architectural review |
 | `detect-overengineering` | Audit a plan document for LLM-style overengineering — rubric pass + Codex adversarial pass + merged findings with proposed edits |
 | `git-recon` | 12-month git-history health check — churn, bus factor, bug hotspots, velocity, firefighting |
 | `watching-pr-bot-reviews` | Wait for and read the PR bots (Codex, SAR, CI) with `prbots` instead of hand-written pollers |
