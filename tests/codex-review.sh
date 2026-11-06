@@ -128,6 +128,11 @@ rm -f "$FAKE_CHILD"   # a background job of this non-interactive shell starts wi
 for i in $(seq 1 50); do [ -s "$FAKE_CHILD" ] && break; sleep 0.1; done
 kill -INT "$wpid"; wait "$wpid"; rc=$?; out=$(cat "$T/s6.out")
 check "SIGINT to a background wrapper still cancels it" '[ $rc -eq 130 ] && ! kill -0 "$(cat "$FAKE_CHILD")" 2>/dev/null'
+rm -f "$FAKE_CHILD"
+( cd "$WD" && FAKE_MODE=hangchild exec "$TOOL" plan plan.md --out "$T/s7" --timeout 60 ) > "$T/s7.out" 2>&1 & wpid=$!
+for i in $(seq 1 50); do [ -s "$FAKE_CHILD" ] && break; sleep 0.1; done
+kill -TERM "$wpid"; sleep 0.5; kill -TERM "$wpid" 2>/dev/null; wait "$wpid"; rc=$?
+check "a second signal during cleanup does not leave Codex running" '! kill -0 "$(cat "$FAKE_CHILD")" 2>/dev/null'
 mkdir -p "$T/keep"; echo old-review > "$T/keep/review.md"; echo old-log > "$T/keep/codex.log"
 FAKE_MODE=crash run plan plan.md --dry-run --out "$T/keep"
 check "a dry run keeps an earlier review and log" 'grep -q old-review "$T/keep/review.md" && grep -q old-log "$T/keep/codex.log"'
@@ -168,6 +173,13 @@ check "plan mode runs Codex in the caller's directory" 'grep -q "pwd=$WD/sub$" "
 : > "$FAKE_LOG"; out=$(cd "$WD/sub" && FAKE_MODE=clean "$TOOL" diff --out "$T/cwd2" 2>&1); rc=$?
 check "diff mode runs Codex at the repo root" 'grep -q "pwd=$WD$" "$FAKE_LOG"'
 git -C "$WD" config --unset diff.relative
+S=$T/subrepo; git init -q -b main "$S"; echo s > "$S/s.txt"; git -C "$S" add -A; git -C "$S" commit -qm s1
+git -C "$WD" -c protocol.file.allow=always submodule --quiet add "$S" mod >/dev/null 2>&1; git -C "$WD" commit -qm "add submodule"
+echo s2 >> "$S/s.txt"; git -C "$S" commit -qam s2; git -C "$WD/mod" -c protocol.file.allow=always pull -q 2>/dev/null
+git -C "$WD" add mod; git -C "$WD" commit -qm "bump submodule"; git -C "$WD" config diff.ignoreSubmodules all
+FAKE_MODE=clean run diff HEAD~1 --out "$T/sm"
+check "diff.ignoreSubmodules cannot hide a submodule bump" '[ $rc -eq 0 ] && grep -q "+Subproject commit" "$T/sm/prompt.md"'
+git -C "$WD" config --unset diff.ignoreSubmodules
 echo "uncommitted" >> "$WD/a.txt"
 FAKE_MODE=clean run diff main --out "$T/o13"
 check "a single ref means REF..HEAD, never the working tree" '[ $rc -eq 0 ] && ! grep -q "uncommitted" "$T/o13/prompt.md"'

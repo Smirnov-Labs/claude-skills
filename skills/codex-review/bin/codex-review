@@ -116,7 +116,8 @@ def default_base():
     return None
 
 
-DIFF_FLAGS = ["--no-relative", "--no-color", "--no-ext-diff", "--no-textconv"]   # config must not narrow the patch
+DIFF_FLAGS = ["--no-relative", "--no-color", "--no-ext-diff", "--no-textconv",   # config must not narrow the patch
+              "--ignore-submodules=none", "--submodule=short"]
 
 
 def diff_material(args):
@@ -218,7 +219,9 @@ def codex(model, effort, prompt, review, log, cwd, timeout):
 
 def stop_group(p):
     """Stop the process group this run started. Children can outlive the leader, so the SIGKILL goes to the
-    group after the grace period whether or not the leader has exited."""
+    group after the grace period whether or not the leader has exited. A second signal cannot cut it short."""
+    for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, signal.SIG_IGN)
     for sig, grace in ((signal.SIGTERM, 5), (signal.SIGKILL, 5)):
         try:
             os.killpg(p.pid, sig)
