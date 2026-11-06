@@ -34,22 +34,64 @@ SKIP_TYPES = ('"type":"api-request', '"type":"attachment"', '"type":"file-histor
 PFX = re.compile(r"(sk-[A-Za-z0-9_\-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|xox[abprs]-[A-Za-z0-9\-]{8,}"
                  r"|AKIA[A-Z0-9]{8,}|glpat-[A-Za-z0-9_\-]{8,}|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-.]+)")
 SENSITIVE = r"(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|passw(?:or)?d|passwd|pwd|authorization|bearer|cookie|client[_-]?secret)"
-QUOTED_KV = re.compile(r"(?i)(" + SENSITIVE + r"[\"']?\s*[:=]\s*)(\"[^\"\n]*\"|'[^'\n]*')")
-KV = re.compile(r"(?i)(" + SENSITIVE + r"[\"']?\s*[:=]?\s*(?:bearer\s+|token\s+|basic\s+)?[\"']?)([^\s\"'&,;)]{6,})")
+QUOTED_KV = re.compile(r"(?i)(" + SENSITIVE + r"(?:\\?[\"'])?\s*[:=]\s*)(\\?\"(?:[^\"\\\n]|\\[^\"])*\\?\"|'[^'\n]*')")
+KV = re.compile(r"(?i)(" + SENSITIVE + r"(?:\\?[\"'])?\s*[:=]?\s*(?:bearer\s+|token\s+|basic\s+)?(?:\\?[\"'])?)"
+                r"([^\s\"'&,;)\\]{6,})")          # a backslash before a quote: shell-escaped JSON
 LONG = re.compile(r"[A-Za-z0-9+_\-]{32,}={0,2}")
 SUDO_S = r"(?:\S*/)?sudo\b[^|;&\n]*?\s(?:-[A-Za-z]*S[A-Za-z]*|--stdin)\b"   # -S, -kS, --stdin, /usr/bin/sudo
-ARGS = r"((?:'[^'\n]*'|\"[^\"\n]*\"|[^|;&\n'\"])*?)"                         # one command: quoted pipes stay inside
+ARGS = r"((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^|;&\n])*?)"                # one command: quoted pipes stay inside
+WORDV = r"((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^\s'\"\\|;&()<>])+)"        # one shell word, 'a'\''b' too
 SUDO_PIPE = re.compile(r"(\b(?:printf|echo)\b)" + ARGS + r"(\|\s*(?:command\s+)?" + SUDO_S + ")")
 SUDO = re.compile(SUDO_S)
-HERE = re.compile(r"(<<<\s*)('[^']*'|\"[^\"]*\"|\S+)")
-SSHPASS = re.compile(r"(\bsshpass\b[^|;&\n]*?\s-p\s*)('[^']*'|\"[^\"]*\"|[^\s'\"]+)")
+HERE = re.compile(r"(<<<\s*)" + WORDV)
+SSHPASS = re.compile(r"(\bsshpass\b[^|;&\n]*?\s-p\s*)" + WORDV)
 COOKIE = re.compile(r"(?i)\b(?:set-)?cookie\s*[:=]\s*")
 URLCRED = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@'\"]+:)([^@\s/'\"]+)(@)")          # scheme://user:PASS@
 HTTP_TOOL = re.compile(r"\b(?:curl|wget|http|https|xh)\b")
+SHELL_HINT = re.compile(r"(?:^|[\s;&|(`])(?:\S*/)?(?:curl|wget|https?|xh|sshpass|sudo)(?=\s)|\\[\"']")
+SECRET_HEADER = re.compile(r"(?i)^\s*((?:set-)?cookie|(?:proxy-)?authorization)\s*:")
+CRED_OPTS = {   # program: ((short options that take a secret, long ones), every short option that takes a value)
+    "curl": (("ubU", ("user", "proxy-user", "cookie", "oauth2-bearer", "pass", "proxy-pass")),
+             "AbcCdDeEFHKmoPQrtTuUwxXyYz"),
+    "wget": (("", ("user", "password", "http-user", "http-password", "proxy-user", "proxy-password", "ftp-user",
+                   "ftp-password")), "oaOetTwQPUiB"),
+    "http": (("a", ("auth",)), "aAops"), "https": (("a", ("auth",)), "aAops"),
+    "xh": (("a", ("auth", "bearer")), "aAops"),
+    "sshpass": (("p", ()), "pfdP"),
+}
 # every credential option on a line that runs an HTTP client: -u x, -ux, -sSu x, --user x, --user=x, -b, --cookie.
 # A long option must end at = or a space, so --user-agent is not --user.
 USEROPT = re.compile(r"(?<!\S)(-[A-Za-z0-9]*[ubU]|--user|--cookie|--http-user|--http-password|--password|--proxy-user)"
-                     r"(=|\s+|(?<=[ubU])(?=[^\s-]))('[^']*'|\"[^\"]*\"|[^\s'\"]+)")
+                     r"(=|\s+|(?<=[ubU])(?=[^\s-]))" + WORDV)
+
+
+def open_quote(prefix):
+    """The quote still open at the end of prefix by shell rules: None, ' or \". A backslash is literal inside '."""
+    q, esc = None, False
+    for c in prefix:
+        if esc:
+            esc = False
+        elif q == "'":
+            q = None if c == "'" else q
+        elif c == "\\":
+            esc = True
+        elif q == '"':
+            q = None if c == '"' else q
+        elif c in "'\"":
+            q = c
+    return q
+
+
+def close_quote(s, k, q):
+    """Index of the quote that closes q at or after k, skipping \" inside double quotes; -1 if there is none."""
+    while k < len(s):
+        if q == '"' and s[k] == "\\":
+            k += 2
+            continue
+        if s[k] == q:
+            return k
+        k += 1
+    return -1
 
 
 def mask_cookies(s):
@@ -60,16 +102,8 @@ def mask_cookies(s):
         if m.start() < pos:
             continue
         line_start = s.rfind("\n", 0, m.start()) + 1
-        before = re.sub(r"\\.", "", s[line_start:m.start()])           # escaped quotes do not open or close
-        quote = "'" if before.count("'") % 2 else ('"' if before.count('"') % 2 else None)
-        end = -1
-        if quote:
-            k = m.end()
-            while True:
-                end = s.find(quote, k)
-                if end < 0 or quote == "'" or s[end - 1] != "\\":
-                    break
-                k = end + 1                                             # skip \" inside a double-quoted argument
+        quote = open_quote(s[line_start:m.start()])
+        end = close_quote(s, m.end(), quote) if quote else -1
         if end < 0:
             end = s.find("\n", m.end())
             end = len(s) if end < 0 else end
@@ -118,6 +152,133 @@ def load_mask_file(path):
     LITERALS.extend(sorted(vals, key=len, reverse=True))
 
 
+def mask_line(line):
+    """One line that may not parse as shell (an apostrophe in prose): shell words if it parses, else the regexes."""
+    shell = mask_shell(line)
+    if shell is not None:
+        return shell
+    line = SUDO_PIPE.sub(lambda m: m.group(1) + " <redacted> " + m.group(3), line)
+    if SUDO.search(line):
+        line = HERE.sub(lambda m: m.group(1) + "<redacted>", line)
+    line = SSHPASS.sub(lambda m: m.group(1) + "<redacted>", line)
+    if HTTP_TOOL.search(line):
+        line = USEROPT.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", line)
+    return line
+
+
+def mask_text(s):
+    """The key=value and token patterns alone, for one unquoted shell word."""
+    s = URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s)
+    s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
+    s = PFX.sub("<redacted>", s)
+    return KV.sub(lambda m: m.group(1) + "<redacted>", s)
+
+
+def sudo_reads_stdin(words):
+    """True when these words run sudo -S (or --stdin): sudo then reads a password from stdin."""
+    for k, w in enumerate(words):
+        if w.rsplit("/", 1)[-1] != "sudo":
+            continue
+        j, shorts = k + 1, WRAP_ARG["sudo"][0]
+        while j < len(words) and words[j].startswith("-") and words[j] != "--":
+            o, j = words[j], j + 1
+            if o == "--stdin":
+                return True
+            if o.startswith("--"):
+                j += 0 if ("=" in o or o[2:] not in WRAP_ARG["sudo"][1]) else 1
+                continue
+            for n, ch in enumerate(o[1:], 1):
+                if ch == "S":
+                    return True
+                if ch in shorts:                         # -u root takes a value: -uroot, or the next word
+                    j += 0 if n < len(o) - 1 else 1
+                    break
+    return False
+
+
+def mask_shell(s):
+    """Mask credentials by shell word, so quoting, escapes and operators can neither hide a secret nor let a mask
+    swallow the next command: option values of HTTP clients and sshpass, Cookie and Authorization headers, a
+    password piped or here-stringed into sudo -S, and key=value secrets that shell escaping hid. None when s does not
+    parse as shell (an open quote)."""
+    toks = scan(s)
+    if toks is None:
+        return None
+    edits = []
+    cmds, cur = [], []
+    for tok in toks:
+        if tok[1]:
+            cmds.append((cur, tok[0]))
+            cur = []
+        else:
+            cur.append(tok)
+    cmds.append((cur, None))
+    for n, (cmd, op) in enumerate(cmds):
+        words = [tok[0] for tok in cmd]
+        i = program_at(words)
+        prog = words[i].rsplit("/", 1)[-1] if i < len(words) else ""
+        after = [tok[0] for tok in cmds[n + 1][0]] if n + 1 < len(cmds) else []
+        say = next((k for k, w in enumerate(words) if w.rsplit("/", 1)[-1] in ("echo", "printf")), None)
+        if say is not None and op in ("|", "|&") and say + 1 < len(cmd) and sudo_reads_stdin(after):
+            edits.append((cmd[say + 1][2], cmd[-1][3], "<redacted>"))        # what echo prints is the password
+            continue
+        if sudo_reads_stdin(words):
+            for j, w in enumerate(words):
+                if w == "<<<" and j + 1 < len(cmd):
+                    edits.append((cmd[j + 1][2], cmd[j + 1][3], "<redacted>"))
+                elif w.startswith("<<<") and len(w) > 3:
+                    edits.append((cmd[j][2], cmd[j][3], "<<<<redacted>"))
+        creds, vals = CRED_OPTS.get(prog, (None, None))
+
+        def header(tok, value, keep=""):
+            hdr = SECRET_HEADER.match(value) if prog != "sshpass" else None
+            if hdr:                                      # -H 'Cookie: ...', or httpie's Authorization:...
+                edits.append((tok[2], tok[3], keep + shlex.quote(hdr.group(1) + ": <redacted>")))
+            return bool(hdr)
+        j = i + 1
+        while creds is not None and j < len(cmd):
+            w, tok = words[j], cmd[j]
+            if header(tok, w):
+                pass
+            elif w.startswith("--") and "=" in w and w[2:w.index("=")] in creds[1]:
+                edits.append((tok[2], tok[3], w[:w.index("=") + 1] + "<redacted>"))
+            elif w.startswith("--") and w[2:] in creds[1]:
+                if j + 1 < len(cmd):
+                    edits.append((cmd[j + 1][2], cmd[j + 1][3], "<redacted>"))
+                j += 1
+            elif w.startswith("-") and not w.startswith("--") and len(w) > 1:
+                for k, ch in enumerate(w[1:], 1):
+                    if ch not in vals:
+                        continue
+                    rest = w[k + 1:]                     # this option takes a value: the rest of the word, or the next
+                    if rest:
+                        if ch in creds[0]:
+                            edits.append((tok[2], tok[3], w[:k + 1] + "<redacted>"))
+                        else:
+                            header(tok, rest, w[:k + 1])
+                    elif j + 1 < len(cmd):
+                        if ch in creds[0]:
+                            edits.append((cmd[j + 1][2], cmd[j + 1][3], "<redacted>"))
+                        else:
+                            header(cmd[j + 1], words[j + 1])
+                        j += 1                           # the next word is this option's value
+                    break
+            j += 1
+    for tok in toks:                                     # a secret hidden by shell escaping: {\"password\":\"x\"}
+        if not tok[1] and s[tok[2]:tok[3]] != tok[0]:
+            masked = mask_text(tok[0])
+            if masked != tok[0]:
+                edits.append((tok[2], tok[3], shlex.quote(masked)))
+    out, pos = [], 0
+    for start, end, text in sorted(edits, key=lambda e: (e[0], -e[1])):
+        if start < pos:
+            continue                                     # inside an edit already made
+        out.append(s[pos:start] + text)
+        pos = end
+    out.append(s[pos:])
+    return "".join(out)
+
+
 def mask(s):
     if not s:
         return s
@@ -125,15 +286,11 @@ def mask(s):
     for v in LITERALS:
         if v in s:
             s = s.replace(v, "<masked>")
-    s = SUDO_PIPE.sub(lambda m: m.group(1) + " <redacted> " + m.group(3), s)
-    if SUDO.search(s):
-        s = HERE.sub(lambda m: m.group(1) + "<redacted>", s)
-    s = SSHPASS.sub(lambda m: m.group(1) + "<redacted>", s)
+    if SHELL_HINT.search(s):
+        whole = mask_shell(s)
+        s = whole if whole is not None else "\n".join(mask_line(line) for line in s.split("\n"))
     s = mask_cookies(s)
     s = URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s)
-    if HTTP_TOOL.search(s):
-        s = "\n".join(USEROPT.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", line) if HTTP_TOOL.search(line)
-                      else line for line in s.split("\n"))
     s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
     s = PFX.sub("<redacted>", s)
     s = KV.sub(lambda m: m.group(1) + "<redacted>", s)
@@ -225,15 +382,20 @@ OPS2 = ("&&", "||", ";;", "|&")
 
 
 def tokenize(cmd):
-    """(text, is_operator) pairs with shell quoting: quotes can start anywhere in a word, quoted text is never an
-    operator, an unquoted # starts a comment that ends at the newline, and an unquoted newline separates commands.
-    None when a quote is left open."""
-    toks, cur, has, q, esc, i = [], [], False, None, False, 0
+    toks = scan(cmd)
+    return None if toks is None else [(text, is_op) for text, is_op, _, _ in toks]
+
+
+def scan(cmd):
+    """(text, is_operator, start, end) for each shell word, where cmd[start:end] is its source: quotes can start
+    anywhere in a word, quoted text is never an operator, an unquoted # starts a comment that ends at the newline,
+    and an unquoted newline separates commands. None when a quote is left open."""
+    toks, cur, has, q, esc, i, start = [], [], False, None, False, 0, 0
 
     def push():
         nonlocal cur, has
         if has:
-            toks.append(("".join(cur), False))
+            toks.append(("".join(cur), False, start, i))
         cur, has = [], False
     while i < len(cmd):
         c = cmd[i]
@@ -255,8 +417,10 @@ def tokenize(cmd):
             else:
                 cur.append(c)
         elif c == "\\":
+            start = i if not has else start
             esc, has = True, True
         elif c in "'\"":
+            start = i if not has else start
             q, has = c, True
         elif c == "#" and not has and (i == 0 or cmd[i - 1] in " \t\n;&|()"):
             while i < len(cmd) and cmd[i] != "\n":
@@ -266,14 +430,15 @@ def tokenize(cmd):
             push()
         elif c == "\n":
             push()
-            toks.append((";", True))
+            toks.append((";", True, i, i + 1))
         elif c in ";&|()":
             push()
             op = cmd[i:i + 2] if cmd[i:i + 2] in OPS2 else c
-            toks.append((op, True))
+            toks.append((op, True, i, i + len(op)))
             i += len(op)
             continue
         else:
+            start = i if not has else start
             cur.append(c)
             has = True
         i += 1
@@ -324,19 +489,25 @@ def skip_options(wrapper, toks, i):
     return i
 
 
+def program_at(toks):
+    """Index of the program in one command's words, past assignments, control words and wrappers such as sudo."""
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        base = tok.rsplit("/", 1)[-1]
+        if tok in CONTROL or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok):
+            i += 1
+        elif base in WRAP:
+            i = skip_options(base, toks, i + 1)
+        else:
+            break
+    return i
+
+
 def programs(cmd):
     found = []
     for toks in segments(cmd):
-        i = 0
-        while i < len(toks):
-            tok = toks[i]
-            base = tok.rsplit("/", 1)[-1]
-            if tok in CONTROL or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok):
-                i += 1
-            elif base in WRAP:
-                i = skip_options(base, toks, i + 1)
-            else:
-                break
+        i = program_at(toks)
         if i < len(toks):
             p = toks[i].rsplit("/", 1)[-1]
             if p not in SHELL and re.fullmatch(r"[A-Za-z][\w.+-]*", p):

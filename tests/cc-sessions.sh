@@ -71,6 +71,8 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
      "message": {"content": "Cookie: session=abc; refresh=def"}},
     {"type": "user", "timestamp": "2026-11-04T09:00:20Z", "origin": {"kind": "human"},
      "message": {"content": "Cookie: session=abc; refresh=def"}},
+    {"type": "user", "timestamp": "2026-11-04T09:00:30Z", "origin": {"kind": "human"},
+     "message": {"content": "it's failing on {\\\"password\\\":\\\"promptpw782\\\"}"}},
     {"type": "assistant", "timestamp": "2026-11-04T09:01:00Z", "message": {"content": [
         {"type": "tool_use", "id": "d1", "name": "Bash", "input": {"command": "echo pathpw11 | /usr/bin/sudo -S true"}},
         {"type": "tool_use", "id": "d2", "name": "Bash", "input": {"command": "echo \"rose|tulipkey\" | sudo -S true"}},
@@ -100,6 +102,14 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "h4", "name": "Bash", "input": {"command": "curl -sSu bob:sspw775 https://example.test"}},
         {"type": "tool_use", "id": "h5", "name": "Bash", "input": {"command": "curl -H \"Content-Type: text/plain; charset=utf-8\" -u carol:ctpw776 https://example.test"}},
         {"type": "tool_use", "id": "h3", "name": "Bash", "input": {"command": "curl -H \"Cookie: session=\\\"esck773\\\"; refresh=esck774\" https://keepesc.example"}},
+        {"type": "tool_use", "id": "i1", "name": "Bash", "input": {"command": "curl -d \"{\\\"password\\\":\\\"orchidpw781\\\"}\" https://example.test"}},
+        {"type": "tool_use", "id": "i2", "name": "Bash", "input": {"command": "echo 'orchid'\\''petal783' | sudo -S true"}},
+        {"type": "tool_use", "id": "i3", "name": "Bash", "input": {"command": "sshpass -p 'ab'\\''cdpw784' ssh h"}},
+        {"type": "tool_use", "id": "i4", "name": "Bash", "input": {"command": "curl -H \"X-Note: don't\" -H \"Cookie: a='orchid785'; b=petal786\" https://keepnote.example"}},
+        {"type": "tool_use", "id": "i5", "name": "Bash", "input": {"command": "curl https://example.test -u alice:abcpw787&&rustup show"}},
+        {"type": "tool_use", "id": "i6", "name": "Bash", "input": {"command": "curl -b session=abcpw788;ninja -v"}},
+        {"type": "tool_use", "id": "i7", "name": "Bash", "input": {"command": "curl -XPUT https://keepput.example"}},
+        {"type": "tool_use", "id": "i8", "name": "Bash", "input": {"command": "http -a alice:hpw789 GET https://example.test"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -157,12 +167,13 @@ run show abc
 check "an unknown prefix is an error" '[ $rc -ne 0 ] && [[ $out == *"no session id starts with"* ]]'
 
 run stats --mask-file "$T/mask"
-check "stats counts sessions, subagents and prompts" '[[ $out == *"4 sessions, 1 subagent transcripts, 11 typed prompts"* ]]'
+check "stats counts sessions, subagents and prompts" '[[ $out == *"4 sessions, 1 subagent transcripts, 12 typed prompts"* ]]'
 check "stats never prints a sudo -S password from repeated prompts" '[[ $out != *orchidpetal* ]]'
 check "stats parses sudo -u and if/then: psql and git, not postgres" '[[ $out == *"psql "* ]] && [[ $out == *"git "* ]] && [[ $out != *"postgres "* ]]'
 check "a mask-file value is masked in every stats line" '[[ $out != *PrivateClient* ]]'
 check "stats lists repeated short prompts with session counts" '[[ $out == *"2   2  keep going"* ]]'
-run stats --json
+run stats --json --top 50
+check "a masked curl value leaves the next command countable" 'echo "$out" | python3 -c "import json,sys; d=dict(json.load(sys.stdin)[\"commands_sessions\"]); sys.exit(0 if d.get(\"rustup\") and d.get(\"ninja\") else 1)"'
 check "stats --json is valid JSON, even with repeated Cookie prompts" 'echo "$out" | python3 -c "import json,sys; json.load(sys.stdin)"'
 check "stats --json never shows the cookie values" '[[ $out != *"refresh=def"* ]]'
 run stats --no-subagents
@@ -182,7 +193,13 @@ check "every credential option on a curl line is masked" '! grep -q -E "hck771|h
 check "--user-agent is not taken for --user" 'grep -q -- "--user-agent Mozilla/5.0" "$T/ev.jsonl"'
 check "a credential option at the end of a group of short flags is masked" '! grep -q sspw775 "$T/ev.jsonl"'
 check "a quoted semicolon before -u does not end the command" '! grep -q ctpw776 "$T/ev.jsonl"'
-check "escaped quotes inside a Cookie header do not end the mask early" '! grep -q -E "esck773|esck774" "$T/ev.jsonl" && grep -q -F "curl -H \\\"Cookie: <redacted>\\\" https://keepesc.example" "$T/ev.jsonl"'
+check "escaped quotes inside a Cookie header do not end the mask early" '! grep -q -E "esck773|esck774" "$T/ev.jsonl" && grep -q -F "curl -H '"'"'Cookie: <redacted>'"'"' https://keepesc.example" "$T/ev.jsonl"'
+check "a password in shell-escaped JSON is masked, in a command and in a prompt" '! grep -q -E "orchidpw781|promptpw782" "$T/ev.jsonl"'
+check "a password with an apostrophe in it is masked whole" '! grep -q -E "petal783|cdpw784" "$T/ev.jsonl"'
+check "an apostrophe in an earlier double-quoted header does not shift the cookie mask" '! grep -q -E "orchid785|petal786" "$T/ev.jsonl" && grep -q keepnote.example "$T/ev.jsonl"'
+check "a masked value ends at a shell operator" '! grep -q -E "abcpw787|abcpw788" "$T/ev.jsonl" && grep -q -F "&&rustup show" "$T/ev.jsonl" && grep -q -F ";ninja -v" "$T/ev.jsonl"'
+check "-XPUT is a method, not a credential option" 'grep -q keepput.example "$T/ev.jsonl"'
+check "httpie -a credentials are masked" '! grep -q hpw789 "$T/ev.jsonl"'
 check "export masks sudo by path, quoted pipes, quoted passwords and quoted cookies" '! grep -q -E "pathpw11|tulipkey|horse battery|quotedck1|quotedck2" "$T/ev.jsonl"'
 check "export masks literals and cookies inside MCP inputs before JSON escaping" '! python3 -c "
 import json,sys
