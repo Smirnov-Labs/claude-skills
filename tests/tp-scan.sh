@@ -434,6 +434,11 @@ printf '{\n  "scripts": {"postinstall": "node actual.js"},\n  "config": {"script
 scanj "$R"
 check "a nested scripts object does not replace the real hook's evidence" 'jhas high install-hook package.json && has "node actual.js" && ! has "echo harmless"'
 
+R=$T/npm-duplicate-key; mkdir -p "$R"
+printf '{\n  "scripts": {\n    "postinstall": "echo harmless",\n    "postinstall": "node actual.js"\n  }\n}\n' > "$R/package.json"
+scanj "$R"
+check "a duplicate hook key shows the command JSON keeps" 'jhas high install-hook package.json && has "node actual.js" && ! has "echo harmless"'
+
 R=$T/npm-git-override; mkdir -p "$R/tools"
 printf 'ignore-scripts=true\ngit=./tools/git-wrapper\n' > "$R/.npmrc"
 printf '{"dependencies":{"example":"git+https://github.com/example/example.git"}}\n' > "$R/package.json"
@@ -485,6 +490,11 @@ printf 'node-options=--max-old-space-size=4096 ; memory limit\n' > "$R/c/.npmrc"
 printf 'nodeOptions:\n  --require ./tools/preload.cjs\n' > "$R/y/pnpm-workspace.yaml"
 scanj "$R"
 check "underscore heap flags, an empty or commented .npmrc value are not HIGH; an empty YAML line is" 'jnone u/.npmrc && jnone e/.npmrc && jnone c/.npmrc && jhas high install-hook y/pnpm-workspace.yaml 1'
+R=$T/node-options-quoted; mkdir -p "$R/trail" "$R/ok"
+printf 'node-options="--no-warnings" --require=./tools/preload.cjs\n' > "$R/trail/.npmrc"
+printf 'node-options="--max-old-space-size=4096" ; memory limit\n' > "$R/ok/.npmrc"
+scanj "$R"
+check "an option after a quoted harmless one is HIGH; a quoted heap flag alone is not" 'jhas high install-hook trail/.npmrc 1 && jnone ok/.npmrc'
 R=$T/pnpm-quoted-pnpmfile; mkdir -p "$R"
 printf '"pnpmfile": ./tools/hooks.cjs\n' > "$R/pnpm-workspace.yaml"
 scanj "$R"
