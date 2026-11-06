@@ -42,7 +42,7 @@ How tags sort:
 - A suffix such as `-rc.1`, `-beta` or `a1` makes a pre-release, shown only with `--pre`.
 - Any other suffix (`-alpine`, `-slim`, `-1`) makes a variant, shown only with `--match`. Release words (`.Final`, `-lts`) do not count as a suffix.
 - Tags that are not versions (`latest`, `main`, `sha-...`) are set aside.
-- A one-number tag such as `20241105` counts only beside an N.N tag with the same number. If all tags have one number, pick them with `--match`.
+- A one-number tag such as `2` or `20241105` counts only with `--match`.
 - `13.3` and `13.3.0` are one version. The longer tag prints; `--json` lists the other under `aliases`.
 
 ## Common mistakes

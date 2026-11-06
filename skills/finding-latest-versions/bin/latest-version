@@ -56,10 +56,9 @@ HOW TAGS ARE SORTED
   suffix such as -1: variants show only with --match. Tags with the same
   version (13.3 and 13.3.0) print once, as the longer tag. Tags that are not
   versions (latest, main, sha-1a2b3c4) are set aside. A one-number tag (2,
-  20241105) counts only beside an N.N tag with the same first number; when
-  there is no N.N tag at all, it counts only with --match. A suffix made
-  only of release words (1.2.3.Final, 2.0-lts, -ga, -stable, -release)
-  counts as the release itself.
+  20241105) counts only with --match. A suffix made only of release words
+  (2.0.Final, 2.0-lts, -ga, -stable, -release) counts as the release itself,
+  so 2.0, 2.0-lts and 2.0.Final are one version.
 
 PAGES
   Registry tags and GitHub tags are read in full. GitHub lists releases by
@@ -67,7 +66,7 @@ PAGES
   reads every tag name in one call. Then it looks up the release of each
   tag that could rank among the N newest. A list of more than 1000 pages
   exits 2, because the newest is then unknown. So does a registry that
-  sends the same page again when asked for the next one.
+  sends the same tags again when asked for the next page.
 
 EXIT STATUS
   0 found   1 nothing matched   2 network or API error   3 usage error
@@ -213,8 +212,10 @@ def parse_version(text, prerelease=False):
     v.variant = bool(other) or (bool(words) and all(w.isdigit() for w in words))
     if any(pre):
         v.kind, v.order = "pre", (0, tuple(_token_key(w) for w in words))
-    else:   # of two variants of one version, the plainer one ranks first: -alpine, then -builder-alpine
-        tokens = words + re.findall(r"[a-z]+|\d+", build.lower())
+    else:
+        # Release words do not count (2.0.Final is 2.0). Of two variants of
+        # one version, the plainer ranks first: -alpine, then -builder-alpine.
+        tokens = [w for w in words if w not in STABLE_WORDS] + re.findall(r"[a-z]+|\d+", build.lower())
         v.kind, v.order = "stable", (1, -len(tokens), tuple(_token_key(w) for w in tokens))
     if prerelease:
         v.kind = "pre"
@@ -262,12 +263,11 @@ class Pool:
         """The shown versions, newest first, one entry per version."""
         cands = [v for v in self.versions if self.shown(v)]
         # A one-number tag (2, 20241105, an all-digit short sha) counts only
-        # beside an N.N tag with the same first number. With no N.N tag at
-        # all, it counts only when --match picked it.
-        majors = {v.nums[0] for v in cands if len(v.nums) > 1}
+        # when --match picked it. The rule looks at no other tag, so a list
+        # read in part ranks the same as the whole list.
         keep, self.lone = [], []
         for v in cands:
-            if len(v.nums) == 1 and not (v.nums[0] in majors if majors else self.rx is not None):
+            if len(v.nums) == 1 and self.rx is None:
                 self.lone.append(v.tag)
             else:
                 keep.append(v)
@@ -395,12 +395,12 @@ def github_versions(owner, repo, opts, pool, bare):
         return data
 
     def all_tags():
-        """Every tag name (the refs API sends them in one reply), or None."""
+        """Every tag name. The refs API sends them all in one reply."""
         names, url, pages = [], f"{base}/git/matching-refs/tags", 0
         while url:
-            data, url = get(url, absent=(404, 409))   # 409: an empty repo
+            data, url = get(url, absent=(409,))   # 409: an empty repo
             if data is None:
-                return None
+                return names
             for ref in items(data):
                 name = ref.get("ref", "") if isinstance(ref, dict) else ""
                 if name.startswith("refs/tags/"):
@@ -410,42 +410,39 @@ def github_versions(owner, repo, opts, pool, bare):
                 raise Fail(f"{slug}: stopped after {pages} pages of tags; the newest is unknown")
         return names
 
-    added = set()
+    added = {}   # tag -> True when its release shows in the output
 
     def add(release):
         tag = release.get("tag_name") if isinstance(release, dict) else None
         if tag and not release.get("draft") and tag not in added:
-            added.add(tag)
-            pool.add(tag, bool(release.get("prerelease")),
-                     {"name": release.get("name"), "published_at": release.get("published_at"),
-                      "url": release.get("html_url")})
+            v = pool.add(tag, bool(release.get("prerelease")),
+                         {"name": release.get("name"), "published_at": release.get("published_at"),
+                          "url": release.get("html_url")})
+            added[tag] = v is not None and pool.shown(v)
 
     def walk():
         """GitHub lists releases by date, not by version, so a higher version
         can sit on any page. Every release has a tag: walk the tags from the
         highest version down, and look up the release of each tag that could
         still rank among the N newest. False when that cannot finish."""
-        tags = all_tags()
-        if tags is None:
-            return False
         shapes = Pool(opts.rx, opts.pre)
-        for name in tags:
+        for name in all_tags():
             shapes.add(name)
         lookups = 0
         for v in shapes.ranked():
             top = pool.ranked()[:opts.n]
             if len(top) == opts.n and sort_key(v) < sort_key(top[-1]):
-                return True
-            for tag in [v.tag] + v.aliases:
-                if tag in added:
-                    break
-                if lookups == MAX_LOOKUPS:
-                    return False
-                lookups += 1
-                release, _ = get(f"{base}/releases/tags/{urllib.parse.quote(tag, safe='')}",
-                                 absent=(404,))
-                if release:
-                    add(release)
+                return True   # a flag only lowers a tag's rank, so none below can enter
+            for tag in [v.tag] + v.aliases:   # 2.0.0 and v2.0.0: one may be a pre-release
+                if tag not in added:
+                    if lookups == MAX_LOOKUPS:
+                        return False
+                    lookups += 1
+                    release, _ = get(f"{base}/releases/tags/{urllib.parse.quote(tag, safe='')}",
+                                     absent=(404,))
+                    if release:
+                        add(release)
+                if added.get(tag):
                     break
         return True
 
@@ -467,7 +464,7 @@ def github_versions(owner, repo, opts, pool, bare):
                 raise Fail(f"{slug}: stopped after {pages} pages of releases; the newest is unknown")
         if added:
             return "github-releases"
-    for name in all_tags() or []:
+    for name in all_tags():
         pool.add(name)
     return "github-tags"
 
@@ -561,7 +558,8 @@ class Registry:
         # GHCR sends 1000 and quay 100. A registry that refuses the size (400)
         # is asked again without it. Later pages follow the Link header.
         plain = f"{self.base}/v2/{self.path}/tags/list"
-        url, seen, known, again = f"{plain}?n={NO_LINK_PAGE}", set(), set(), False
+        url, seen, known = f"{plain}?n={NO_LINK_PAGE}", set(), set()
+        again = False   # True when URL asks for the page after an earlier one
         while url:
             if url in seen:
                 raise Fail(f"{self.name}: the registry sent the same page twice")
@@ -579,15 +577,16 @@ class Registry:
             tags = [str(t) for t in (data.get("tags") if isinstance(data, dict) else None) or []]
             new = [t for t in tags if t not in known]
             if again and tags and not new:
-                raise Fail(f"{self.name}: the registry ignores last and sends the same page again, "
-                           "so the newest is unknown")
+                raise Fail(f"{self.name}: the registry sent the same tags again for the next "
+                           "page, so the newest is unknown")
             known.update(new)
             for tag in new:
                 pool.add(tag)
             final = urllib.parse.urlsplit(resp.url)   # after any redirect
             query = urllib.parse.parse_qsl(final.query)
             asked = dict(query).get("n", "")
-            url, again = next_link(resp), False
+            url = next_link(resp)
+            again = url is not None
             if url is None and tags and asked.isdigit() and len(tags) == int(asked):
                 # The spec lets a full page of n tags come without a Link
                 # header. Ask the same endpoint for the tags after the last.
