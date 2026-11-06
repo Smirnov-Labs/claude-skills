@@ -100,6 +100,10 @@ setup; touch "$W/notes.txt"; FAKE_VERDICT=CLEAN run 7
 check "an untracked file keeps the worktree and the branch" '[ $rc -eq 0 ] && [ -e "$W/notes.txt" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"untracked"* ]]'
 setup; git -C "$W" config status.showUntrackedFiles no; touch "$W/hidden.txt"; FAKE_VERDICT=CLEAN run 7
 check "status.showUntrackedFiles=no does not hide untracked work" '[ -e "$W/hidden.txt" ]'
+setup; git -C "$W" update-index --assume-unchanged a.txt; echo local-edit >> "$W/a.txt"; FAKE_VERDICT=CLEAN run 7
+check "an assume-unchanged file with local edits keeps the worktree" '[ -d "$W" ] && grep -q local-edit "$W/a.txt"'
+setup; git -C "$W" update-index --skip-worktree a.txt; echo local-edit >> "$W/a.txt"; FAKE_VERDICT=CLEAN run 7
+check "a skip-worktree file with local edits keeps the worktree" '[ -d "$W" ] && grep -q local-edit "$W/a.txt"'
 setup; echo SECRET=1 > "$W/.env"; FAKE_VERDICT=CLEAN run 7
 check "an ignored .env keeps the worktree" '[ -e "$W/.env" ] && [[ $out == *".env"* ]]'
 setup; echo SECRET=1 > "$W/.env"; FAKE_VERDICT=CLEAN run 7 --allow-ignored

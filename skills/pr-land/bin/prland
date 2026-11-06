@@ -103,6 +103,17 @@ def local_data(path):
         return "git could not inspect it"
     if tracked.stdout.strip():
         return "%d changed tracked files" % len(tracked.stdout.splitlines())
+    flags = git(path, "ls-files", "-v", "-z")
+    if flags.returncode:
+        return "git could not read its index flags"
+    hidden = []
+    for entry in flags.stdout.split("\0"):
+        tag, _, name = entry.partition(" ")
+        # assume-unchanged (a lowercase tag) and skip-worktree (S) hide edits from git status
+        if tag[:1].islower() or (tag == "S" and os.path.lexists(os.path.join(path, name))):
+            hidden.append(name)
+    if hidden:
+        return "%d tracked files are marked assume-unchanged or skip-worktree, so status cannot vouch for them" % len(hidden)
     if untracked.stdout.strip():
         return "%d untracked files" % len(untracked.stdout.splitlines())
     keep = [p for p in ignored.stdout.splitlines() if p.strip() and not DISPOSABLE.search(p.rstrip("/"))]
