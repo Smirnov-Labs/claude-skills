@@ -72,7 +72,7 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
     {"type": "user", "timestamp": "2026-11-04T09:00:20Z", "origin": {"kind": "human"},
      "message": {"content": "Cookie: session=abc; refresh=def"}},
     {"type": "user", "timestamp": "2026-11-04T09:00:30Z", "origin": {"kind": "human"},
-     "message": {"content": "it's failing on {\\\"password\\\":\\\"promptpw782\\\"}"}},
+     "message": {"content": "it's failing on {\\\"password\\\":\\\"promptpw782\\\"} and {\"password\":\"firstpart\\\"secondpw814\"} and {\"password\":\"first\\\\secondpw815\"}\nAuthorization: ApiKey hdrpw817"}},
     {"type": "assistant", "timestamp": "2026-11-04T09:01:00Z", "message": {"content": [
         {"type": "tool_use", "id": "d1", "name": "Bash", "input": {"command": "echo pathpw11 | /usr/bin/sudo -S true"}},
         {"type": "tool_use", "id": "d2", "name": "Bash", "input": {"command": "echo \"rose|tulipkey\" | sudo -S true"}},
@@ -122,6 +122,10 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "k1", "name": "Bash", "input": {"command": "\"curl\" -u alice:quotedpw811 https://example.test"}},
         {"type": "tool_use", "id": "k2", "name": "Bash", "input": {"command": "curl -u alice:orchid\\\nconpw812 https://example.test"}},
         {"type": "tool_use", "id": "k3", "name": "Bash", "input": {"command": "visudo -cf /etc/sudoers.d/90-x-nopasswd\npasswd -l bob; TOKENIZERS_PARALLELISM=1 nproc; GITHUB_TOKEN=ghtokpw813 nproc"}},
+        {"type": "tool_use", "id": "k4", "name": "Bash", "input": {"command": "printf '%s\\n' '{\"password\":\"firstpart\\\"secondpw818\"}'"}},
+        {"type": "tool_use", "id": "k7", "name": "Bash", "input": {"command": "echo {\"password\":\"firstpart\\\"secondpw819\"} done"}},
+        {"type": "tool_use", "id": "k5", "name": "Bash", "input": {"command": "PGPASSWORD=$(echo subpw816) psql -c 'select 1'"}},
+        {"type": "tool_use", "id": "k6", "name": "Bash", "input": {"command": "curl https://example.test; python -u scripts/migrate.py"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -210,7 +214,11 @@ check "a password in shell-escaped JSON is masked, in a command and in a prompt"
 check "a password with an apostrophe in it is masked whole" '! grep -q -E "petal783|cdpw784" "$T/ev.jsonl"'
 check "an apostrophe in an earlier double-quoted header does not shift the cookie mask" '! grep -q -E "orchid785|petal786" "$T/ev.jsonl" && grep -q keepnote.example "$T/ev.jsonl"'
 check "a masked value ends at a shell operator" '! grep -q -E "abcpw787|abcpw788" "$T/ev.jsonl" && grep -q -F "&&rustup show" "$T/ev.jsonl" && grep -q -F ";ninja -v" "$T/ev.jsonl"'
-check "-XPUT is a method, not a credential option" 'grep -q keepput.example "$T/ev.jsonl"'
+check "-XPUT is a method, not a credential option" 'grep -q -F "curl -XPUT https://keepput.example" "$T/ev.jsonl"'
+check "the backstop leaves another command's -u alone" 'grep -q -F "python -u scripts/migrate.py" "$T/ev.jsonl"'
+check "a password with an escaped quote or backslash in JSON is masked whole" '! grep -q -E "secondpw814|secondpw815|secondpw818|secondpw819" "$T/ev.jsonl"'
+check "an Authorization header with any scheme is masked whole" '! grep -q hdrpw817 "$T/ev.jsonl"'
+check "a sensitive assignment from \$(...) is masked whole" '! grep -q subpw816 "$T/ev.jsonl"'
 check "httpie -a credentials are masked" '! grep -q hpw789 "$T/ev.jsonl"'
 check "a command inside prose, a nested shell or a comment is masked" '! grep -q -E "prosepw801|nestpw802|sshpw803|cmtpw804" "$T/ev.jsonl"'
 check "a redirection does not hide a credential (2>&1, cat<<<pw)" '! grep -q -E "redirpw805|herepw806" "$T/ev.jsonl"'
@@ -232,6 +240,19 @@ ln -s "$T/projects/-work-demo-proj/11111111-2222-3333-4444-555555555555.jsonl" "
 run export "$T/link.jsonl"
 check "export refuses a symlink, so a transcript cannot be overwritten" '[ $rc -ne 0 ] && [ -s "$T/projects/-work-demo-proj/11111111-2222-3333-4444-555555555555.jsonl" ]'
 check "export keeps the rest of the command" 'grep -q "sudo -S systemctl restart widget" "$T/ev.jsonl"'
+
+# a quoted JSON object in an echo once sent a regex into exponential backtracking
+mkdir -p "$T/slow/-work-slow"
+python3 - "$T/slow/-work-slow/55555555-6666-7777-8888-999999999999.jsonl" <<'PY'
+import json, sys
+blob = "{" + ",".join('"k%d":"v%d"' % (n, n) for n in range(30)) + "}"
+recs = [{"type": "user", "cwd": "/work/slow", "timestamp": "2026-11-04T09:00:00Z", "origin": {"kind": "human"}, "message": {"content": "go"}},
+        {"type": "assistant", "timestamp": "2026-11-04T09:01:00Z", "message": {"content": [
+            {"type": "tool_use", "id": "s1", "name": "Bash", "input": {"command": "echo '" + blob + "' > out.json"}}]}}]
+open(sys.argv[1], "w").write("\n".join(json.dumps(r) for r in recs) + "\n")
+PY
+out=$(timeout 20 "$TOOL" stats --root "$T/slow" 2>&1); rc=$?
+check "quoted JSON in an echo is masked in bounded time" '[ $rc -eq 0 ] && [[ $out == *"1 sessions"* ]]'
 
 echo "$pass passed, $fail failed"
 rm -rf "$T"

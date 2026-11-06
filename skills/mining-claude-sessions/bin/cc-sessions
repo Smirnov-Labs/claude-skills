@@ -34,20 +34,22 @@ SKIP_TYPES = ('"type":"api-request', '"type":"attachment"', '"type":"file-histor
 PFX = re.compile(r"(sk-[A-Za-z0-9_\-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|xox[abprs]-[A-Za-z0-9\-]{8,}"
                  r"|AKIA[A-Z0-9]{8,}|glpat-[A-Za-z0-9_\-]{8,}|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-.]+)")
 SENSITIVE = r"(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|passw(?:or)?d|passwd|pwd|authorization|bearer|cookie|client[_-]?secret)"
-QUOTED_KV = re.compile(r"(?i)(" + SENSITIVE + r"(?:\\?[\"'])?\s*[:=]\s*)(\\?\"(?:[^\"\\\n]|\\[^\"])*\\?\"|'[^'\n]*')")
+QUOTED_KV = re.compile(r"(?i)(" + SENSITIVE + r"(?:\\?[\"'])?\s*[:=]\s*)"
+                       r"(\\\"(?:[^\"\\\n]|\\\\.)*?\\\"|\"(?:[^\"\\\n]|\\.)*\"|'[^'\n]*')")   # \"shell-escaped\", "JSON", 'x'
 KV = re.compile(r"(?i)(" + SENSITIVE + r"(?:\\?[\"'])?(?:\s*[:=]\s*|[ \t]+)(?:bearer\s+|token\s+|basic\s+)?(?:\\?[\"'])?)"
-                r"([^\s\"'&,;)\\]{6,})")          # a backslash before a quote: shell-escaped JSON
+                r"((?!<redacted>|<masked>|<long>)[^\s\"'&,;)\\]{6,})")     # never a value masked already
 LONG = re.compile(r"[A-Za-z0-9+_\-]{32,}={0,2}")
 SUDO_S = r"(?:\S*/)?sudo\b[^|;&\n]*?\s(?:-[A-Za-z]*S[A-Za-z]*|--stdin)\b"   # -S, -kS, --stdin, /usr/bin/sudo
-ARGS = r"((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^|;&\n])*?)"                # one command: quoted pipes stay inside
+ARGS = r"((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^|;&\n'\"\\])*?)"           # one command: quoted pipes stay inside
 WORDV = r"((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^\s'\"\\|;&()<>])+)"        # one shell word, 'a'\''b' too
 SUDO_PIPE = re.compile(r"(\b(?:printf|echo)\b)" + ARGS + r"(\|\s*(?:command\s+)?" + SUDO_S + ")")
 SUDO = re.compile(SUDO_S)
 HERE = re.compile(r"(<<<\s*)" + WORDV)
 SSHPASS = re.compile(r"(\bsshpass\b[^|;&\n]*?\s-p\s*)" + WORDV)
-COOKIE = re.compile(r"(?i)\b(?:set-)?cookie\s*[:=]\s*")
+COOKIE = re.compile(r"(?i)\b(?:(?:set-)?cookie\s*[:=]|(?:proxy-)?authorization\s*:)\s*")   # whole header value
 URLCRED = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@'\"]+:)([^@\s/'\"]+)(@)")          # scheme://user:PASS@
-HTTP_TOOL = re.compile(r"\b(?:curl|wget|http|https|xh)\b")
+HTTP_SPAN = re.compile(r"(?<![\w./-])(curl|wget|https?|xh)\b([^|;&\n]*)")   # a client and its text, to an operator
+RAWWORD = re.compile(r"(?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^\s'\"\\])+")
 SHELL_HINT = re.compile(r"\b(?:curl|wget|xh|sshpass|sudo)\b|(?:^|[\s;&|(`'\"])https?(?=[\s'\"])|\\[\"']")
 SHELL_MAX = 20000          # shorter text always gets the shell pass; longer text only with a hint (speed)
 ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=", re.S)
@@ -62,10 +64,6 @@ CRED_OPTS = {   # program: ((short options that take a secret, long ones), every
     "xh": (("a", ("auth", "bearer")), "aAops"),
     "sshpass": (("p", ()), "pfdP"),
 }
-# every credential option on a line that runs an HTTP client: -u x, -ux, -sSu x, --user x, --user=x, -b, --cookie.
-# A long option must end at = or a space, so --user-agent is not --user.
-USEROPT = re.compile(r"(?<!\S)(-[A-Za-z0-9]*[ubU]|--user|--cookie|--http-user|--http-password|--password|--proxy-user)"
-                     r"(=|\s+|(?<=[ubU])(?=[^\s-]))" + WORDV)
 
 
 def open_quote(prefix):
@@ -162,9 +160,39 @@ def mask_regex(line):
     if SUDO.search(line):
         line = HERE.sub(lambda m: m.group(1) + "<redacted>", line)
     line = SSHPASS.sub(lambda m: m.group(1) + "<redacted>", line)
-    if HTTP_TOOL.search(line):
-        line = USEROPT.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", line)
-    return line
+    return HTTP_SPAN.sub(lambda m: m.group(1) + mask_opts(m.group(2), m.group(1)), line)
+
+
+def mask_opts(args, prog):
+    """The credential options in ARGS, the text after an HTTP client's name, by the shell pass's rules: -u x, -ux,
+    -sSu x, --user=x. -XPUT stays, because -X takes the value."""
+    (shorts, longs), vals = CRED_OPTS[prog]
+    words, out, pos, j = list(RAWWORD.finditer(args)), [], 0, 0
+
+    def put(m, text):
+        nonlocal pos
+        out.append(args[pos:m.start()] + text)
+        pos = m.end()
+    while j < len(words):
+        w = words[j].group(0)
+        if w.startswith("--") and "=" in w and w[2:w.index("=")] in longs:
+            put(words[j], w[:w.index("=") + 1] + "<redacted>")
+        elif w.startswith("--") and w[2:] in longs:
+            if j + 1 < len(words):
+                put(words[j + 1], "<redacted>")
+            j += 1
+        elif re.match(r"-[A-Za-z0-9]", w):
+            for k, ch in enumerate(w[1:], 1):
+                if ch in vals:
+                    if ch in shorts and w[k + 1:]:
+                        put(words[j], w[:k + 1] + "<redacted>")
+                    elif ch in shorts and j + 1 < len(words):
+                        put(words[j + 1], "<redacted>")
+                    j += 0 if w[k + 1:] else 1           # the value is the next word
+                    break
+        j += 1
+    out.append(args[pos:])
+    return "".join(out)
 
 
 def mask_text(s):
@@ -274,10 +302,15 @@ def mask_shell(s, depth=0):
         if a and SECRET_NAME.search(a.group(1)):        # PASSWORD=..., however its value is quoted
             edits.append((tok[2], tok[3], a.group(1) + "=<redacted>"))
             continue
-        inner = text
-        if depth < 3 and " " in text and SHELL_HINT.search(text):    # bash -c '...', ssh host '...'
-            inner = mask_shell(text, depth + 1) or text
-        if inner != text or s[tok[2]:tok[3]] != text:   # nested, or a secret that shell escaping hid
+        src, inner = s[tok[2]:tok[3]], text
+        if depth < 3 and " " in text and SHELL_HINT.search(text):    # bash -c '...', ssh host '...', $(...)
+            inner = re.sub(r"\$\(([^()]*)\)", lambda m: "$(" + (mask_shell(m.group(1), depth + 1) or m.group(1)) + ")",
+                           text) if text.startswith("$(") or "=$(" in text else (mask_shell(text, depth + 1) or text)
+        if inner != text or src != text:               # nested, or a secret that shell escaping hid
+            plain = mask_text(src)
+            if inner == text and plain != src:          # the patterns see it in the source: keep the source's quoting
+                edits.append((tok[2], tok[3], plain))
+                continue
             inner = mask_text(inner)
             if inner != text:
                 edits.append((tok[2], tok[3], shlex.quote(inner)))
@@ -394,6 +427,39 @@ OPS = {";", "&&", "||", "|", "&", "(", ")", "|&", ";;"}
 OPS2 = ("&&", "||", ";;", "|&")
 
 
+def subst_end(cmd, i):
+    """Index of the character that closes the $( or ` at i, quotes and nesting respected; -1 if none."""
+    if cmd[i] == "`":
+        j = i + 1
+        while j < len(cmd):
+            if cmd[j] == "\\":
+                j += 2
+                continue
+            if cmd[j] == "`":
+                return j
+            j += 1
+        return -1
+    depth, q, j = 0, None, i + 1
+    while j < len(cmd):
+        c = cmd[j]
+        if q == "'":
+            q = None if c == "'" else q
+        elif c == "\\":
+            j += 1
+        elif q == '"':
+            q = None if c == '"' else q
+        elif c in "'\"":
+            q = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return -1
+
+
 def tokenize(cmd):
     toks = scan(cmd)
     return None if toks is None else [(text, is_op) for text, is_op, _, _ in toks]
@@ -427,6 +493,12 @@ def scan(cmd):
                 q = None
             elif c == "\\":
                 esc = True
+            elif c in "$`" and (c == "`" or cmd[i + 1:i + 2] == "("):
+                j = subst_end(cmd, i)
+                if j < 0:
+                    return None
+                cur.append(cmd[i:j + 1])
+                i = j
             else:
                 cur.append(c)
         elif c == "\\":
@@ -435,6 +507,13 @@ def scan(cmd):
         elif c in "'\"":
             start = i if not has else start
             q, has = c, True
+        elif c in "$`" and (c == "`" or cmd[i + 1:i + 2] == "("):    # $(...) and `...` stay inside the word
+            j = subst_end(cmd, i)
+            if j < 0:
+                return None
+            start = i if not has else start
+            cur.append(cmd[i:j + 1])
+            has, i = True, j
         elif c == "#" and not has and (i == 0 or cmd[i - 1] in " \t\n;&|()"):
             while i < len(cmd) and cmd[i] != "\n":
                 i += 1
@@ -522,9 +601,12 @@ def program_at(toks):
     return i
 
 
-def programs(cmd):
+def programs(cmd, depth=0):
     found = []
     for toks in segments(cmd):
+        for tok in toks if depth < 3 else ():
+            for body in re.findall(r"\$\(([^()]*)\)", tok):      # cd $(git rev-parse ...): git counts
+                found += programs(body, depth + 1)
         i = program_at(toks)
         if i < len(toks):
             p = re.split(r"[<>]", toks[i])[0].rsplit("/", 1)[-1]
