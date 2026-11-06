@@ -130,6 +130,7 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "m2", "name": "Bash", "input": {"command": "# curl -u 'bob:rose;qsepw821' https://example.test\ngit status"}},
         {"type": "tool_use", "id": "m3", "name": "Bash", "input": {"command": "sudo -S cat <<<herepw822; grep foo <<<\"keepherestring\""}},
         {"type": "tool_use", "id": "m4", "name": "Bash", "input": {"command": "echo \"private\\\"client\" done"}},
+        {"type": "tool_use", "id": "m5", "name": "Bash", "input": {"command": "echo 'Password: rose,lblpw823 and token: summer&lblpw824 and secret: a;b\\\\lblpw825' > notes.txt"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -233,6 +234,7 @@ check "a quoted executable name is still read as curl" '! grep -q quotedpw811 "$
 check "a continuation inside a credential joins it, as the shell does" '! grep -q conpw812 "$T/ev.jsonl"'
 check "a quoted separator in a commented curl line does not end its mask" '! grep -q -E "qsepw820|qsepw821" "$T/ev.jsonl"'
 check "a sudo -S here-string is masked, and only that one" '! grep -q herepw822 "$T/ev.jsonl" && grep -q keepherestring "$T/ev.jsonl"'
+check "a labelled password keeps no part of itself (commas, &, ; and backslashes)" '! grep -q -E "lblpw823|lblpw824|lblpw825|summer|rose," "$T/ev.jsonl"'
 check "a mask-file literal hidden by shell escaping is masked" '! grep -q -F "private\\\\\\\"client" "$T/ev.jsonl" && ! grep -q -F "private\\\"client" "$T/ev.jsonl"'
 check "a key word with no separator masks nothing (nopasswd, then visudo; TOKENIZERS_)" 'grep -q -F "nopasswd\\npasswd -l bob; TOKENIZERS_PARALLELISM=1 nproc" "$T/ev.jsonl" && ! grep -q ghtokpw813 "$T/ev.jsonl"'
 check "export masks sudo by path, quoted pipes, quoted passwords and quoted cookies" '! grep -q -E "pathpw11|tulipkey|horse battery|quotedck1|quotedck2" "$T/ev.jsonl"'

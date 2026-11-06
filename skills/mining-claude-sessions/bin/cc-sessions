@@ -38,6 +38,8 @@ QUOTED_KV = re.compile(r"(?i)(" + SENSITIVE + r"(?:\\?[\"'])?\s*[:=]\s*)"
                        r"(\\\"(?:[^\"\\\n]|\\\\.)*?\\\"|\"(?:[^\"\\\n]|\\.)*\"|'[^'\n]*')")   # \"shell-escaped\", "JSON", 'x'
 KV = re.compile(r"(?i)(" + SENSITIVE + r"(?:\\?[\"'])?(?:\s*[:=]\s*|[ \t]+)(?:bearer\s+|token\s+|basic\s+)?(?:\\?[\"'])?)"
                 r"((?!<redacted>|<masked>|<long>)[^\s\"'&,;)\\]{6,})")     # never a value masked already
+# "Password: rose,pw990" in prose or YAML: a label, a colon and a space, then the whole word is the secret
+LABELLED = re.compile(r"(?i)\b(" + SENSITIVE + r")(\s*:[ \t]+)(?!<redacted>|<masked>|<long>)([^\s'\"]+)")
 LONG = re.compile(r"[A-Za-z0-9+_\-]{32,}={0,2}")
 SUDO_S = r"(?<![\w.-])sudo\b[^|;&\n]*?\s(?:-[A-Za-z]*S[A-Za-z]*|--stdin)\b"   # -S, -kS, --stdin, /usr/bin/sudo
 ARGS = r"((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^|;&\n'\"\\])*?)"           # one command: quoted pipes stay inside
@@ -198,6 +200,7 @@ def mask_text(s):
     """The key=value and token patterns alone, for one unquoted shell word."""
     s = URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s)
     s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
+    s = LABELLED.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", s)
     s = PFX.sub("<redacted>", s)
     return KV.sub(lambda m: m.group(1) + "<redacted>", s)
 
@@ -340,6 +343,7 @@ def mask(s):
     s = mask_cookies(s)
     s = URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s)
     s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
+    s = LABELLED.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", s)
     s = PFX.sub("<redacted>", s)
     s = KV.sub(lambda m: m.group(1) + "<redacted>", s)
 
