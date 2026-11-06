@@ -36,6 +36,7 @@ case $FAKE_MODE in
   hang)     sleep 30 ;;
   prose)    printf '## Verdict\nFINDINGS\n\nThe merge runs before the check, which loses work.\n' > "$outf" ;;
   incomplete) printf '## Verdict\nINCOMPLETE\n' > "$outf" ;;
+  headrefuse) printf '## Unable to review\nI cannot review because the referenced plan is unavailable.\n' > "$outf" ;;
   minoronly) printf '### [MINOR] Naming\n- Where: x\n' > "$outf" ;;
   late)     { printf '### [MINOR] Naming\n'; for i in $(seq 1 30); do echo "detail line $i"; done; printf '## Verdict\nCANNOT REVIEW: the files are missing\n'; } > "$outf" ;;
   fwords)   printf '## Verdict\nFINDINGS: the migration cannot preserve existing records.\n\n### [MAJOR] Loses rows\n' > "$outf" ;;
@@ -110,6 +111,8 @@ check "a non-model \"not supported\" error does not retry" '[ $rc -eq 2 ] && [ "
 export FAKE_CHILD=$T/child.pid; FAKE_MODE=hangchild run plan plan.md --out "$T/r8" --timeout 2s
 check "a timeout also kills a child that ignores SIGTERM" '[ $rc -eq 2 ] && ! kill -0 "$(cat "$FAKE_CHILD")" 2>/dev/null'
 
+FAKE_MODE=headrefuse run prompt plan.md --out "$T/s0"
+check "a refusal under a heading exits 2 in prompt mode" '[ $rc -eq 2 ]'
 FAKE_MODE=minoronly run plan plan.md --out "$T/s1"
 check "no verdict and only MINOR findings is UNPARSED, not CLEAN" '[ $rc -eq 1 ] && [[ $out == *"UNPARSED"* ]]'
 FAKE_MODE=late run plan plan.md --out "$T/s2"
@@ -180,6 +183,9 @@ git -C "$WD" add mod; git -C "$WD" commit -qm "bump submodule"; git -C "$WD" con
 FAKE_MODE=clean run diff HEAD~1 --out "$T/sm"
 check "diff.ignoreSubmodules cannot hide a submodule bump" '[ $rc -eq 0 ] && grep -q "+Subproject commit" "$T/sm/prompt.md"'
 git -C "$WD" config --unset diff.ignoreSubmodules
+printf 'caf\xe9\n' > "$WD/latin1.txt"; git -C "$WD" add latin1.txt; git -C "$WD" commit -qm "latin-1 file"
+FAKE_MODE=clean run diff HEAD~1 --out "$T/l1"
+check "a non-UTF-8 file in the diff does not crash the review" '[ $rc -eq 0 ] && grep -q "latin1.txt" "$T/l1/prompt.md"'
 echo "uncommitted" >> "$WD/a.txt"
 FAKE_MODE=clean run diff main --out "$T/o13"
 check "a single ref means REF..HEAD, never the working tree" '[ $rc -eq 0 ] && ! grep -q "uncommitted" "$T/o13/prompt.md"'

@@ -84,7 +84,8 @@ def die(msg, code=3):
 
 
 def run(cmd, cwd=None):
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    # patches carry file bytes as they are: a Latin-1 file must not crash the decode
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
 
 
 def git(*args):
@@ -267,11 +268,18 @@ def verdict_word(text):
 
 
 def opening(review):
-    """The prose before the first heading or finding: where a reply that refuses says so."""
-    out = []
+    """Where a reply that refuses says so: its first heading and the prose under it, up to the next heading,
+    finding or quotation."""
+    out, headings = [], 0
     for line in review.splitlines():
-        if re.match(r"^\s*(#|\[|[-*]\s*\[|\d+\.\s*\*{0,2}\[)", line):
-            break
+        if re.match(r"^\s*(#+\s*\**\s*\[(CRITICAL|MAJOR|MINOR)\]|\[|[-*]\s*\[|\d+\.\s*\*{0,2}\[|>)", line, re.I):
+            break                                   # a finding or a quotation: not the reply's own words
+        if re.match(r"^\s*#", line):
+            headings += 1
+            if headings > 1 or out:
+                break
+            out.append(line.lstrip("# "))
+            continue
         out.append(line)
     return "\n".join(out)[:800]
 
