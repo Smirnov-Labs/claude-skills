@@ -374,7 +374,15 @@ def loads_code(value, yaml=False):
     """False when a Node options value holds only heap, stack and warning flags, which load nothing.
 
     An empty value sets nothing in .npmrc. In YAML the value can go on the next lines, so read it."""
-    value = re.sub(r'[ \t]+#.*', '', value).strip().strip('"\'')
+    value = value.strip()
+    quoted = re.match(r'(["\'])(.*?)\1', value)
+    if quoted:
+        value = quoted.group(2)
+    elif yaml:
+        value = re.sub(r'(?:^|[ \t])#.*', '', value)
+    else:
+        value = re.split(r'[;#]', value, maxsplit=1)[0]  # npm's INI parser ends a value there
+    value = value.strip()
     if not value:
         return yaml
     return not all(HARMLESS_NODE_OPTION.fullmatch(t) for t in value.split())
@@ -931,9 +939,10 @@ class Scan:
                 'setuptools executes setup.py, including its imports and local helpers, when preparing '
                 'metadata or building this package from source')
         elif low == 'setup.cfg':
-            each(r'(?m)^[ \t]*cmdclass[ \t]*=', 'HIGH', 'install-hook', 'custom setup command: ' + build_note)
-            setting('metadata', r'[ \t]*version[ \t]*=[ \t]*attr[ \t]*:', attr_note)
-            license_field(r'(?m)^[ \t]*license[ \t]*=[ \t]*(\S[^\n]*)')
+            # ConfigParser takes = or : between a key and its value.
+            each(r'(?m)^[ \t]*cmdclass[ \t]*[=:]', 'HIGH', 'install-hook', 'custom setup command: ' + build_note)
+            setting('metadata', r'[ \t]*version[ \t]*[=:][ \t]*attr[ \t]*:', attr_note)
+            license_field(r'(?m)^[ \t]*license[ \t]*[=:][ \t]*(\S[^\n]*)')
         elif low == 'pyproject.toml':
             each(PYPROJECT_RE, 'HIGH', 'install-hook', 'build code from this repo (an in-tree backend or a '
                  'build hook): ' + build_note)
@@ -943,6 +952,10 @@ class Scan:
             setting('tool.setuptools.dynamic.version', r'[ \t]*attr[ \t]*=', attr_note)
             setting('tool.pdm.version', r'[ \t]*source[ \t]*=[ \t]*["\']call["\']',
                     'pdm-backend calls the getter function this names, from this repo, when it builds')
+            each(r'(?m)^[ \t]*build-backend[ \t]*=[ \t]*["\'](?:mesonpy|scikit_build_core\.build'
+                 r'|py_build_cmake\.build|enscons\.api)["\']', 'HIGH', 'install-hook',
+                 'pip runs this backend\'s build on pip install, and the build runs the repo\'s build files '
+                 '(meson.build, CMakeLists.txt or SConstruct), custom commands included')
             if re.search(r'(?m)^[ \t]*build-backend[ \t]*=[ \t]*["\']flit(?:_core)?\.buildapi["\']', s):
                 each(r'(?m)^[ \t]*dynamic[ \t]*=[ \t]*\[[^\]]*["\'](?:version|description)["\']'
                      r'|^[ \t]*\[[ \t]*tool\.flit\.metadata[ \t]*\]', 'HIGH', 'install-hook',

@@ -478,12 +478,13 @@ printf 'node-options=--max-old-space-size=4096\n' > "$R/heap/.npmrc"
 printf 'nodeOptions: "--max-old-space-size=4096 --no-warnings"  # CI memory\n' > "$R/heap/pnpm-workspace.yaml"
 scanj "$R"
 check "Node options that load code are HIGH; heap and warning flags alone are not" 'jhas high install-hook load/.npmrc 1 && jnone heap/.npmrc && jnone heap/pnpm-workspace.yaml'
-R=$T/node-options-spellings; mkdir -p "$R/u" "$R/e" "$R/y"
+R=$T/node-options-spellings; mkdir -p "$R/u" "$R/e" "$R/c" "$R/y"
 printf 'node-options=--max_old_space_size=4096 --no_warnings\n' > "$R/u/.npmrc"
 printf 'node-options=\n' > "$R/e/.npmrc"
+printf 'node-options=--max-old-space-size=4096 ; memory limit\n' > "$R/c/.npmrc"
 printf 'nodeOptions:\n  --require ./tools/preload.cjs\n' > "$R/y/pnpm-workspace.yaml"
 scanj "$R"
-check "underscore heap flags and an empty .npmrc value are not HIGH; an empty YAML line is" 'jnone u/.npmrc && jnone e/.npmrc && jhas high install-hook y/pnpm-workspace.yaml 1'
+check "underscore heap flags, an empty or commented .npmrc value are not HIGH; an empty YAML line is" 'jnone u/.npmrc && jnone e/.npmrc && jnone c/.npmrc && jhas high install-hook y/pnpm-workspace.yaml 1'
 R=$T/pnpm-quoted-pnpmfile; mkdir -p "$R"
 printf '"pnpmfile": ./tools/hooks.cjs\n' > "$R/pnpm-workspace.yaml"
 scanj "$R"
@@ -577,6 +578,18 @@ R=$T/meson; mkdir -p "$R"
 printf "project('demo', 'c')\nver = run_command('sh', 'prepare.sh', check: true)\ncustom_target('gen', output: 'x.h', command: ['sh', 'gen.sh'])\n" > "$R/meson.build"
 scanj "$R"
 check "Meson run_command is HIGH and custom_target MEDIUM" 'jhas high install-hook meson.build 2 && jhas medium dev-env meson.build 3'
+R=$T/setup-cfg-colon; mkdir -p "$R"
+printf '[build-system]\nrequires = ["setuptools"]\nbuild-backend = "setuptools.build_meta"\n' > "$R/pyproject.toml"
+printf '[metadata]\nname: demo\nversion: attr: demo.__version__\n' > "$R/setup.cfg"
+scanj "$R"
+check "a setup.cfg attr version with a colon delimiter is HIGH" 'jhas high install-hook setup.cfg 3'
+for backend in mesonpy scikit_build_core.build; do
+  R=$T/native-$backend; mkdir -p "$R"
+  printf '[build-system]\nrequires = ["x"]\nbuild-backend = "%s"\n' "$backend" > "$R/pyproject.toml"
+  printf "project('demo', 'c')\ncustom_target('gen', output: 'x.h', command: ['sh', 'gen.sh'], install: true)\n" > "$R/meson.build"
+  scanj "$R"
+  check "a $backend project is HIGH: pip install runs its build files" 'jhas high install-hook pyproject.toml 3 && [ $rc -eq 1 ]'
+done
 R=$T/python-static-metadata; mkdir -p "$R"
 printf '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n[tool.hatch.version]\nsource = "regex"\npath = "version.py"\n[tool.other]\nsource = "code"\nattr = "version.__version__"\n[tool.setuptools.dynamic]\nversion = {file = "VERSION"}\n' > "$R/pyproject.toml"
 printf '[metadata]\nversion = 1.0.0\n[other]\nversion = attr: version.__version__\n' > "$R/setup.cfg"
