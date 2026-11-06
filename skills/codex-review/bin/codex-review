@@ -242,9 +242,24 @@ def stop_group(p):
         pass
 
 
+FINDING_HEAD = r"^\s*(#+\s*)?(\d+\.\s*)?[-*]?\s*\**\s*\[(CRITICAL|MAJOR|MINOR)\]"
+
+
+def prose_lines(review):
+    """The review's lines with fenced and indented code blocks blanked out: examples are not the reply."""
+    out, fence = [], False
+    for line in review.splitlines():
+        if re.match(r"^\s*(```|~~~)", line):
+            fence = not fence
+            out.append("")
+            continue
+        out.append("" if fence or line.startswith(("    ", "\t")) else line)
+    return out
+
+
 def verdict_of(review):
     """The text of the first Verdict line (after a "Verdict" heading or label), or None."""
-    lines = review.splitlines()
+    lines = prose_lines(review)
     for i, line in enumerate(lines):
         m = re.match(r"^[#*\s]*verdict[*:\s]*(.*)$", line, re.I)
         if m:
@@ -271,8 +286,10 @@ def opening(review):
     """Where a reply that refuses says so: its first heading and the prose under it, up to the next heading,
     finding or quotation."""
     out, headings = [], 0
-    for line in review.splitlines():
-        if re.match(r"^\s*(#+\s*\**\s*\[(CRITICAL|MAJOR|MINOR)\]|\[|[-*]\s*\[|\d+\.\s*\*{0,2}\[|>)", line, re.I):
+    for line in prose_lines(review):
+        if not out and not line.strip():
+            continue                                # leading blank lines
+        if re.match(FINDING_HEAD, line, re.I) or re.match(r"^\s*(\[|>)", line):
             break                                   # a finding or a quotation: not the reply's own words
         if re.match(r"^\s*#", line):
             headings += 1

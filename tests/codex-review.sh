@@ -36,6 +36,9 @@ case $FAKE_MODE in
   hang)     sleep 30 ;;
   prose)    printf '## Verdict\nFINDINGS\n\nThe merge runs before the check, which loses work.\n' > "$outf" ;;
   incomplete) printf '## Verdict\nINCOMPLETE\n' > "$outf" ;;
+  blankhead) printf '\n\n## Unable to review\nI cannot review because the referenced plan is unavailable.\n' > "$outf" ;;
+  boldfind) printf '**[MAJOR]** A reply saying "I cannot review this diff" exits 0\n- Where: x\n' > "$outf" ;;
+  fenced)   printf '### [MAJOR] The wrapper accepts a refusal\n- Where: x\n\n```\n## Verdict\nCANNOT REVIEW: missing files\n```\n' > "$outf" ;;
   headrefuse) printf '## Unable to review\nI cannot review because the referenced plan is unavailable.\n' > "$outf" ;;
   minoronly) printf '### [MINOR] Naming\n- Where: x\n' > "$outf" ;;
   late)     { printf '### [MINOR] Naming\n'; for i in $(seq 1 30); do echo "detail line $i"; done; printf '## Verdict\nCANNOT REVIEW: the files are missing\n'; } > "$outf" ;;
@@ -111,6 +114,12 @@ check "a non-model \"not supported\" error does not retry" '[ $rc -eq 2 ] && [ "
 export FAKE_CHILD=$T/child.pid; FAKE_MODE=hangchild run plan plan.md --out "$T/r8" --timeout 2s
 check "a timeout also kills a child that ignores SIGTERM" '[ $rc -eq 2 ] && ! kill -0 "$(cat "$FAKE_CHILD")" 2>/dev/null'
 
+FAKE_MODE=blankhead run prompt plan.md --out "$T/s0b"
+check "blank lines before a refusal heading do not hide it" '[ $rc -eq 2 ]'
+FAKE_MODE=boldfind run plan plan.md --out "$T/s0c"
+check "a bold finding that quotes a refusal is a finding" '[ $rc -eq 1 ] && [[ $out == *"major 1"* ]]'
+FAKE_MODE=fenced run plan plan.md --out "$T/s0d"
+check "a verdict inside a code fence is not the verdict" '[ $rc -eq 1 ] && [[ $out == *"major 1"* ]]'
 FAKE_MODE=headrefuse run prompt plan.md --out "$T/s0"
 check "a refusal under a heading exits 2 in prompt mode" '[ $rc -eq 2 ]'
 FAKE_MODE=minoronly run plan plan.md --out "$T/s1"
