@@ -298,6 +298,9 @@ NPM_NOTES = {'preinstall': 'npm runs it before npm install', 'install': 'npm run
              'postpack': 'Yarn runs it after packing a Git dependency during install',
              'publish': 'pnpm runs it when preparing a Git dependency with a prepare script or a missing main file',
              'pnpm:devPreinstall': 'pnpm runs it before it installs dependencies on a local pnpm install'}
+HARMLESS_NODE_OPTION = re.compile(
+    r'--(?:max-old-space-size|max-semi-space-size|stack-size|max-http-header-size)=\d+'
+    r'|--no-(?:warnings|deprecation)|--trace-(?:warnings|deprecation)|--enable-source-maps')
 SHELL_RC = {'.envrc', '.bashrc', '.zshrc', '.kshrc', '.cshrc', '.tcshrc', '.mkshrc'}
 LICENSE_NAME = re.compile(r'(?:licen[cs]e|copying|unlicense)(?:[-_.][\w.-]*)?$')
 
@@ -365,6 +368,12 @@ def toml_keys(s):
             line = re.sub(r'["\']([\w.-]+)["\']', r'\1', key) + eq + value
         out.append(line)
     return '\n'.join(out)
+
+
+def loads_code(value):
+    """False when a Node options value holds only heap, stack and warning flags, which load nothing."""
+    value = re.sub(r'[ \t]+#.*', '', value).strip().strip('"\'')
+    return not value or not all(HARMLESS_NODE_OPTION.fullmatch(t) for t in value.split())
 
 
 def human(n):
@@ -869,9 +878,11 @@ class Scan:
         s = toml_keys(s) if ext == '.toml' else s
         nt = t if s is t.s else Text(s)
 
-        def each(rx, sev, rule, note):
+        def each(rx, sev, rule, note, keep=None):
             for m in re.finditer(rx, s):
                 if kind in ('code', 'config') and nt.is_comment(m.start()):
+                    continue
+                if keep and not keep(s[m.end():].split('\n', 1)[0]):
                     continue
                 add(sev, rule, rel, nt.line_no(m.start()), nt.evidence(m.start(), m.end()), note)
 
@@ -894,6 +905,8 @@ class Scan:
                 offset += len(line)
 
         build_note = 'pip runs it when it builds or installs this package from source'
+        node_note = ('%s passes these Node options to the scripts it runs on install; --require, --import '
+                     'and --loader load code')
         hatch_note = ('Hatch imports the Python file named by path and evaluates its version expression '
                       'when resolving a dynamic version during metadata preparation or build')
         attr_note = ('setuptools may import the module named by attr while preparing build metadata '
@@ -969,8 +982,9 @@ class Scan:
             each(r'(?m)^[ \t]*import[ \t]', 'HIGH', 'install-hook',
                  'once installed, a .pth line that starts with import runs on every Python start')
         elif low == '.npmrc':
-            each(r'(?m)^[ \t]*["\']?(?:node-options|script-shell|onload-script)["\']?[ \t]*=', 'HIGH', 'install-hook',
+            each(r'(?m)^[ \t]*["\']?(?:script-shell|onload-script)["\']?[ \t]*=', 'HIGH', 'install-hook',
                  'npm reads this .npmrc in this folder and runs the code it names')
+            each(r'(?m)^[ \t]*["\']?node-options["\']?[ \t]*=', 'HIGH', 'install-hook', node_note % 'npm', keep=loads_code)
             each(r'(?m)^[ \t]*["\']?git["\']?[ \t]*=', 'HIGH', 'install-hook',
                  'npm runs this Git executable when resolving Git dependencies, even with --ignore-scripts')
             each(r'(?m)^[ \t]*["\']?node-gyp["\']?[ \t]*=', 'HIGH', 'install-hook',
@@ -978,13 +992,11 @@ class Scan:
             each(r'(?m)^[ \t]*["\']?(?:global-?)?pnpmfile["\']?[ \t]*=', 'HIGH', 'install-hook',
                  'pnpm runs the pnpmfile this names on pnpm install, even with --ignore-scripts')
         elif low == 'pnpm-workspace.yaml':
-            each(r'(?m)^[ \t]*(?:global)?[pP]npmfile[ \t]*:', 'HIGH', 'install-hook',
+            each(r'(?m)^[ \t]*["\']?(?:global)?[pP]npmfile["\']?[ \t]*:', 'HIGH', 'install-hook',
                  'pnpm runs the pnpmfile this names on pnpm install, even with --ignore-scripts')
             each(r'(?m)^[ \t]*["\']?scriptShell["\']?[ \t]*:', 'HIGH', 'install-hook',
                  'pnpm uses this executable as the shell for lifecycle scripts during install')
-            each(r'(?m)^[ \t]*["\']?nodeOptions["\']?[ \t]*:', 'HIGH', 'install-hook',
-                 'pnpm passes these Node options to the scripts it runs on install; --require, --import '
-                 'and --loader load code')
+            each(r'(?m)^[ \t]*["\']?nodeOptions["\']?[ \t]*:', 'HIGH', 'install-hook', node_note % 'pnpm', keep=loads_code)
         elif low in ('.yarnrc.yml', '.yarnrc'):
             each(r'(?m)^[ \t]*(?:["\']?yarnPath["\']?[ \t]*:|["\']?yarn-path["\']?[ \t])', 'HIGH', 'install-hook',
                  'yarn runs this committed file for every yarn command in this folder, install included')
@@ -1041,13 +1053,17 @@ class Scan:
             # fields in a valid manifest are not lifecycle scripts.
             scripts = {} if isinstance(data, dict) else None
         nt = Text(unescape(t.s))
-        # Look for a script's evidence after the last "scripts" key, which JSON keeps, so a
-        # dependency with the same name as a hook does not stand in for the script.
-        start = ([m.end() for m in re.finditer(r'"scripts"\s*:\s*\{', nt.s)] or [0])[-1] if scripts else 0
+        # Take a hook's evidence from the text only when there is one "scripts" object, so neither a
+        # dependency with a hook's name nor a nested "scripts" stands in for the script. Otherwise
+        # show the parsed value, without a line.
+        starts = [m.end() for m in re.finditer(r'"scripts"\s*:\s*\{', nt.s)]
         for name in NPM_NOTES:
             if scripts is not None and name not in scripts:
                 continue
-            m = re.compile(r'"%s"\s*:\s*"' % re.escape(name)).search(nt.s, start)
+            if scripts is None:
+                m = re.search(r'"%s"\s*:\s*"' % name, nt.s)
+            else:
+                m = re.compile(r'"%s"\s*:\s*"' % re.escape(name)).search(nt.s, starts[0]) if len(starts) == 1 else None
             if m is None and scripts is None:
                 continue
             line = nt.line_no(m.start()) if m else None

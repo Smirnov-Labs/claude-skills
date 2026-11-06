@@ -429,6 +429,10 @@ R=$T/npm-same-name; mkdir -p "$R"
 printf '{\n  "dependencies": {"prepack": "1.0.0"},\n  "scripts": {"prepack": "node prepare.js"}\n}\n' > "$R/package.json"
 scanj "$R"
 check "a hook's evidence is the script, not a dependency with the same name" 'jhas high install-hook package.json 3 && ! jhas high install-hook package.json 2'
+R=$T/npm-nested-scripts; mkdir -p "$R"
+printf '{\n  "scripts": {"postinstall": "node actual.js"},\n  "config": {"scripts": {"postinstall": "echo harmless"}}\n}\n' > "$R/package.json"
+scanj "$R"
+check "a nested scripts object does not replace the real hook's evidence" 'jhas high install-hook package.json && has "node actual.js" && ! has "echo harmless"'
 
 R=$T/npm-git-override; mkdir -p "$R/tools"
 printf 'ignore-scripts=true\ngit=./tools/git-wrapper\n' > "$R/.npmrc"
@@ -467,7 +471,17 @@ done
 R=$T/pnpm-loader; mkdir -p "$R"
 printf 'nodeOptions: "--experimental-loader ./tools/loader.mjs"\n' > "$R/pnpm-workspace.yaml"
 scanj "$R"
-check "any pnpm nodeOptions is HIGH, like node-options in .npmrc" 'jhas high install-hook pnpm-workspace.yaml 1'
+check "a pnpm nodeOptions loader is HIGH" 'jhas high install-hook pnpm-workspace.yaml 1'
+R=$T/npmrc-node-options; mkdir -p "$R/load" "$R/heap"
+printf 'node-options="--require ./tools/preload.cjs"\n' > "$R/load/.npmrc"
+printf 'node-options=--max-old-space-size=4096\n' > "$R/heap/.npmrc"
+printf 'nodeOptions: "--max-old-space-size=4096 --no-warnings"  # CI memory\n' > "$R/heap/pnpm-workspace.yaml"
+scanj "$R"
+check "Node options that load code are HIGH; heap and warning flags alone are not" 'jhas high install-hook load/.npmrc 1 && jnone heap/.npmrc && jnone heap/pnpm-workspace.yaml'
+R=$T/pnpm-quoted-pnpmfile; mkdir -p "$R"
+printf '"pnpmfile": ./tools/hooks.cjs\n' > "$R/pnpm-workspace.yaml"
+scanj "$R"
+check "a quoted pnpmfile key in pnpm-workspace.yaml is HIGH" 'jhas high install-hook pnpm-workspace.yaml 1'
 # One key per file: the report folds a second finding of the same rule in a file into "more".
 for pair in '"git"=./tools/git-wrapper|  scriptShell: ./tools/shell' "'node-gyp'=./tools/build.cjs|  nodeOptions: --require ./tools/preload.cjs"; do
   R=$T/quoted-and-indented-${#pair}; mkdir -p "$R"
