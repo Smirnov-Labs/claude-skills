@@ -52,7 +52,7 @@ SHELL_HINT = re.compile(r"(?:^|[\s;&|(`])(?:\S*/)?(?:curl|wget|https?|xh|sshpass
 SECRET_HEADER = re.compile(r"(?i)^\s*((?:set-)?cookie|(?:proxy-)?authorization)\s*:")
 CRED_OPTS = {   # program: ((short options that take a secret, long ones), every short option that takes a value)
     "curl": (("ubU", ("user", "proxy-user", "cookie", "oauth2-bearer", "pass", "proxy-pass")),
-             "AbcCdDeEFHKmoPQrtTuUwxXyYz"),
+             "AbcCdDeEFHKmoPQrtTuUwxXyYz"),   # pragma: allowlist secret (curl's short options)
     "wget": (("", ("user", "password", "http-user", "http-password", "proxy-user", "proxy-password", "ftp-user",
                    "ftp-password")), "oaOetTwQPUiB"),
     "http": (("a", ("auth",)), "aAops"), "https": (("a", ("auth",)), "aAops"),
