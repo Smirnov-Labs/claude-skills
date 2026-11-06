@@ -38,15 +38,15 @@ QUOTED_KV = re.compile(r"(?i)(" + SENSITIVE + r"[\"']?\s*[:=]\s*)(\"[^\"\n]*\"|'
 KV = re.compile(r"(?i)(" + SENSITIVE + r"[\"']?\s*[:=]?\s*(?:bearer\s+|token\s+|basic\s+)?[\"']?)([^\s\"'&,;)]{6,})")
 LONG = re.compile(r"[A-Za-z0-9+_\-]{32,}={0,2}")
 SUDO_S = r"(?:\S*/)?sudo\b[^|;&\n]*?\s(?:-[A-Za-z]*S[A-Za-z]*|--stdin)\b"   # -S, -kS, --stdin, /usr/bin/sudo
-ARGS = r"((?:'[^'\n]*'|\"[^\"\n]*\"|[^|\n'\"])*?)"                           # quoted pipes stay inside the args
+ARGS = r"((?:'[^'\n]*'|\"[^\"\n]*\"|[^|;&\n'\"])*?)"                         # one command: quoted pipes stay inside
 SUDO_PIPE = re.compile(r"(\b(?:printf|echo)\b)" + ARGS + r"(\|\s*(?:command\s+)?" + SUDO_S + ")")
 SUDO = re.compile(SUDO_S)
 HERE = re.compile(r"(<<<\s*)('[^']*'|\"[^\"]*\"|\S+)")
 SSHPASS = re.compile(r"(\bsshpass\b[^|;&\n]*?\s-p\s*)('[^']*'|\"[^\"]*\"|[^\s'\"]+)")
 COOKIE = re.compile(r"(?i)\b(?:set-)?cookie\s*[:=]\s*")
 URLCRED = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@'\"]+:)([^@\s/'\"]+)(@)")          # scheme://user:PASS@
-USEROPT = re.compile(r"(\b(?:curl|wget|http|https|xh)\b[^|;&\n]*?\s(?:-u|--user|--http-user|--http-password|--password)"
-                     r"(?:\s+|=))('[^']*'|\"[^\"]*\"|\S+)")
+USEROPT = re.compile(r"(\b(?:curl|wget|http|https|xh)\b[^|;&\n]*?\s(?:-u|--user|--http-user|--http-password|--password|"
+                     r"-b|--cookie)(?:\s+|=)?)('[^']*'|\"[^\"]*\"|[^\s'\"]+)")            # -u x, -ux, --user=x, -b, --cookie
 
 
 def mask_cookies(s):
@@ -111,6 +111,7 @@ def load_mask_file(path):
 def mask(s):
     if not s:
         return s
+    s = s.replace("\\\n", " ")                          # join line continuations, so one command reads as one line
     for v in LITERALS:
         if v in s:
             s = s.replace(v, "<masked>")
@@ -225,8 +226,10 @@ def tokenize(cmd):
     while i < len(cmd):
         c = cmd[i]
         if esc:
-            cur.append(c)
-            has, esc = True, False
+            if c != "\n":                                 # backslash-newline is a continuation, not a character
+                cur.append(c)
+                has = True
+            esc = False
         elif q == "'":
             if c == "'":
                 q = None

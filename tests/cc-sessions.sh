@@ -90,6 +90,11 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "f4", "name": "Bash", "input": {"command": "curl --data='a|zzfake; yyfake' https://example.test"}},
         {"type": "tool_use", "id": "f5", "name": "Bash", "input": {"command": "curl -H 'Cookie: session=ck553; refresh=ck554' https://keepme.example && cargo build"}},
         {"type": "tool_use", "id": "f6", "name": "mcp__x__z", "input": {"headers": {"Cookie": ["session=listck555"]}}},
+        {"type": "tool_use", "id": "g1", "name": "Bash", "input": {"command": "curl -ualice:attpw661 https://example.test"}},
+        {"type": "tool_use", "id": "g2", "name": "Bash", "input": {"command": "curl \\\n  -u alice:contpw662 https://example.test"}},
+        {"type": "tool_use", "id": "g3", "name": "Bash", "input": {"command": "curl -b 'session=bck663; refresh=bck664' https://example.test"}},
+        {"type": "tool_use", "id": "g4", "name": "Bash", "input": {"command": "echo checking; jq --version; echo sudopw665 | sudo -S systemctl restart nginx"}},
+        {"type": "tool_use", "id": "g5", "name": "Bash", "input": {"command": "sudo \\\n  apt-get update"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -133,6 +138,8 @@ check "comments do not swallow the lines after them" '[[ $out == *"pytest 1"* ]]
 check "an assignment with a quoted space still finds the command" '[[ $out == *"rustc 1"* ]]'
 check "quotes inside an option value invent no command" '[[ $out != *zzfake* ]] && [[ $out != *yyfake* ]]'
 check "a Cookie header does not hide the commands after it" '[[ $out == *"cargo 1"* ]]'
+check "a sudo -S password does not hide the commands before it" '[[ $out == *"jq 1"* ]]'
+check "a line continuation keeps the command countable" '[[ $out == *"apt-get 1"* ]]'
 check "wrapper long options and clusters: psql and git, not postgres or TERM" '[[ $out == *"psql "* ]] && [[ $out == *"git "* ]] && [[ $out != *postgres* ]] && [[ $out != *TERM* ]]'
 check "a masked literal in the directory stays masked in the resume command" '[[ $out != *"quote"*"side"* ]]'
 run find PrivateClient --mask-file "$T/mask"
@@ -162,6 +169,8 @@ check "export masks the sudo -S password, the bearer token and the mask-file val
 check "export masks whole Cookie headers, sshpass -v -p and sudo -kS" '! grep -q -E "cookieone|cookietwo|sshpwd99|kspw" "$T/ev.jsonl"'
 check "export masks paths and directories too" '! grep -q PrivateClient "$T/ev.jsonl"'
 check "export masks URL and curl -u credentials" '! grep -q -E "urlpw551|curlpw552" "$T/ev.jsonl"'
+check "export masks -uUSER:PASS, -u after a continuation, and curl -b cookies" '! grep -q -E "attpw661|contpw662|bck663|bck664" "$T/ev.jsonl"'
+check "export keeps the command before a sudo -S password" 'grep -q "echo checking; jq --version; echo <redacted>" "$T/ev.jsonl"'
 check "export masks a Cookie value but keeps the rest of the command" '! grep -q -E "ck553|ck554" "$T/ev.jsonl" && grep -q "keepme.example && cargo build" "$T/ev.jsonl"'
 check "export redacts list values under a sensitive key" '! grep -q listck555 "$T/ev.jsonl"'
 check "export masks sudo by path, quoted pipes, quoted passwords and quoted cookies" '! grep -q -E "pathpw11|tulipkey|horse battery|quotedck1|quotedck2" "$T/ev.jsonl"'
