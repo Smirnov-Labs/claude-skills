@@ -181,24 +181,55 @@ SHELL = {"fi", "done", "esac", "}", ")", "case", "for", "in", "select", "functio
 OPS = {";", "&&", "||", "|", "&", "(", ")", "|&", ";;"}
 
 
+def flatten(cmd):
+    """The command with unquoted comments removed and unquoted newlines turned into ';'. Quotes are kept."""
+    out, q, esc, i = [], None, False, 0
+    while i < len(cmd):
+        c = cmd[i]
+        if esc:
+            out.append(c)
+            esc = False
+        elif c == "\\" and q != "'":
+            out.append(c)
+            esc = True
+        elif q:
+            out.append(c)
+            if c == q:
+                q = None
+        elif c in "'\"":
+            out.append(c)
+            q = c
+        elif c == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|("):
+            while i < len(cmd) and cmd[i] != "\n":
+                i += 1
+            continue
+        elif c == "\n":
+            out.append(" ; ")
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def segments(cmd):
-    """Commands split at shell operators, with quoting respected; [] when the quoting does not parse."""
+    """Commands split at unquoted shell operators; [] when the quoting does not parse. Tokens keep their quotes
+    (shlex non-posix), so a quoted '|' or ';' is an argument, never an operator."""
     cmd = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?.*?\n.*?\n\1\b", " ", cmd, flags=re.S)   # drop heredoc bodies
-    lex = shlex.shlex(cmd.replace("\n", " ; "), posix=True, punctuation_chars=";&|()")
+    lex = shlex.shlex(flatten(cmd), posix=False, punctuation_chars=";&|()")
     lex.whitespace_split = True
-    lex.commenters = "#"
+    lex.commenters = ""
     try:
         toks = list(lex)
     except ValueError:
         return []
     out, cur = [], []
     for tok in toks:
-        if tok in OPS or (tok and set(tok) <= set(";&|()")):
+        if tok and set(tok) <= set(";&|()"):
             if cur:
                 out.append(cur)
             cur = []
         else:
-            cur.append(tok)
+            cur.append(tok.strip("'\"") if tok[:1] in "'\"" else tok)
     if cur:
         out.append(cur)
     return out
@@ -296,7 +327,7 @@ class Session:
                 self.tools[name] += 1
                 if name == "Bash":
                     cmd = inp.get("command", "")
-                    for p in set(programs(cmd)):
+                    for p in set(programs(mask(cmd))):             # masked first: no secret becomes a "command"
                         self.progs[p] += 1
                     if keep_cmds:
                         self.cmds.append((cmd + " " + inp.get("description", "")).lower())
@@ -497,7 +528,7 @@ def cmd_stats(a):
         "repeated_short_prompts": [(t, n, len(short_s[t])) for t, n in short.most_common(a.top * 2) if n >= 2],
     }
     if a.json:
-        out(json.dumps(mask_obj(data), indent=1))
+        print(json.dumps(mask_obj(data), indent=1))      # masked as a structure; masking the text would break the JSON
         return 0
     window = ("last %d days" % a.days) if a.days else "every transcript on disk"
     out("%d sessions, %d subagent transcripts, %d typed prompts, %d tool calls (%s%s)"

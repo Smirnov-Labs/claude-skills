@@ -67,6 +67,10 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
     {"type": "ai-title", "aiTitle": "Round two"},
     {"type": "user", "cwd": "/work/demo/quote'side", "timestamp": "2026-11-04T09:00:00Z", "origin": {"kind": "human"},
      "message": {"content": "start"}},
+    {"type": "user", "timestamp": "2026-11-04T09:00:10Z", "origin": {"kind": "human"},
+     "message": {"content": "Cookie: session=abc; refresh=def"}},
+    {"type": "user", "timestamp": "2026-11-04T09:00:20Z", "origin": {"kind": "human"},
+     "message": {"content": "Cookie: session=abc; refresh=def"}},
     {"type": "assistant", "timestamp": "2026-11-04T09:01:00Z", "message": {"content": [
         {"type": "tool_use", "id": "d1", "name": "Bash", "input": {"command": "echo pathpw11 | /usr/bin/sudo -S true"}},
         {"type": "tool_use", "id": "d2", "name": "Bash", "input": {"command": "echo \"rose|tulipkey\" | sudo -S true"}},
@@ -76,6 +80,10 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "d6", "name": "Bash", "input": {"command": "psql -c 'SELECT 1; DROP TABLE example;'"}},
         {"type": "tool_use", "id": "d7", "name": "Bash", "input": {"command": "sudo --user postgres psql; sudo -Hu postgres psql"}},
         {"type": "tool_use", "id": "d8", "name": "Bash", "input": {"command": "timeout --signal TERM 10 git status; timeout -s TERM 10 git status"}},
+        {"type": "tool_use", "id": "e1", "name": "Bash", "input": {"command": "printf '%s' '|' 'qpipepw77' | sudo -S true"}},
+        {"type": "tool_use", "id": "e2", "name": "Bash", "input": {"command": "grep '|' notes.txt"}},
+        {"type": "tool_use", "id": "e3", "name": "Bash", "input": {"command": "# Check repository\ngit status\npytest -q"}},
+        {"type": "tool_use", "id": "e4", "name": "Bash", "input": {"command": "git log # inline note\nmake test"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -113,7 +121,10 @@ check "find matches past the first 3,000 characters of a prompt" '[ $rc -eq 0 ] 
 run show 4444 --mask-file "$T/mask"
 check "a password inside quotes never shows up as a command" '[[ $out != *fragpw33* ]]'
 check "SQL inside quotes is not a command" '[[ $out != *"DROP"* ]]'
-check "wrapper long options and clusters: psql and git, not postgres or TERM" '[[ $out == *"psql 2"* ]] && [[ $out == *"git 1"* ]] && [[ $out != *postgres* ]] && [[ $out != *TERM* ]]'
+check "a quoted pipe never turns a password into a command" '[[ $out != *qpipepw77* ]]'
+check "a quoted pipe invents no command" '[[ $out != *"notes.txt"* ]]'
+check "comments do not swallow the lines after them" '[[ $out == *"pytest 1"* ]] && [[ $out == *"make 1"* ]]'
+check "wrapper long options and clusters: psql and git, not postgres or TERM" '[[ $out == *"psql 2"* ]] && [[ $out == *"git 3"* ]] && [[ $out != *postgres* ]] && [[ $out != *TERM* ]]'
 check "a masked literal in the directory stays masked in the resume command" '[[ $out != *"quote"*"side"* ]]'
 run find PrivateClient --mask-file "$T/mask"
 check "a failed search does not echo a masked word" '[[ $out != *rivate* ]]'
@@ -125,13 +136,14 @@ run show abc
 check "an unknown prefix is an error" '[ $rc -ne 0 ] && [[ $out == *"no session id starts with"* ]]'
 
 run stats --mask-file "$T/mask"
-check "stats counts sessions, subagents and prompts" '[[ $out == *"4 sessions, 1 subagent transcripts, 9 typed prompts"* ]]'
+check "stats counts sessions, subagents and prompts" '[[ $out == *"4 sessions, 1 subagent transcripts, 11 typed prompts"* ]]'
 check "stats never prints a sudo -S password from repeated prompts" '[[ $out != *orchidpetal* ]]'
 check "stats parses sudo -u and if/then: psql and git, not postgres" '[[ $out == *"psql "* ]] && [[ $out == *"git "* ]] && [[ $out != *"postgres "* ]]'
 check "a mask-file value is masked in every stats line" '[[ $out != *PrivateClient* ]]'
 check "stats lists repeated short prompts with session counts" '[[ $out == *"2   2  keep going"* ]]'
 run stats --json
-check "stats --json is valid JSON" 'echo "$out" | python3 -c "import json,sys; json.load(sys.stdin)"'
+check "stats --json is valid JSON, even with repeated Cookie prompts" 'echo "$out" | python3 -c "import json,sys; json.load(sys.stdin)"'
+check "stats --json never shows the cookie values" '[[ $out != *"refresh=def"* ]]'
 run stats --no-subagents
 check "--no-subagents leaves the subagent out" '[[ $out == *"0 subagent transcripts"* ]]'
 
