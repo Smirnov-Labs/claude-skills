@@ -31,20 +31,20 @@ A claude.ai link opens the **Add custom connector** dialog with a server's name 
 
 ## OAuth
 
-Find the protected resource metadata as Claude does: the `resource_metadata` URL in the server's 401 first, then the path-specific document, then the root one.
+Read the protected resource metadata in Claude's order: the `resource_metadata` URL from the 401, then the path-specific document, then the root one.
 
 ```bash
-curl -si -X POST https://mcp.example.com/mcp | grep -i '^www-authenticate'
-P=https://mcp.example.com/.well-known/oauth-protected-resource
-{ curl -sf "$P/mcp" || curl -sf "$P"; } | jq '{resource, authorization_servers}'
+U=https://mcp.example.com/mcp W=https://mcp.example.com/.well-known/oauth-protected-resource
+R=$(curl -si -X POST "$U" | grep -i '^www-authenticate' | sed -n 's/.*resource_metadata="\([^"]*\)".*/\1/p')
+for m in $R "$W/mcp" "$W"; do curl -sf "$m" && break; done | jq '{resource, authorization_servers}'
 ```
 
-Claude uses only the first entry in `authorization_servers`. Read that server's metadata:
+Claude uses only the first authorization server. Split its issuer into an origin `O` and a path `P`, which is often empty, then read its metadata:
 
 ```bash
-A=https://auth.example.com
-{ curl -sf "$A/.well-known/oauth-authorization-server" || curl -sf "$A/.well-known/openid-configuration"; } \
-  | jq '{registration_endpoint, client_id_metadata_document_supported, token_endpoint_auth_methods_supported}'
+O=https://auth.example.com P=/tenant
+for m in "$O/.well-known/oauth-authorization-server$P" "$O/.well-known/openid-configuration$P" "$O$P/.well-known/openid-configuration"
+do curl -sf "$m" && break; done | jq '{registration_endpoint, client_id_metadata_document_supported, token_endpoint_auth_methods_supported}'
 ```
 
 Claude's recommended OAuth client needs `client_id_metadata_document_supported: true` and `"none"` in the auth methods. If the server has only a `registration_endpoint`, add this line next to the button:
