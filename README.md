@@ -45,6 +45,7 @@ Use one method or the other on a machine, not both, or each skill loads twice.
 | **pr** | `/pr`: commits, pushes, and opens or updates the PR, after checking that the push carries only your commits and files. It keeps a repo's own `.claude/commands/pr.md` rules (runs only when you invoke it) | `/pr` |
 | **pr-fix** | `/pr-fix`: drives a PR to clean by fixing CI failures and review feedback, pushing, and waiting with `prbots`, round after round (runs only when you invoke it) | `/pr-fix` |
 | **pr-land** | Lands a PR with `prland`: merges only on a CLEAN `prbots` verdict, confirms MERGED, then removes that PR's own worktree and branch and fast-forwards main | "merge it", "land it", "ship it" |
+| **finding-latest-versions** | Finds the newest release of a GitHub repo, or the newest tag of a container image on any OCI registry, with `latest-version`. It sorts tags as versions, skips pre-releases unless asked, reads every page, and prints image digests | "latest version of", "newest release", "bump the image tag" |
 | **bd-to-br-migration** | Migrates docs and scripts from bd (beads) to br (beads_rust) | "migrate from bd to br", "beads migration" |
 | **debugging-kubernetes-rollouts** | Systematic debugging of failed rollouts, ArgoCD sync issues, pod failures, and image pulls | "rollout is stuck", "ArgoCD won't sync" |
 | **debugging-nodejs-apps** | Systematic debugging of Node.js startup, dependency, and runtime failures | "service won't start", "npm error" |
@@ -71,6 +72,8 @@ The `git-recon` skill needs only `git` — runs locally against the repo you're 
 The `evaluating-third-party-tools` skill's `tp-scan` needs Python 3 (standard library only). It reads git history when `git` is on your `PATH`.
 
 The `watching-pr-bot-reviews` and `pr-fix` skills require the [GitHub CLI](https://cli.github.com/) (`gh`) authenticated against the repo, and a repo whose PRs are reviewed by Codex and/or an Architecture-Review GitHub Action.
+
+The `finding-latest-versions` skill needs Python 3. It calls GitHub through `gh` when gh has a login, and through the public API when it has none.
 
 ## What's in This Repo
 

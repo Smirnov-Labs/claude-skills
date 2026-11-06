@@ -1,0 +1,823 @@
+#!/usr/bin/env python3
+"""latest-version: the newest release of a GitHub repo, or the newest tag of a
+container image in any OCI registry, sorted as versions. See --help."""
+
+import argparse
+import hashlib
+import http.client
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections import Counter
+
+HELP = """\
+usage: latest-version TARGET [-n N] [--pre] [--match REGEX] [--tags] [--json]
+       latest-version IMAGE --digest TAG [--json]
+
+Print the newest versions of a GitHub repo or a container image, newest first,
+one tag per line.
+
+TARGET
+  OWNER/REPO     GitHub releases, drafts skipped. A repo with no releases falls
+                 back to its tags. A github.com URL works too. With a gh
+                 login it sends gh's token (read with `gh auth token`) to the
+                 GitHub API, else it uses the public API without a token.
+  IMAGE          Tags from an OCI registry, with an anonymous token:
+                 ghcr.io/org/img, quay.io/org/img, registry.k8s.io/pause,
+                 host:port/path, docker.io/user/img, or a bare name such as
+                 caddy (Docker Hub library/caddy). OWNER/REPO alone always
+                 means GitHub: write docker.io/user/img for a Docker Hub user
+                 image. A :tag or @digest on IMAGE is ignored.
+
+OPTIONS
+  -n N           print the N newest (default 1)
+  --pre          include pre-releases
+  --match REGEX  keep only the tags that REGEX finds (Python re.search). If
+                 REGEX has a group, the version is read from group 1, for tags
+                 such as jq-1.8.2: --match '^jq-(.+)$'
+  --tags         GitHub only: read the tags even when the repo has releases
+  --json         print JSON instead of plain lines
+  --digest TAG   print the manifest digest of IMAGE:TAG. For a multi-platform
+                 image it is the digest of the index, the one docker pull uses
+  -h, --help     show this help
+
+HOW TAGS ARE SORTED
+  A version is v?N(.N)* with an optional suffix. Numbers compare as numbers,
+  so 1.10 is newer than 1.9. A suffix with a pre-release word (alpha, beta,
+  rc, pre, preview, dev, snapshot, nightly, canary and others, or a1, b2, M1)
+  makes a pre-release: it sorts below the release and shows only with --pre.
+  A GitHub release marked as a pre-release is one too. A suffix with any other
+  word, such as -alpine or -slim, makes a variant, and so does a number-only
+  suffix such as -1: variants show only with --match. Tags with the same
+  version (13.3 and 13.3.0) print once, as the longer tag. Tags that are not
+  versions (latest, main, sha-1a2b3c4) are set aside. A one-number tag (2,
+  20241105) counts only with --match. A suffix made only of release words
+  (2.0.Final, 2.0-lts, -ga, -stable, -release) counts as the release itself,
+  so 2.0, 2.0-lts and 2.0.Final are one version.
+
+PAGES
+  Registry tags and GitHub tags are read in full. GitHub lists releases by
+  date, not by version, so for a repo with more than 100 releases the tool
+  reads every tag name in one call. Then it looks up the release of each
+  tag that could rank among the N newest. A list of more than 1000 pages
+  exits 2, because the newest is then unknown. So does a registry that
+  sends the same tags again when asked for the next page.
+
+EXIT STATUS
+  0 found   1 nothing matched   2 network or API error   3 usage error
+
+ENVIRONMENT (for tests)
+  LATEST_VERSION_GITHUB_API       GitHub API base (default https://api.github.com).
+                                  The token goes there only if it is
+                                  api.github.com or this machine (tests).
+  LATEST_VERSION_REGISTRY_SCHEME  http, for a local test registry only: tokens
+                                  then travel without TLS
+  LATEST_VERSION_DOCKER_HUB       Docker Hub registry host
+                                  (default registry-1.docker.io)
+"""
+
+EXIT_FOUND, EXIT_NONE, EXIT_ERROR, EXIT_USAGE = 0, 1, 2, 3
+TIMEOUT = 30          # seconds per HTTP request
+MAX_PAGES = 1000      # per listing; past that the answer is unknown: exit 2
+NO_LINK_PAGE = 10000  # the page size asked of registries, see Registry.tags
+MAX_LOOKUPS = 20      # GitHub releases looked up by tag before every page is read
+UA = "latest-version/1.0"
+GITHUB_HEADERS = {"Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28"}
+MANIFEST_TYPES = ", ".join([
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+])
+MANIFEST_MEDIA = {m.strip() for m in MANIFEST_TYPES.split(",")}
+DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+DOCKER_HUB = {"docker.io", "index.docker.io", "registry-1.docker.io",
+              "registry.hub.docker.com"}
+
+# Suffix words. A pre-release word anywhere in the suffix makes a pre-release;
+# a suffix made only of stable words (1.2.3.Final, 1.2.3-lts) is a release.
+PRE_RANK = {"alpha": 1, "a": 1, "beta": 2, "b": 2, "m": 2, "milestone": 2,
+            "pre": 3, "preview": 3, "ea": 3, "rc": 4, "cr": 4}
+PRE_WORDS = set(PRE_RANK) - {"a", "b", "m"} | {
+    "dev", "snapshot", "nightly", "canary", "next", "edge", "experimental",
+    "exp", "unstable", "insider", "insiders", "test", "testing"}
+LETTER_PRE = {"a", "b", "m"}   # pre-release only when a number follows: 3.13.0a1, 5.0-M1
+STABLE_WORDS = {"final", "release", "ga", "stable", "lts"}
+VERSION = re.compile(r"[vV]?(\d+(?:\.\d+)*)(.*)", re.S)
+
+
+class Fail(Exception):
+    """A network or API error: exit 2."""
+
+
+class Usage(Exception):
+    """A usage error: exit 3."""
+
+
+# ---------------------------------------------------------------- HTTP
+
+def _netloc(url):
+    return urllib.parse.urlsplit(url).netloc.lower()
+
+
+def _secure(url):
+    """https, or plain http to this machine only (a local test server)."""
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost", "::1"))
+
+
+class _Redirect(urllib.request.HTTPRedirectHandler):
+    """Follow redirects, but never to plain http, and never carry a token to another host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _secure(urllib.parse.urljoin(req.full_url, newurl)):
+            raise urllib.error.URLError(f"refusing a redirect to {newurl}: it is not https")
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and _netloc(newurl) != _netloc(req.full_url):
+            new.remove_header("Authorization")
+        return new
+
+
+_OPENER = urllib.request.build_opener(_Redirect)
+
+
+class Response:
+    def __init__(self, status, headers, body, url):
+        self.status, self.headers, self.body, self.url = status, headers, body, url
+
+    def header(self, name):
+        values = self.headers.get(name.lower())
+        return values[0] if values else None
+
+
+def _header_map(pairs):
+    out = {}
+    for k, v in pairs:
+        out.setdefault(k.strip().lower(), []).append(v.strip())
+    return out
+
+
+def fetch(method, url, headers=None):
+    if not _secure(url):                 # a Link header or a token realm can name plain http too
+        raise Fail(f"refusing {url}: it is not https")
+    req = urllib.request.Request(url, method=method,
+                                 headers={"User-Agent": UA, **(headers or {})})
+    try:
+        with _OPENER.open(req, timeout=TIMEOUT) as r:
+            return Response(r.status, _header_map(r.headers.items()), r.read(), r.geturl())
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read()
+        except (OSError, http.client.HTTPException):
+            body = b""
+        hdrs = e.headers.items() if e.headers else []
+        return Response(e.code, _header_map(hdrs), body, e.geturl() or url)
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as e:
+        raise Fail(f"{_netloc(url) or url}: {getattr(e, 'reason', e)}")
+
+
+def load_json(resp, what):
+    try:
+        return json.loads(resp.body)
+    except ValueError:
+        raise Fail(f"{what}: the reply from {_netloc(resp.url)} is not JSON")
+
+
+def next_link(resp):
+    """The rel="next" URL of a Link header, made absolute, or None."""
+    for value in resp.headers.get("link", []):
+        for m in re.finditer(r"<([^>]*)>([^<]*)", value):
+            if re.search(r'\brel\s*=\s*"?[^"]*\bnext\b', m.group(2)):
+                return urllib.parse.urljoin(resp.url, m.group(1))
+    return None
+
+
+# ---------------------------------------------------------------- versions
+
+class Version:
+    __slots__ = ("tag", "nums", "kind", "variant", "order", "extra", "aliases")
+
+
+def _token_key(word):
+    return (0, int(word), "") if word.isdigit() else (1, PRE_RANK.get(word, 0), word)
+
+
+def parse_version(text, prerelease=False):
+    """A Version for TEXT, or None when TEXT is not a version."""
+    m = VERSION.fullmatch(text)
+    if not m:
+        return None
+    v = Version()
+    v.nums = tuple(int(p) for p in m.group(1).split("."))
+    rest, _, build = m.group(2).partition("+")
+    words = [w.lower() for w in re.findall(r"[A-Za-z]+|\d+", rest)]
+    pre = [w in PRE_WORDS or (w in LETTER_PRE and i + 1 < len(words) and words[i + 1].isdigit())
+           for i, w in enumerate(words)]
+    # A variant has a suffix word that is neither a pre-release word nor a
+    # release word (2.8.4-alpine, 3.0.0-rc.1-busybox), or only numbers (1.2.3-1).
+    other = [w for w, p in zip(words, pre) if not p and not w.isdigit() and w not in STABLE_WORDS]
+    v.variant = bool(other) or (bool(words) and all(w.isdigit() for w in words))
+    if any(pre):
+        v.kind, v.order = "pre", (0, tuple(_token_key(w) for w in words))
+    else:
+        # Release words do not count (2.0.Final is 2.0). Of two variants of
+        # one version, the plainer ranks first: -alpine, then -builder-alpine.
+        tokens = [w for w in words if w not in STABLE_WORDS] + re.findall(r"[a-z]+|\d+", build.lower())
+        v.kind, v.order = "stable", (1, -len(tokens), tuple(_token_key(w) for w in tokens))
+    if prerelease:
+        v.kind = "pre"
+    v.aliases = []
+    return v
+
+
+def sort_key(v):
+    """Higher is newer: the numbers (1.10 above 1.9, 2 the same as 2.0), then
+    a release above its variants above its pre-releases, then the suffix."""
+    return (v.nums + (0,) * (8 - len(v.nums)), v.kind == "stable", not v.variant, v.order)
+
+
+class Pool:
+    """Every tag seen, and the rules that pick the newest versions."""
+
+    def __init__(self, match, pre):
+        self.rx, self.pre = match, pre
+        self.versions, self.other, self.lone = [], [], []
+        self.seen = self.unmatched = 0
+        self.partial = False   # True when not every release was read
+
+    def add(self, tag, prerelease=False, extra=None):
+        self.seen += 1
+        text = tag
+        if self.rx:
+            m = self.rx.search(tag)
+            if not m:
+                self.unmatched += 1
+                return None
+            if self.rx.groups:
+                text = m.group(1) or ""
+        v = parse_version(text, prerelease)
+        if v is None:
+            self.other.append(tag)
+            return None
+        v.tag, v.extra = tag, extra
+        self.versions.append(v)
+        return v
+
+    def shown(self, v):
+        return (v.kind == "stable" or self.pre) and (not v.variant or self.rx is not None)
+
+    def ranked(self):
+        """The shown versions, newest first, one entry per version."""
+        cands = [v for v in self.versions if self.shown(v)]
+        # A one-number tag (2, 20241105, an all-digit short sha) counts only
+        # when --match picked it. The rule looks at no other tag, so a list
+        # read in part ranks the same as the whole list.
+        keep, self.lone = [], []
+        for v in cands:
+            if len(v.nums) == 1 and self.rx is None:
+                self.lone.append(v.tag)
+            else:
+                keep.append(v)
+        keep.sort(key=lambda v: v.tag)
+        keep.sort(key=lambda v: (sort_key(v), len(v.nums)), reverse=True)
+        out = []
+        for v in keep:   # 13.3 and v13.3.0 are one version: keep the longer tag
+            if out and sort_key(out[-1]) == sort_key(v):
+                out[-1].aliases.append(v.tag)
+            else:
+                v.aliases = []
+                out.append(v)
+        return out
+
+    def explain(self, name, kind_of_tags):
+        """Why nothing matched, for stderr."""
+        if self.seen == 0:
+            return f"{name} has no {kind_of_tags}"
+        counted = f"the {kind_of_tags}" if self.partial else f"the {self.seen} {kind_of_tags}"
+        if self.rx and self.unmatched == self.seen:
+            return f"none of {counted} of {name} match --match {self.rx.pattern!r}"
+        parts = []
+        pre = [v.tag for v in self.versions if v.kind == "pre"]
+        var = [v.tag for v in self.versions if v.variant]
+        if pre and not self.pre:
+            parts.append(f"{len(pre)} pre-releases such as {pre[0]} (add --pre)")
+        if var and not self.rx:
+            parts.append(f"{len(var)} variants such as {var[0]} (pick them with --match)")
+        if self.lone:
+            parts.append(f"{len(self.lone)} one-number tags such as {self.lone[0]} (pick them with --match)")
+        if self.other:
+            parts.append(f"{len(self.other)} tags that are not versions, such as "
+                         + ", ".join(self.other[:3]))
+            hint = prefix_hint(self.other)
+            if hint:
+                parts.append(f"for prefixed tags try {hint}")
+        what = "version" if self.pre else "stable version"
+        return f"no {what} among {counted} of {name}: " + "; ".join(parts)
+
+
+def prefix_hint(tags):
+    """--match '^jq-(.+)$' when most tags look like a prefix and a version."""
+    counts = Counter()
+    for t in tags:
+        m = re.match(r"(\D+?)[vV]?\d+(?:\.\d+)+", t)
+        if m and "'" not in m.group(1):
+            counts[m.group(1)] += 1
+    if not counts:
+        return None
+    prefix = re.sub(r"([.^$*+?{}\[\]\\|()])", r"\\\1", counts.most_common(1)[0][0])
+    return f"--match '^{prefix}(.+)$'"
+
+
+# ---------------------------------------------------------------- GitHub
+
+def gh_token():
+    """The token gh is logged in with for github.com, or None. It only ever goes into an Authorization header."""
+    gh = shutil.which("gh")
+    if not gh:
+        return None
+    env = dict(os.environ, GH_PROMPT_DISABLED="1", GH_NO_UPDATE_NOTIFIER="1", NO_COLOR="1")
+    try:
+        p = subprocess.run([gh, "auth", "token", "--hostname", "github.com"], capture_output=True, text=True,
+                           timeout=TIMEOUT, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    token = p.stdout.strip()
+    return token if p.returncode == 0 and re.fullmatch(r"[A-Za-z0-9_]{20,255}", token) else None
+
+
+class GitHub:
+    """Every call goes through fetch(), so each redirect is checked: never to plain http, and the token never
+    follows a redirect to another host. gh only lends its token."""
+
+    def __init__(self):
+        base = os.environ.get("LATEST_VERSION_GITHUB_API")
+        self.base = (base or "https://api.github.com").rstrip("/")
+        host = urllib.parse.urlsplit(self.base).hostname
+        self.token = gh_token() if host in ("api.github.com", "127.0.0.1", "localhost", "::1") else None
+
+    def get(self, url):
+        if not _secure(url):
+            raise Fail(f"refusing {url}: it is not https")
+        headers = dict(GITHUB_HEADERS)
+        if self.token and _netloc(url) == _netloc(self.base):
+            headers["Authorization"] = f"Bearer {self.token}"
+        resp = fetch("GET", url, headers)
+        if resp.status == 401 and "Authorization" in headers:
+            self.token = None            # a stale gh token: the anonymous API may still work
+            resp = fetch("GET", url, GITHUB_HEADERS)
+        return resp
+
+
+def github_fail(resp, slug, bare):
+    msg = ""
+    try:
+        msg = json.loads(resp.body).get("message", "")
+    except (ValueError, AttributeError):
+        pass
+    if resp.status == 404:
+        hint = f"; for a Docker Hub image write docker.io/{slug}" if bare else ""
+        return Fail(f"{slug}: no such repo on GitHub{hint}")
+    if resp.status in (403, 429) and (resp.header("x-ratelimit-remaining") == "0"
+                                      or "rate limit" in msg.lower()):
+        return Fail("GitHub's API rate limit is used up (without a login it allows 60 "
+                    "calls an hour): log in with `gh auth login`, or wait for the reset")
+    return Fail(f"{slug}: GitHub answered HTTP {resp.status} {msg}".rstrip())
+
+
+def github_versions(owner, repo, opts, pool, bare):
+    """Fill POOL from releases (or tags) and return the source name."""
+    api, slug = GitHub(), f"{owner}/{repo}"
+    base = f"{api.base}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}"
+
+    def get(url, absent=()):
+        """The JSON and the next-page URL, or (None, None) for an ABSENT status."""
+        resp = api.get(url)
+        if resp.status in absent:
+            return None, None
+        if resp.status != 200:
+            raise github_fail(resp, slug, bare)
+        return load_json(resp, slug), next_link(resp)
+
+    def items(data):
+        if not isinstance(data, list):
+            raise Fail(f"{slug}: unexpected reply from GitHub")
+        return data
+
+    def all_tags():
+        """Every tag name. The refs API sends them all in one reply."""
+        names, url, pages = [], f"{base}/git/matching-refs/tags", 0
+        while url:
+            data, url = get(url, absent=(409,))   # 409: an empty repo
+            if data is None:
+                return names
+            for ref in items(data):
+                name = ref.get("ref", "") if isinstance(ref, dict) else ""
+                if name.startswith("refs/tags/"):
+                    names.append(name[len("refs/tags/"):])
+            pages += 1
+            if url and pages >= MAX_PAGES:
+                raise Fail(f"{slug}: stopped after {pages} pages of tags; the newest is unknown")
+        return names
+
+    added = {}   # tag -> True when its release shows in the output
+
+    def add(release):
+        tag = release.get("tag_name") if isinstance(release, dict) else None
+        if tag and not release.get("draft") and tag not in added:
+            v = pool.add(tag, bool(release.get("prerelease")),
+                         {"name": release.get("name"), "published_at": release.get("published_at"),
+                          "url": release.get("html_url")})
+            added[tag] = v is not None and pool.shown(v)
+
+    def walk():
+        """GitHub lists releases by date, not by version, so a higher version
+        can sit on any page. Every release has a tag: walk the tags from the
+        highest version down, and look up the release of each tag that could
+        still rank among the N newest. False when that cannot finish."""
+        shapes = Pool(opts.rx, opts.pre)
+        for name in all_tags():
+            shapes.add(name)
+        lookups = 0
+        for v in shapes.ranked():
+            top = pool.ranked()[:opts.n]
+            if len(top) == opts.n and sort_key(v) < sort_key(top[-1]):
+                return True   # a flag only lowers a tag's rank, so none below can enter
+            for tag in [v.tag] + v.aliases:   # 2.0.0 and v2.0.0: one may be a pre-release
+                if tag not in added:
+                    if lookups == MAX_LOOKUPS:
+                        return False
+                    lookups += 1
+                    release, _ = get(f"{base}/releases/tags/{urllib.parse.quote(tag, safe='')}",
+                                     absent=(404,))
+                    if release:
+                        add(release)
+                if added.get(tag):
+                    break
+        return True
+
+    if not opts.tags:
+        first, more = get(f"{base}/releases?per_page=100")
+        for release in items(first):
+            add(release)
+        if more:
+            pool.partial = True
+            if walk():
+                more = None
+        pages = 1
+        while more:   # the walk could not finish: read every page instead
+            data, more = get(more)
+            for release in items(data):
+                add(release)
+            pages += 1
+            if more and pages >= MAX_PAGES:
+                raise Fail(f"{slug}: stopped after {pages} pages of releases; the newest is unknown")
+        if added:
+            return "github-releases"
+    for name in all_tags():
+        pool.add(name)
+    return "github-tags"
+
+
+# ---------------------------------------------------------------- registries
+
+def bearer_challenge(values):
+    """The parameters of the first Bearer challenge in WWW-Authenticate
+    values. One value can hold several challenges (Basic realm="x", Bearer
+    realm="y"), and a quoted string can hold commas."""
+    for value in values:
+        scheme, params = None, {}
+        for m in re.finditer(r'([\w.~+/-]+)(?:\s*=\s*("(?:[^"\\]|\\.)*"|[^\s,]*))?', value):
+            key, val = m.group(1), m.group(2)
+            if val is None:   # a bare word starts the next challenge
+                if scheme and scheme.lower() == "bearer":
+                    return params
+                scheme, params = key, {}
+            elif scheme:
+                if val.startswith('"'):
+                    val = re.sub(r"\\(.)", r"\1", val[1:-1])
+                params.setdefault(key.lower(), val)
+        if scheme and scheme.lower() == "bearer":
+            return params
+    return None
+
+
+def registry_error(resp):
+    try:
+        errors = json.loads(resp.body).get("errors") or []
+        return "; ".join(f"{e.get('code', '')} {e.get('message', '')}".strip() for e in errors)
+    except (ValueError, AttributeError, TypeError):
+        return ""
+
+
+def is_manifest(doc, ctype):
+    """True for the structure ctype promises: an index lists manifests, a manifest has a config and layers."""
+    if not isinstance(doc, dict) or doc.get("schemaVersion") != 2:
+        return False
+    if ctype.endswith(("index.v1+json", "manifest.list.v2+json")):
+        return isinstance(doc.get("manifests"), list)
+    return isinstance(doc.get("config"), dict) and isinstance(doc.get("layers"), list)
+
+
+class Registry:
+    def __init__(self, host, path, name):
+        self.scheme = os.environ.get("LATEST_VERSION_REGISTRY_SCHEME") or "https"
+        if host == "docker.io":
+            host = os.environ.get("LATEST_VERSION_DOCKER_HUB") or "registry-1.docker.io"
+        self.base, self.path, self.name = f"{self.scheme}://{host}", path, name
+        self.tokens = {}   # host -> anonymous bearer token
+
+    def get(self, method, url, headers):
+        """One request, answering a 401 Bearer challenge with an anonymous token."""
+        refreshed = set()
+        for _ in range(6):   # a token per host, and a redirect may add a host
+            h, here = dict(headers), _netloc(url)
+            token = self.tokens.get(here)
+            if token:
+                h["Authorization"] = f"Bearer {token}"
+            resp = fetch(method, url, h)
+            if resp.status != 401:
+                return resp
+            where = _netloc(resp.url)
+            if where != here and where in self.tokens:
+                url = resp.url   # the redirect dropped the token: send the one we have
+                continue
+            if where in refreshed:
+                raise Fail(f"{self.name}: access denied with an anonymous token; "
+                           "the image may be private or not exist")
+            refreshed.add(where)
+            self.tokens[where] = self._token(resp)
+            url = resp.url
+        raise Fail(f"{self.name}: too many authentication rounds")
+
+    def _token(self, resp):
+        ch = bearer_challenge(resp.headers.get("www-authenticate", []))
+        if ch is None or not ch.get("realm"):
+            raise Fail(f"{self.name}: the registry wants a login and offers no anonymous token")
+        realm = ch["realm"]
+        scheme = urllib.parse.urlsplit(realm).scheme
+        if scheme != "https" and not (scheme == "http" and self.scheme == "http"):
+            raise Fail(f"{self.name}: refusing the token service at {realm}: it is not https")
+        query = {"scope": ch.get("scope") or f"repository:{self.path}:pull"}
+        if ch.get("service"):
+            query = {"service": ch["service"], **query}
+        url = realm + ("&" if "?" in realm else "?") + urllib.parse.urlencode(query)
+        tr = fetch("GET", url, {"Accept": "application/json"})
+        if tr.status != 200:
+            raise Fail(f"{self.name}: no anonymous token (HTTP {tr.status} from {_netloc(url)}); "
+                       "the image may be private or not exist")
+        data = load_json(tr, self.name)
+        token = data.get("token") or data.get("access_token") if isinstance(data, dict) else None
+        if not token:
+            raise Fail(f"{self.name}: the token service sent no token")
+        return token
+
+    def tags(self, pool):
+        # Ask for a big first page: Docker Hub then sends every tag at once,
+        # GHCR sends 1000 and quay 100. A registry that refuses the size (400)
+        # is asked again without it. Later pages follow the Link header.
+        plain = f"{self.base}/v2/{self.path}/tags/list"
+        url, seen, known = f"{plain}?n={NO_LINK_PAGE}", set(), set()
+        again = False   # True when URL asks for the page after an earlier one
+        while url:
+            if url in seen:
+                raise Fail(f"{self.name}: the registry sent the same page twice")
+            seen.add(url)
+            resp = self.get("GET", url, {"Accept": "application/json"})
+            if resp.status == 400 and url == f"{plain}?n={NO_LINK_PAGE}":
+                url = plain
+                continue
+            if resp.status == 404:
+                raise Fail(f"{self.name}: not found ({registry_error(resp) or 'HTTP 404'})")
+            if resp.status != 200:
+                detail = registry_error(resp) or f"HTTP {resp.status}"
+                raise Fail(f"{self.name}: the registry refused the tag list ({detail})")
+            data = load_json(resp, self.name)
+            raw = data.get("tags", ...) if isinstance(data, dict) else ...
+            if raw is ... or not (raw is None or isinstance(raw, list) and all(isinstance(x, str) for x in raw)):
+                # a proxy's or a sign-in page's JSON is not a tag list: an empty page would hide the newest tags
+                raise Fail(f"{self.name}: the registry's reply is not a tag list: {resp.body[:120]!r}")
+            tags = list(raw or [])
+            new = [t for t in tags if t not in known]
+            if again and tags and not new:
+                raise Fail(f"{self.name}: the registry sent the same tags again for the next "
+                           "page, so the newest is unknown")
+            known.update(new)
+            for tag in new:
+                pool.add(tag)
+            final = urllib.parse.urlsplit(resp.url)   # after any redirect
+            query = urllib.parse.parse_qsl(final.query)
+            asked = dict(query).get("n", "")
+            url = next_link(resp)
+            again = url is not None
+            if url is None and tags and asked.isdigit() and len(tags) == int(asked):
+                # The spec lets a full page of n tags come without a Link
+                # header. Ask the same endpoint for the tags after the last.
+                query = [(k, x) for k, x in query if k != "last"] + [("last", tags[-1])]
+                url = urllib.parse.urlunsplit(final._replace(query=urllib.parse.urlencode(query)))
+                again = True
+            if url and len(seen) >= MAX_PAGES:
+                raise Fail(f"{self.name}: stopped after {len(seen)} pages of tags; the newest is unknown")
+
+    def digest(self, tag):
+        """(digest, media type) of IMAGE:TAG, or None when the tag does not exist."""
+        url = f"{self.base}/v2/{self.path}/manifests/{urllib.parse.quote(tag, safe='')}"
+        accept = {"Accept": MANIFEST_TYPES}
+        resp = self.get("HEAD", url, accept)       # HEAD does not count as a pull
+        head_type = (resp.header("content-type") or "").split(";")[0].strip().lower()
+        if (resp.status == 200 and head_type in MANIFEST_MEDIA
+                and DIGEST.fullmatch(resp.header("docker-content-digest") or "")):
+            return resp.header("docker-content-digest"), head_type
+        if resp.status == 404:
+            return None
+        resp = self.get("GET", url, accept)        # no digest header, or an error to read
+        if resp.status == 404:
+            return None
+        if resp.status != 200:
+            detail = registry_error(resp) or f"HTTP {resp.status}"
+            raise Fail(f"{self.name}: the registry refused the manifest of {tag} ({detail})")
+        ctype = (resp.header("content-type") or "").split(";")[0].strip().lower()
+        try:
+            doc = json.loads(resp.body)
+        except ValueError:
+            doc = None
+        if ctype not in MANIFEST_MEDIA or not is_manifest(doc, ctype):
+            # a sign-in page or an error page answered with 200: its hash would be a useless pin
+            raise Fail(f"{self.name}: the registry answered {tag} with {ctype or 'no content type'}, not a manifest")
+        header = resp.header("docker-content-digest")
+        if header and not DIGEST.fullmatch(header):
+            raise Fail(f"{self.name}: the registry sent a malformed digest for {tag}: {header[:80]}")
+        return header or "sha256:" + hashlib.sha256(resp.body).hexdigest(), ctype
+
+
+# ---------------------------------------------------------------- targets
+
+OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?")
+REPO = re.compile(r"[A-Za-z0-9._-]+")
+HOST = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d+)?")
+PATH_PART = re.compile(r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*")
+
+
+def parse_target(text):
+    """('github', owner, repo, bare) or ('image', host, path, display name)."""
+    text = text.strip()
+    m = re.match(r"(?:https?://)?(?:www\.)?github\.com/([^/\s]+)/([^/\s?#]+)", text, re.I)
+    bare = m is None
+    if m:
+        owner, repo = m.group(1), m.group(2)
+    else:
+        ref = re.sub(r"^(?:https?|docker|oci)://", "", text, flags=re.I).split("@", 1)[0]
+        has_tag = ref.rfind(":") > ref.rfind("/")
+        if has_tag:
+            ref = ref[:ref.rfind(":")]
+        parts = ref.split("/")
+        if not all(parts):
+            raise Usage(f"not a repo or image: {text!r}")
+        hosted = len(parts) > 1 and ("." in parts[0] or ":" in parts[0] or parts[0] == "localhost")
+        if hosted or len(parts) != 2 or has_tag or "@" in text:
+            return image_target(parts if hosted else ["docker.io"] + parts, text)
+        owner, repo = parts
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    if not OWNER.fullmatch(owner) or not REPO.fullmatch(repo):
+        raise Usage(f"not a GitHub OWNER/REPO: {text!r}")
+    return ("github", owner, repo, bare)
+
+
+def image_target(parts, text):
+    host, path = parts[0].lower(), [p.lower() for p in parts[1:]]
+    if not HOST.fullmatch(host) or not all(PATH_PART.fullmatch(p) for p in path):
+        raise Usage(f"not an image name: {text!r}")
+    if host in DOCKER_HUB:
+        host = "docker.io"
+        if len(path) == 1:
+            path = ["library"] + path
+    path = "/".join(path)
+    return ("image", host, path, f"{host}/{path}")
+
+
+# ---------------------------------------------------------------- main
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message):
+        sys.stderr.write(f"latest-version: {message}\nRun 'latest-version --help' for usage.\n")
+        sys.exit(EXIT_USAGE)
+
+
+def _count(text):
+    n = int(text)
+    if n < 1:
+        raise ValueError(text)
+    return n
+
+
+def parse_args(argv):
+    p = _Parser(prog="latest-version", add_help=False)
+    p.add_argument("target", nargs="?")
+    p.add_argument("-n", type=_count, default=None)
+    p.add_argument("--pre", action="store_true")
+    p.add_argument("--match")
+    p.add_argument("--tags", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--digest", metavar="TAG")
+    p.add_argument("-h", "--help", action="store_true")
+    joined, rest = [], list(argv)
+    while rest:   # so that --match -alpine$ is a value, not an unknown option
+        arg = rest.pop(0)
+        joined.append(f"{arg}={rest.pop(0)}" if arg in ("--match", "--digest") and rest else arg)
+    opts = p.parse_args(joined)
+    if opts.help:
+        sys.stdout.write(HELP)
+        sys.exit(EXIT_FOUND)
+    if not opts.target:
+        p.error("give a GitHub OWNER/REPO or an IMAGE")
+    if opts.digest is not None and (opts.n or opts.pre or opts.match or opts.tags):
+        p.error("--digest takes no -n, --pre, --match or --tags")
+    opts.n = opts.n or 1
+    try:
+        opts.rx = re.compile(opts.match) if opts.match else None
+    except re.error as e:
+        p.error(f"bad --match regex: {e}")
+    return opts
+
+
+def run(opts):
+    kind, a, b, c = parse_target(opts.target)
+    if kind == "github":
+        if opts.digest is not None:
+            raise Usage("--digest needs an image; OWNER/REPO means a GitHub repo, "
+                        f"so write docker.io/{a}/{b} for a Docker Hub image")
+        name = f"{a}/{b}"
+    else:
+        if opts.tags:
+            raise Usage("--tags is for GitHub repos")
+        name = c
+        if opts.digest is not None:
+            if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", opts.digest):
+                raise Usage(f"not a tag: {opts.digest!r}")
+            found = Registry(a, b, name).digest(opts.digest)
+            if found is None:
+                print(f"latest-version: {name}:{opts.digest} not found", file=sys.stderr)
+                return EXIT_NONE
+            if opts.json:
+                print(json.dumps({"target": name, "tag": opts.digest, "digest": found[0],
+                                  "media_type": found[1]}, indent=2))
+            else:
+                print(found[0])
+            return EXIT_FOUND
+
+    pool = Pool(opts.rx, opts.pre)
+    if kind == "github":
+        source = github_versions(a, b, opts, pool, c)
+    else:
+        Registry(a, b, name).tags(pool)
+        source = "registry"
+    top = pool.ranked()[:opts.n]
+    if opts.json:
+        versions = []
+        for v in top:
+            entry = {"tag": v.tag, "kind": v.kind, "variant": v.variant, "aliases": v.aliases}
+            entry.update({k: x for k, x in (v.extra or {}).items() if x is not None})
+            versions.append(entry)
+        print(json.dumps({"target": name, "source": source, "versions": versions,
+                          "other_tags": pool.other[:20], "other_count": len(pool.other)},
+                         indent=2))
+    else:
+        for v in top:
+            print(v.tag)
+    if not top:
+        msg = pool.explain(name, "releases" if source == "github-releases" else "tags")
+        if source == "github-tags" and not opts.tags:
+            msg = f"{name} has no releases, so its tags were read. {msg}"
+        print(f"latest-version: {msg}", file=sys.stderr)
+        return EXIT_NONE
+    return EXIT_FOUND
+
+
+def main(argv=None):
+    opts = parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        code = run(opts)
+        sys.stdout.flush()
+        return code
+    except Usage as e:
+        print(f"latest-version: {e}", file=sys.stderr)
+        return EXIT_USAGE
+    except Fail as e:
+        print(f"latest-version: {e}", file=sys.stderr)
+        return EXIT_ERROR
+    except KeyboardInterrupt:
+        return 130
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return EXIT_FOUND
+
+
+if __name__ == "__main__":
+    sys.exit(main())
