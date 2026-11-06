@@ -42,17 +42,25 @@ RELEASES = {   # pages of releases, newest first as GitHub sends them
     "acme/mono": [[rel("storage/v1.42.5"), rel("other/v9.0.0")], [rel("other/v8.0.0")],
                   [rel("storage/v1.43.0")], [rel("storage/v1.0.0")], [rel("storage/v0.1.0")],
                   [rel("storage/v0.0.1")]],
+    "acme/late": [[rel("v3.0.0")], [rel("v2.0.0")], [rel("other-1")], [rel("v1.0.0")], [rel("v4.0.0")]],
     "acme/norel": [[]],
     "acme/drafts": [[rel("v5.0.0", draft=True)]],
+    "acme/drafttag": [[rel("v1.0.0")], [rel("v2.0.0", draft=True), rel("v0.9.0")]],
+    "acme/sparse": [[rel("v1.0.0")], [rel("v0.9.0")], [rel("v1.5.0")]],
     "acme/prefixed": [[rel("jq-1.7.1"), rel("jq-1.8.0"), rel("jq-1.10.0rc1", prerelease=True)]],
 }
-GH_TAGS = {
-    "acme/tool": [["v1.11.0"]],
-    "acme/norel": [["v0.9.0", "v0.10.0"], ["latest", "v0.10.1-rc1"]],
-    "acme/drafts": [["v4.0.0"]],
+GH_TAGS = {   # tags with no published release; release tags are added below
+    "acme/tool": ["v1.11.0"],
+    "acme/norel": ["v0.9.0", "v0.10.0", "latest", "v0.10.1-rc1"],
+    "acme/drafts": ["v4.0.0"],
+    "acme/drafttag": ["v2.0.0"],
+    "acme/sparse": ["v2.%d.0" % i for i in range(25)],
 }
 IDS = {s: i for i, s in enumerate(sorted(set(RELEASES) | set(GH_TAGS)), start=1)}
 SLUGS = {i: s for s, i in IDS.items()}
+PUBLISHED = {s: {r["tag_name"]: r for page in pages for r in page if not r["draft"]}
+             for s, pages in RELEASES.items()}
+ALL_TAGS = {s: sorted(set(PUBLISHED.get(s, {})) | set(GH_TAGS.get(s, []))) for s in IDS}
 REG = {   # tag lists in lexical order, as registries send them
     "org/img": sorted(["1", "1.10", "1.10.0", "1.10.1-alpine", "1.11.0-beta.2", "1.11.0-rc.1",
                        "1.11.0-rc.10", "1.11.0-rc.9", "1.2.0", "1.9.0", "1234567", "20241105",
@@ -62,7 +70,10 @@ REG = {   # tag lists in lexical order, as registries send them
     "org/open": ["1.0.0", "1.1.0"],
     "org/dates": ["20241105", "20241201", "latest"],
     "org/shas": ["1234567", "a1b2c3d", "latest", "sha-89abcde"],
+    "org/java": ["33.0.2.Final", "34.0.0.Beta1", "34.0.0.Final", "35.0.0.CR1"],
+    "org/lts": ["1.0", "2.0-lts"],
 }
+BACKEND = ["1.0.0", "1.1.0", "2.0.0"]   # behind org/redir, two to a page
 BIG = sorted(["1.0.%d" % i for i in range(10000)] + ["2.0.0"])   # 2.0.0 sorts last
 PAGE = 5
 INDEX, PLATFORM = b'{"index":true}', b'{"platform":true}'
@@ -112,11 +123,15 @@ class H(BaseHTTPRequestHandler):
         self.send(404, {"message": "Not Found"})
 
     def github(self, path, q):
-        parts = path.strip("/").split("/")
+        parts = [urllib.parse.unquote(x) for x in path.strip("/").split("/")]
         if parts[0] == "repos" and len(parts) == 4:
             slug, kind = parts[1] + "/" + parts[2], parts[3]
         elif parts[0] == "repositories" and len(parts) == 3:
             slug, kind = SLUGS.get(int(parts[1]), "?"), parts[2]
+        elif parts[0] == "repos" and len(parts) == 6 and parts[3:5] == ["releases", "tags"]:
+            slug, kind = parts[1] + "/" + parts[2], "lookup"
+        elif parts[0] == "repos" and parts[3:] == ["git", "matching-refs", "tags"]:
+            slug, kind = parts[1] + "/" + parts[2], "refs"
         else:
             return self.send(404, {"message": "Not Found"})
         if slug == "acme/limited":
@@ -128,11 +143,17 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, b"<html>", ctype="text/html")
         if slug not in IDS:
             return self.send(404, {"message": "Not Found"})
-        pages = (RELEASES if kind == "releases" else GH_TAGS).get(slug, [[]])
+        if kind == "refs":   # every tag in one reply, as GitHub sends them
+            return self.send(200, [{"ref": "refs/tags/" + t, "object": {"sha": "0" * 40, "type": "commit"}}
+                                   for t in ALL_TAGS[slug]])
+        if kind == "lookup":   # published releases only, as GitHub serves them
+            release = PUBLISHED.get(slug, {}).get(parts[5])
+            return self.send(200, release) if release else self.send(404, {"message": "Not Found"})
+        if kind != "releases":
+            return self.send(404, {"message": "Not Found"})
+        pages = RELEASES.get(slug, [[]])
         page = int(q.get("page", "1"))
         items = pages[page - 1] if page <= len(pages) else []
-        if kind == "tags":
-            items = [{"name": t, "commit": {"sha": "0" * 40}} for t in items]
         headers = {}
         if page < len(pages):
             base = f"http://{self.headers.get('Host')}/gh/repositories/{IDS[slug]}/{kind}?per_page=100"
@@ -159,6 +180,9 @@ class H(BaseHTTPRequestHandler):
             return self.send(401, {"errors": []}, {"WWW-Authenticate": 'Basic realm="fake"'})
         if repo == "org/front" and host.startswith("127.0.0.1"):   # a redirector, like registry.k8s.io
             return self.send(307, b"", {"Location": f"http://{host.replace('127.0.0.1', 'localhost')}{self.path}"})
+        if repo == "org/redir":   # sends the client to another path with a smaller page
+            return self.send(307, b"", {"Location": f"http://{host.replace('127.0.0.1', 'localhost')}"
+                                                    "/v2/backend/img/tags/list?n=2"})
         if repo != "org/open" and self.headers.get("Authorization") != f"Bearer tok-{host}-{repo}":
             bearer = f'Bearer realm="http://{host}/token",service="fake-registry",scope="repository:{repo}:pull"'
             if repo == "org/combined":   # two challenges in one header, a comma inside quotes
@@ -186,6 +210,14 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"name": repo, "tags": BIG[start:start + int(q.get("n", "50"))]})
         if repo == "org/ignorant":   # ignores n and last: every tag, every time
             return self.send(200, {"name": repo, "tags": BIG})
+        if repo == "org/capped":   # honours n, ignores last: the first page, every time
+            return self.send(200, {"name": repo, "tags": BIG[:int(q.get("n", "50"))]})
+        if repo == "org/exact":   # exactly n tags in all, then an empty page
+            start = BIG.index(q["last"]) + 1 if q.get("last") in BIG else 0
+            return self.send(200, {"name": repo, "tags": BIG[:10000][start:start + int(q.get("n", "50"))]})
+        if repo == "backend/img":   # full pages of n without a Link header
+            start = BACKEND.index(q["last"]) + 1 if q.get("last") in BACKEND else 0
+            return self.send(200, {"name": repo, "tags": BACKEND[start:start + int(q.get("n", "50"))]})
         if repo == "org/strict" and int(q.get("n", "0")) > 100:
             return self.send(400, {"errors": [{"code": "PAGINATION_NUMBER_INVALID", "message": "n too big"}]})
         tags = REG.get("org/img" if repo in ("org/strict", "org/combined", "org/front") else repo)
@@ -271,8 +303,9 @@ run acme/tool
 check "newest stable release: 1.10 beats 1.9, drafts and pre-releases skipped" '[ $rc -eq 0 ] && [ "$out" = v1.10.0 ]'
 run acme/tool --pre
 check "--pre includes a release GitHub marks as a pre-release" '[ $rc -eq 0 ] && [ "$out" = v2.0.0-rc.1 ]'
-run acme/tool -n 3
-check "-n 3 follows the Link header to page 2" '[ $rc -eq 0 ] && [ "$(lines)" = "v1.10.0 v1.9.0 v1.2.0" ]'
+: > "$LOG"; run acme/tool -n 3
+check "-n 3 finds a release beyond the first page by its tag" '[ $rc -eq 0 ] && [ "$(lines)" = "v1.10.0 v1.9.0 v1.2.0" ]'
+check "a tag with no release is looked up, then skipped" '[ "$(logged "releases/tags/v1.11.0")" -eq 1 ] && [ "$(logged "releases/tags/v1.1.0")" -eq 0 ]'
 run acme/tool -n 9 --pre
 check "a draft never shows, not even with --pre" '[ $rc -eq 0 ] && [[ $out != *v9.9.9* ]] && [[ $out != *nightly* ]]'
 check "the override base means gh is never called" '[ ! -s "$T/gh.log" ]'
@@ -283,17 +316,23 @@ check "a plain tag marked pre-release is skipped" '[ $rc -eq 0 ] && [ "$out" = v
 run acme/flagged --pre
 check "a plain tag marked pre-release ranks as the newest with --pre" '[ $rc -eq 0 ] && [ "$out" = v3.0.0 ]'
 : > "$LOG"; run acme/deep
-check "a higher version after a page that adds nothing still wins" '[ $rc -eq 0 ] && [ "$out" = v2.0.0 ]'
-check "paging stops after two pages in a row that add nothing" '[ "$(logged "page=5")" -eq 1 ] && [ "$(logged "page=6")" -eq 0 ]'
+check "a higher version on a later page wins" '[ $rc -eq 0 ] && [ "$out" = v2.0.0 ]'
+check "the tag walk needs one lookup and no second page" '[ "$(logged "releases/tags/")" -eq 1 ] && [ "$(logged "page=2")" -eq 0 ]'
+run acme/late
+check "a higher version after three pages of lower ones wins" '[ $rc -eq 0 ] && [ "$out" = v4.0.0 ]'
 : > "$LOG"; run acme/mono --match '^storage/(.+)$'
-check "a page with no matching release does not count toward the stop" '[ $rc -eq 0 ] && [ "$out" = storage/v1.43.0 ]'
-check "with --match, two pages of lower matches stop the paging" '[ "$(logged "page=5")" -eq 1 ] && [ "$(logged "page=6")" -eq 0 ]'
+check "--match walks the tags of one package" '[ $rc -eq 0 ] && [ "$out" = storage/v1.43.0 ]'
+check "a tag with a slash is looked up encoded" '[ "$(logged "releases/tags/storage%2Fv1.43.0")" -eq 1 ]'
+run acme/drafttag
+check "a draft found by its tag is skipped" '[ $rc -eq 0 ] && [ "$out" = v1.0.0 ]'
+: > "$LOG"; run acme/sparse
+check "after 20 lookups the walk reads every page instead" '[ $rc -eq 0 ] && [ "$out" = v1.5.0 ] && [ "$(logged "releases/tags/")" -eq 20 ] && [ "$(logged "page=3")" -eq 1 ]'
 run acme/norel
 check "no releases falls back to tags" '[ $rc -eq 0 ] && [ "$out" = v0.10.0 ]'
 run acme/norel --match zzz
 check "an empty tag fallback says the repo has no releases" '[ $rc -eq 1 ] && [[ $err == *"has no releases, so its tags were read"* ]]'
 run acme/norel --pre --json
-check "the tag fallback says so in JSON and reads every page" '[ $rc -eq 0 ] && [[ $out == *"\"source\": \"github-tags\""* ]] && [[ $out == *v0.10.1-rc1* ]]'
+check "the tag fallback says so in JSON" '[ $rc -eq 0 ] && [[ $out == *"\"source\": \"github-tags\""* ]] && [[ $out == *v0.10.1-rc1* ]]'
 run acme/drafts
 check "a repo with only draft releases falls back to tags" '[ $rc -eq 0 ] && [ "$out" = v4.0.0 ]'
 run acme/tool --tags
@@ -320,8 +359,10 @@ check "a reply that is not JSON exits 2" '[ $rc -eq 2 ] && [[ $err == *"not JSON
   unset LATEST_VERSION_GITHUB_API
   export FAKE_GH_BASE=http://$R/gh https_proxy=http://$R HTTPS_PROXY=http://$R
   run acme/tool -n 3
-  check "gh api: the same answer, page 2 from the Link header" '[ $rc -eq 0 ] && [ "$(lines)" = "v1.10.0 v1.9.0 v1.2.0" ]'
-  check "gh api runs with -i and gets the absolute Link URL" '[ "$(grep -c "^api -i" "$T/gh.log")" -eq 2 ] && grep -q "https://api.github.com/repositories/" "$T/gh.log"'
+  check "gh api: the same answer through the tag walk" '[ $rc -eq 0 ] && [ "$(lines)" = "v1.10.0 v1.9.0 v1.2.0" ]'
+  check "gh api: every call uses -i, the tag list and lookups too" '[ "$(grep -c "^api -i" "$T/gh.log")" -eq "$(wc -l < "$T/gh.log")" ] && grep -q "matching-refs" "$T/gh.log" && grep -q "releases/tags/v1.2.0" "$T/gh.log"'
+  : > "$LOG"; : > "$T/gh.log"; run acme/sparse
+  check "gh api: the fallback follows the absolute Link URL" '[ $rc -eq 0 ] && [ "$out" = v1.5.0 ] && grep -q "https://api.github.com/repositories/" "$T/gh.log"'
   : > "$LOG"; run acme/missing
   check "gh api: a 404 exits 2 and does not retry without a token" '[ $rc -eq 2 ] && [[ $err == *"no such repo"* ]] && [ "$(logged CONNECT)" -eq 0 ]'
   : > "$LOG"; FAKE_GH=loggedout run acme/tool
@@ -407,7 +448,19 @@ check "an endless tag list exits 2 at the page cap, with no answer" '[ $rc -eq 2
 : > "$LOG"; run "$R/org/nolink"
 check "a full page without a Link header asks for the tags after it" '[ $rc -eq 0 ] && [ "$out" = 2.0.0 ] && [ "$(logged "last=1.0.9999")" -eq 1 ]'
 run "$R/org/ignorant"
-check "a registry that ignores last ends when no tag is new" '[ $rc -eq 0 ] && [ "$out" = 2.0.0 ]'
+check "a registry that ignores n sends every tag at once" '[ $rc -eq 0 ] && [ "$out" = 2.0.0 ]'
+run "$R/org/capped"
+check "a registry that ignores last exits 2, with no answer" '[ $rc -eq 2 ] && [ -z "$out" ] && [[ $err == *"ignores last"* ]]'
+: > "$LOG"; run "$R/org/exact"
+check "exactly n tags end with an empty page" '[ $rc -eq 0 ] && [ "$out" = 1.0.9999 ] && [ "$(logged "path=/v2/org/exact/tags/list")" -eq 3 ]'
+run "$R/org/redir"
+check "a redirect to a smaller page keeps that page size and endpoint" '[ $rc -eq 0 ] && [ "$out" = 2.0.0 ]'
+run "$R/org/java"
+check "a release-word suffix (.Final) is the release" '[ $rc -eq 0 ] && [ "$out" = 34.0.0.Final ]'
+run "$R/org/java" --pre
+check "CR and Beta are pre-release words" '[ $rc -eq 0 ] && [ "$out" = 35.0.0.CR1 ]'
+run "$R/org/lts"
+check "an -lts suffix needs no --match" '[ $rc -eq 0 ] && [ "$out" = 2.0-lts ]'
 run "$R/org/combined"
 check "a Bearer challenge after a Basic one in the same header" '[ $rc -eq 0 ] && [ "$out" = v1.10.1 ]'
 : > "$LOG"; run "$R/org/front"

@@ -31,7 +31,7 @@ The output is one tag per line, newest first, as the source spells it.
 |---|---|---|
 | 0 | found | use the first line |
 | 1 | nothing matched | read stderr: it says what it set aside |
-| 2 | network or API error | read stderr: a rate limit, a private image, an unknown repo, or more than 1000 pages |
+| 2 | network or API error | read stderr: a rate limit, a private image, an unknown repo, or a list it cannot read in full |
 | 3 | usage error | correct the command |
 
 `--digest` prints `sha256:...`, for a multi-platform image the digest of the index, which `docker pull` uses.
@@ -40,7 +40,7 @@ How tags sort:
 
 - `1.10` is newer than `1.9`. A `v` prefix does not count.
 - A suffix such as `-rc.1`, `-beta` or `a1` makes a pre-release, shown only with `--pre`.
-- Any other suffix (`-alpine`, `-slim`, `-1`) makes a variant, shown only with `--match`.
+- Any other suffix (`-alpine`, `-slim`, `-1`) makes a variant, shown only with `--match`. Release words (`.Final`, `-lts`) do not count as a suffix.
 - Tags that are not versions (`latest`, `main`, `sha-...`) are set aside.
 - A one-number tag such as `20241105` counts only beside an N.N tag with the same number. If all tags have one number, pick them with `--match`.
 - `13.3` and `13.3.0` are one version. The longer tag prints; `--json` lists the other under `aliases`.
@@ -49,5 +49,5 @@ How tags sort:
 
 - A bare `OWNER/REPO` always means GitHub. For the `grafana/grafana` image, write `docker.io/grafana/grafana`.
 - A release tag and an image tag can differ: `v2.11.9` on GitHub is `2.11.9` on Docker Hub. To bump an image, ask the registry, not GitHub.
-- Releases are read until two pages in a row add nothing. A repo that stopped making releases answers with its last one. If the answer looks old, try `--tags`.
+- A repo that stopped making GitHub releases answers with its last release. If the answer looks old, try `--tags`.
 - `--match '^v?2\.'` also lets in variants such as `2.8.4-alpine`. For plain versions only, anchor both ends: `--match '^v?2\.[0-9.]+$'`.

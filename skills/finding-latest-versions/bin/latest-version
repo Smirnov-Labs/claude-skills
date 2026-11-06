@@ -57,13 +57,17 @@ HOW TAGS ARE SORTED
   version (13.3 and 13.3.0) print once, as the longer tag. Tags that are not
   versions (latest, main, sha-1a2b3c4) are set aside. A one-number tag (2,
   20241105) counts only beside an N.N tag with the same first number; when
-  there is no N.N tag at all, it counts only with --match.
+  there is no N.N tag at all, it counts only with --match. A suffix made
+  only of release words (1.2.3.Final, 2.0-lts, -ga, -stable, -release)
+  counts as the release itself.
 
 PAGES
-  Registry tags and GitHub tags are read to the last page. GitHub releases
-  come newest first, so reading stops after two pages in a row whose
-  versions all rank below the N newest found so far. A list longer than
-  1000 pages exits 2, because the newest is then unknown.
+  Registry tags and GitHub tags are read in full. GitHub lists releases by
+  date, not by version, so for a repo with more than 100 releases the tool
+  reads every tag name in one call. Then it looks up the release of each
+  tag that could rank among the N newest. A list of more than 1000 pages
+  exits 2, because the newest is then unknown. So does a registry that
+  sends the same page again when asked for the next one.
 
 EXIT STATUS
   0 found   1 nothing matched   2 network or API error   3 usage error
@@ -71,7 +75,8 @@ EXIT STATUS
 ENVIRONMENT (for tests)
   LATEST_VERSION_GITHUB_API       GitHub API base (default https://api.github.com).
                                   When it is set, gh is never called.
-  LATEST_VERSION_REGISTRY_SCHEME  http, to talk to a local registry without TLS
+  LATEST_VERSION_REGISTRY_SCHEME  http, for a local test registry only: tokens
+                                  then travel without TLS
   LATEST_VERSION_DOCKER_HUB       Docker Hub registry host
                                   (default registry-1.docker.io)
 """
@@ -80,6 +85,7 @@ EXIT_FOUND, EXIT_NONE, EXIT_ERROR, EXIT_USAGE = 0, 1, 2, 3
 TIMEOUT = 30          # seconds per HTTP request
 MAX_PAGES = 1000      # per listing; past that the answer is unknown: exit 2
 NO_LINK_PAGE = 10000  # the page size asked of registries, see Registry.tags
+MAX_LOOKUPS = 20      # GitHub releases looked up by tag before every page is read
 UA = "latest-version/1.0"
 GITHUB_HEADERS = {"Accept": "application/vnd.github+json",
                   "X-GitHub-Api-Version": "2022-11-28"}
@@ -216,6 +222,12 @@ def parse_version(text, prerelease=False):
     return v
 
 
+def sort_key(v):
+    """Higher is newer: the numbers (1.10 above 1.9, 2 the same as 2.0), then
+    a release above its variants above its pre-releases, then the suffix."""
+    return (v.nums + (0,) * (8 - len(v.nums)), v.kind == "stable", not v.variant, v.order)
+
+
 class Pool:
     """Every tag seen, and the rules that pick the newest versions."""
 
@@ -223,6 +235,7 @@ class Pool:
         self.rx, self.pre = match, pre
         self.versions, self.other, self.lone = [], [], []
         self.seen = self.unmatched = 0
+        self.partial = False   # True when not every release was read
 
     def add(self, tag, prerelease=False, extra=None):
         self.seen += 1
@@ -258,18 +271,11 @@ class Pool:
                 self.lone.append(v.tag)
             else:
                 keep.append(v)
-        cands = keep
-        width = max((len(v.nums) for v in cands), default=0)
-
-        def value(v):
-            return (v.nums + (0,) * (width - len(v.nums)),
-                    v.kind == "stable", not v.variant, v.order)
-
-        cands.sort(key=lambda v: v.tag)
-        cands.sort(key=lambda v: (value(v), len(v.nums)), reverse=True)
+        keep.sort(key=lambda v: v.tag)
+        keep.sort(key=lambda v: (sort_key(v), len(v.nums)), reverse=True)
         out = []
-        for v in cands:   # 13.3 and v13.3.0 are one version: keep the longer tag
-            if out and value(out[-1]) == value(v):
+        for v in keep:   # 13.3 and v13.3.0 are one version: keep the longer tag
+            if out and sort_key(out[-1]) == sort_key(v):
                 out[-1].aliases.append(v.tag)
             else:
                 v.aliases = []
@@ -280,8 +286,9 @@ class Pool:
         """Why nothing matched, for stderr."""
         if self.seen == 0:
             return f"{name} has no {kind_of_tags}"
+        counted = f"the {kind_of_tags}" if self.partial else f"the {self.seen} {kind_of_tags}"
         if self.rx and self.unmatched == self.seen:
-            return f"none of the {self.seen} {kind_of_tags} of {name} match --match {self.rx.pattern!r}"
+            return f"none of {counted} of {name} match --match {self.rx.pattern!r}"
         parts = []
         pre = [v.tag for v in self.versions if v.kind == "pre"]
         var = [v.tag for v in self.versions if v.variant]
@@ -298,7 +305,7 @@ class Pool:
             if hint:
                 parts.append(f"for prefixed tags try {hint}")
         what = "version" if self.pre else "stable version"
-        return f"no {what} among the {self.seen} {kind_of_tags} of {name}: " + "; ".join(parts)
+        return f"no {what} among {counted} of {name}: " + "; ".join(parts)
 
 
 def prefix_hint(tags):
@@ -334,6 +341,8 @@ class GitHub:
         """The reply through `gh api -i`, or None when gh cannot make the call."""
         env = dict(os.environ, GH_PROMPT_DISABLED="1", GH_NO_UPDATE_NOTIFIER="1",
                    NO_COLOR="1")
+        # No shell runs, and every URL here is absolute (https://...), so no
+        # argument can read as a gh option.
         try:
             p = subprocess.run([self.gh, "api", "-i", "-H", "Accept: application/vnd.github+json", url],
                                capture_output=True, timeout=TIMEOUT * 2, env=env)
@@ -370,52 +379,96 @@ def github_versions(owner, repo, opts, pool, bare):
     """Fill POOL from releases (or tags) and return the source name."""
     api, slug = GitHub(), f"{owner}/{repo}"
     base = f"{api.base}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}"
-    if not opts.tags:
-        url, pages, published, quiet = f"{base}/releases?per_page=100", 0, 0, 0
-        while url:
-            resp = api.get(url)
-            if resp.status != 200:
-                raise github_fail(resp, slug, bare)
-            items = load_json(resp, slug)
-            if not isinstance(items, list):
-                raise Fail(f"{slug}: unexpected reply from GitHub")
-            page = set()
-            for r in items:
-                if r.get("draft"):
-                    continue
-                published += 1
-                extra = {"name": r.get("name"), "published_at": r.get("published_at"),
-                         "url": r.get("html_url")}
-                if pool.add(r.get("tag_name") or "", bool(r.get("prerelease")), extra):
-                    page.add(r.get("tag_name"))
-            pages, url = pages + 1, next_link(resp)
-            # Releases come newest first, so stop after two pages in a row
-            # whose versions all rank below the top N. A page with no ranked
-            # version (common with --match) proves nothing.
-            ranked = pool.ranked()
-            if any(v.tag in page for v in ranked[:opts.n]):
-                quiet = 0
-            elif any(v.tag in page for v in ranked[opts.n:]):
-                quiet += 1
-            if url and quiet >= 2:
-                break
-            if url and pages >= MAX_PAGES:
-                raise Fail(f"{slug}: stopped after {pages} pages of releases; the newest is unknown")
-        if published:
-            return "github-releases"
-    url, pages = f"{base}/tags?per_page=100", 0
-    while url:   # tags are not in date order, so read them all
+
+    def get(url, absent=()):
+        """The JSON and the next-page URL, or (None, None) for an ABSENT status."""
         resp = api.get(url)
+        if resp.status in absent:
+            return None, None
         if resp.status != 200:
             raise github_fail(resp, slug, bare)
-        items = load_json(resp, slug)
-        if not isinstance(items, list):
+        return load_json(resp, slug), next_link(resp)
+
+    def items(data):
+        if not isinstance(data, list):
             raise Fail(f"{slug}: unexpected reply from GitHub")
-        for t in items:
-            pool.add(t.get("name") or "")
-        pages, url = pages + 1, next_link(resp)
-        if url and pages >= MAX_PAGES:
-            raise Fail(f"{slug}: stopped after {pages} pages of tags; the newest is unknown")
+        return data
+
+    def all_tags():
+        """Every tag name (the refs API sends them in one reply), or None."""
+        names, url, pages = [], f"{base}/git/matching-refs/tags", 0
+        while url:
+            data, url = get(url, absent=(404, 409))   # 409: an empty repo
+            if data is None:
+                return None
+            for ref in items(data):
+                name = ref.get("ref", "") if isinstance(ref, dict) else ""
+                if name.startswith("refs/tags/"):
+                    names.append(name[len("refs/tags/"):])
+            pages += 1
+            if url and pages >= MAX_PAGES:
+                raise Fail(f"{slug}: stopped after {pages} pages of tags; the newest is unknown")
+        return names
+
+    added = set()
+
+    def add(release):
+        tag = release.get("tag_name") if isinstance(release, dict) else None
+        if tag and not release.get("draft") and tag not in added:
+            added.add(tag)
+            pool.add(tag, bool(release.get("prerelease")),
+                     {"name": release.get("name"), "published_at": release.get("published_at"),
+                      "url": release.get("html_url")})
+
+    def walk():
+        """GitHub lists releases by date, not by version, so a higher version
+        can sit on any page. Every release has a tag: walk the tags from the
+        highest version down, and look up the release of each tag that could
+        still rank among the N newest. False when that cannot finish."""
+        tags = all_tags()
+        if tags is None:
+            return False
+        shapes = Pool(opts.rx, opts.pre)
+        for name in tags:
+            shapes.add(name)
+        lookups = 0
+        for v in shapes.ranked():
+            top = pool.ranked()[:opts.n]
+            if len(top) == opts.n and sort_key(v) < sort_key(top[-1]):
+                return True
+            for tag in [v.tag] + v.aliases:
+                if tag in added:
+                    break
+                if lookups == MAX_LOOKUPS:
+                    return False
+                lookups += 1
+                release, _ = get(f"{base}/releases/tags/{urllib.parse.quote(tag, safe='')}",
+                                 absent=(404,))
+                if release:
+                    add(release)
+                    break
+        return True
+
+    if not opts.tags:
+        first, more = get(f"{base}/releases?per_page=100")
+        for release in items(first):
+            add(release)
+        if more:
+            pool.partial = True
+            if walk():
+                more = None
+        pages = 1
+        while more:   # the walk could not finish: read every page instead
+            data, more = get(more)
+            for release in items(data):
+                add(release)
+            pages += 1
+            if more and pages >= MAX_PAGES:
+                raise Fail(f"{slug}: stopped after {pages} pages of releases; the newest is unknown")
+        if added:
+            return "github-releases"
+    for name in all_tags() or []:
+        pool.add(name)
     return "github-tags"
 
 
@@ -508,7 +561,7 @@ class Registry:
         # GHCR sends 1000 and quay 100. A registry that refuses the size (400)
         # is asked again without it. Later pages follow the Link header.
         plain = f"{self.base}/v2/{self.path}/tags/list"
-        url, seen, known = f"{plain}?n={NO_LINK_PAGE}", set(), set()
+        url, seen, known, again = f"{plain}?n={NO_LINK_PAGE}", set(), set(), False
         while url:
             if url in seen:
                 raise Fail(f"{self.name}: the registry sent the same page twice")
@@ -525,16 +578,22 @@ class Registry:
             data = load_json(resp, self.name)
             tags = [str(t) for t in (data.get("tags") if isinstance(data, dict) else None) or []]
             new = [t for t in tags if t not in known]
+            if again and tags and not new:
+                raise Fail(f"{self.name}: the registry ignores last and sends the same page again, "
+                           "so the newest is unknown")
             known.update(new)
             for tag in new:
                 pool.add(tag)
-            asked = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get("n", [""])[0]
-            url = next_link(resp)
-            if url is None and new and asked.isdigit() and len(tags) >= int(asked):
-                # The spec lets a full page come without a Link header: ask
-                # for the tags after the last one. A registry that ignores
-                # last sends no new tags, which ends the list.
-                url = f"{plain}?" + urllib.parse.urlencode({"n": asked, "last": tags[-1]})
+            final = urllib.parse.urlsplit(resp.url)   # after any redirect
+            query = urllib.parse.parse_qsl(final.query)
+            asked = dict(query).get("n", "")
+            url, again = next_link(resp), False
+            if url is None and tags and asked.isdigit() and len(tags) == int(asked):
+                # The spec lets a full page of n tags come without a Link
+                # header. Ask the same endpoint for the tags after the last.
+                query = [(k, x) for k, x in query if k != "last"] + [("last", tags[-1])]
+                url = urllib.parse.urlunsplit(final._replace(query=urllib.parse.urlencode(query)))
+                again = True
             if url and len(seen) >= MAX_PAGES:
                 raise Fail(f"{self.name}: stopped after {len(seen)} pages of tags; the newest is unknown")
 
