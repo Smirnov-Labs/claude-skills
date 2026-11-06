@@ -126,6 +126,10 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "k7", "name": "Bash", "input": {"command": "echo {\"password\":\"firstpart\\\"secondpw819\"} done"}},
         {"type": "tool_use", "id": "k5", "name": "Bash", "input": {"command": "PGPASSWORD=$(echo subpw816) psql -c 'select 1'"}},
         {"type": "tool_use", "id": "k6", "name": "Bash", "input": {"command": "curl https://example.test; python -u scripts/migrate.py"}},
+        {"type": "tool_use", "id": "m1", "name": "Bash", "input": {"command": "# curl -H 'Content-Type: application/json; charset=utf-8' -u bob:qsepw820 https://example.test\ngit status"}},
+        {"type": "tool_use", "id": "m2", "name": "Bash", "input": {"command": "# curl -u 'bob:rose;qsepw821' https://example.test\ngit status"}},
+        {"type": "tool_use", "id": "m3", "name": "Bash", "input": {"command": "sudo -S cat <<<herepw822; grep foo <<<\"keepherestring\""}},
+        {"type": "tool_use", "id": "m4", "name": "Bash", "input": {"command": "echo \"private\\\"client\" done"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -170,7 +174,7 @@ check "an assignment with a quoted space still finds the command" '[[ $out == *"
 check "quotes inside an option value invent no command" '[[ $out != *zzfake* ]] && [[ $out != *yyfake* ]]'
 check "a Cookie header does not hide the commands after it" '[[ $out == *"cargo 2"* ]]'
 check "a sudo -S password does not hide the commands before it" '[[ $out == *"jq 1"* ]]'
-check "a line continuation keeps the command countable" '[[ $out == *"apt-get 1"* ]]'
+check "a line continuation keeps the command countable" '"$TOOL" stats --json --top 80 --root "$T/projects" | python3 -c "import json,sys; sys.exit(0 if dict(json.load(sys.stdin)[\"commands_sessions\"]).get(\"apt-get\") else 1)"'
 check "wrapper long options and clusters: psql and git, not postgres or TERM" '[[ $out == *"psql "* ]] && [[ $out == *"git "* ]] && [[ $out != *postgres* ]] && [[ $out != *TERM* ]]'
 check "a masked literal in the directory stays masked in the resume command" '[[ $out != *"quote"*"side"* ]]'
 run find PrivateClient --mask-file "$T/mask"
@@ -227,6 +231,9 @@ check "--header= is masked like -H, whatever the scheme" '! grep -q apikeypw809 
 check "--cookie= is masked and keeps the rest of the command" '! grep -q ckpw810 "$T/ev.jsonl" && grep -q -F "keepck.example && cargo build" "$T/ev.jsonl"'
 check "a quoted executable name is still read as curl" '! grep -q quotedpw811 "$T/ev.jsonl"'
 check "a continuation inside a credential joins it, as the shell does" '! grep -q conpw812 "$T/ev.jsonl"'
+check "a quoted separator in a commented curl line does not end its mask" '! grep -q -E "qsepw820|qsepw821" "$T/ev.jsonl"'
+check "a sudo -S here-string is masked, and only that one" '! grep -q herepw822 "$T/ev.jsonl" && grep -q keepherestring "$T/ev.jsonl"'
+check "a mask-file literal hidden by shell escaping is masked" '! grep -q -F "private\\\\\\\"client" "$T/ev.jsonl" && ! grep -q -F "private\\\"client" "$T/ev.jsonl"'
 check "a key word with no separator masks nothing (nopasswd, then visudo; TOKENIZERS_)" 'grep -q -F "nopasswd\\npasswd -l bob; TOKENIZERS_PARALLELISM=1 nproc" "$T/ev.jsonl" && ! grep -q ghtokpw813 "$T/ev.jsonl"'
 check "export masks sudo by path, quoted pipes, quoted passwords and quoted cookies" '! grep -q -E "pathpw11|tulipkey|horse battery|quotedck1|quotedck2" "$T/ev.jsonl"'
 check "export masks literals and cookies inside MCP inputs before JSON escaping" '! python3 -c "
@@ -251,8 +258,14 @@ recs = [{"type": "user", "cwd": "/work/slow", "timestamp": "2026-11-04T09:00:00Z
             {"type": "tool_use", "id": "s1", "name": "Bash", "input": {"command": "echo '" + blob + "' > out.json"}}]}}]
 open(sys.argv[1], "w").write("\n".join(json.dumps(r) for r in recs) + "\n")
 PY
+python3 - "$T/slow/-work-slow/66666666-7777-8888-9999-000000000000.jsonl" <<'PY'
+import json, sys
+recs = [{"type": "user", "cwd": "/work/slow", "timestamp": "2026-11-04T09:00:00Z", "origin": {"kind": "human"},
+         "message": {"content": "a" * 200000}}]
+open(sys.argv[1], "w").write("\n".join(json.dumps(r) for r in recs) + "\n")
+PY
 out=$(timeout 20 "$TOOL" stats --root "$T/slow" 2>&1); rc=$?
-check "quoted JSON in an echo is masked in bounded time" '[ $rc -eq 0 ] && [[ $out == *"1 sessions"* ]]'
+check "quoted JSON in an echo, and a 200 KB word, are masked in bounded time" '[ $rc -eq 0 ] && [[ $out == *"2 sessions"* ]]'
 
 echo "$pass passed, $fail failed"
 rm -rf "$T"

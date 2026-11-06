@@ -39,16 +39,16 @@ QUOTED_KV = re.compile(r"(?i)(" + SENSITIVE + r"(?:\\?[\"'])?\s*[:=]\s*)"
 KV = re.compile(r"(?i)(" + SENSITIVE + r"(?:\\?[\"'])?(?:\s*[:=]\s*|[ \t]+)(?:bearer\s+|token\s+|basic\s+)?(?:\\?[\"'])?)"
                 r"((?!<redacted>|<masked>|<long>)[^\s\"'&,;)\\]{6,})")     # never a value masked already
 LONG = re.compile(r"[A-Za-z0-9+_\-]{32,}={0,2}")
-SUDO_S = r"(?:\S*/)?sudo\b[^|;&\n]*?\s(?:-[A-Za-z]*S[A-Za-z]*|--stdin)\b"   # -S, -kS, --stdin, /usr/bin/sudo
+SUDO_S = r"(?<![\w.-])sudo\b[^|;&\n]*?\s(?:-[A-Za-z]*S[A-Za-z]*|--stdin)\b"   # -S, -kS, --stdin, /usr/bin/sudo
 ARGS = r"((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^|;&\n'\"\\])*?)"           # one command: quoted pipes stay inside
 WORDV = r"((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^\s'\"\\|;&()<>])+)"        # one shell word, 'a'\''b' too
 SUDO_PIPE = re.compile(r"(\b(?:printf|echo)\b)" + ARGS + r"(\|\s*(?:command\s+)?" + SUDO_S + ")")
 SUDO = re.compile(SUDO_S)
-HERE = re.compile(r"(<<<\s*)" + WORDV)
+HERE = re.compile(r"(" + SUDO_S + r"[^|;&\n]*?<<<\s*)" + WORDV)      # only in the sudo -S command itself
 SSHPASS = re.compile(r"(\bsshpass\b[^|;&\n]*?\s-p\s*)" + WORDV)
 COOKIE = re.compile(r"(?i)\b(?:(?:set-)?cookie\s*[:=]|(?:proxy-)?authorization\s*:)\s*")   # whole header value
 URLCRED = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@'\"]+:)([^@\s/'\"]+)(@)")          # scheme://user:PASS@
-HTTP_SPAN = re.compile(r"(?<![\w./-])(curl|wget|https?|xh)\b([^|;&\n]*)")   # a client and its text, to an operator
+HTTP_SPAN = re.compile(r"(?<![\w./-])(curl|wget|https?|xh)\b((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^|;&\n'\"\\])*)")
 RAWWORD = re.compile(r"(?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^\s'\"\\])+")
 SHELL_HINT = re.compile(r"\b(?:curl|wget|xh|sshpass|sudo)\b|(?:^|[\s;&|(`'\"])https?(?=[\s'\"])|\\[\"']")
 SHELL_MAX = 20000          # shorter text always gets the shell pass; longer text only with a hint (speed)
@@ -157,8 +157,7 @@ def mask_regex(line):
     """The regex layer for one line: it catches commands the shell pass cannot see as commands (in prose, comments,
     or text that does not parse), after the shell pass has done what it can."""
     line = SUDO_PIPE.sub(lambda m: m.group(1) + " <redacted> " + m.group(3), line)
-    if SUDO.search(line):
-        line = HERE.sub(lambda m: m.group(1) + "<redacted>", line)
+    line = HERE.sub(lambda m: m.group(1) + "<redacted>", line)
     line = SSHPASS.sub(lambda m: m.group(1) + "<redacted>", line)
     return HTTP_SPAN.sub(lambda m: m.group(1) + mask_opts(m.group(2), m.group(1)), line)
 
@@ -303,6 +302,9 @@ def mask_shell(s, depth=0):
             edits.append((tok[2], tok[3], a.group(1) + "=<redacted>"))
             continue
         src, inner = s[tok[2]:tok[3]], text
+        if src != text and any(v in text for v in LITERALS):      # "private\"client" hides a literal from the scan
+            for v in LITERALS:
+                inner = inner.replace(v, "<masked>")
         if depth < 3 and " " in text and SHELL_HINT.search(text):    # bash -c '...', ssh host '...', $(...)
             inner = re.sub(r"\$\(([^()]*)\)", lambda m: "$(" + (mask_shell(m.group(1), depth + 1) or m.group(1)) + ")",
                            text) if text.startswith("$(") or "=$(" in text else (mask_shell(text, depth + 1) or text)
