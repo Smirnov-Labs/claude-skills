@@ -9,7 +9,10 @@ argument-hint: "[base branch]"
 
 The repo's own rules come first. If the repo has `.claude/commands/pr.md`, or a CLAUDE.md with PR rules (a base branch, a title format, an issue link, required checks), read them now. Where they differ from the steps below, follow them.
 
-The base branch is the argument, if the user gave one. Otherwise it is the repo's default branch: `gh repo view --json defaultBranchRef -q .defaultBranchRef.name`.
+Find the base branch before anything else:
+
+1. If this branch already has a PR (`gh pr view --json number,url,baseRefName`), its `baseRefName` is the base. If the user named a different base, stop and ask: the PR targets another branch.
+2. Otherwise the base is the argument, if the user gave one, or else the repo's default branch: `gh repo view --json defaultBranchRef -q .defaultBranchRef.name`.
 
 ## 1. Check where you are
 
@@ -41,7 +44,7 @@ If the repo is public, scan the added lines before you push. Look for secrets an
 
 ## 5. Open or update the PR
 
-1. `gh pr view --json number,url` finds an existing PR for this branch. If one exists, update its body with `gh pr edit --body-file FILE`, and say what is new.
+1. If the branch has a PR (found above), update its body with `gh pr edit --body-file FILE`, and say what is new.
 2. If none exists, search for a duplicate first: `gh pr list --state all --search "<keywords> in:title"`.
 3. Create it: `gh pr create --base "$BASE" --title "..." --body-file FILE`. The body has Summary, Changes and Testing sections, and ends with your session's attribution line.
 4. Keep the title and body plain: what changed, why, and how you tested it.

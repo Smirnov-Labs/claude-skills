@@ -12,14 +12,15 @@ In order:
              (codex, sar, ci, all; comma-separated) goes to prbots. A repo with no review bots: --need ci.
   2 merge    gh pr merge --squash --match-head-commit <head> --subject "<title> (#N)", from a temp dir, so gh
              never touches your checkouts.
-  3 confirm  GitHub must report MERGED. Then the remote branch is deleted with a lease on the PR head, so a
-             push that landed after the merge survives.
+  3 confirm  GitHub must report MERGED. Then, from a checkout of the repo, the remote branch is deleted with a
+             lease on the PR head, so a push that landed after the merge survives. Outside a checkout it stays.
   4 clean    only the PR's own worktree and branch, never a fork PR's. The worktree goes (git worktree remove,
              no --force) only when it sits on the PR head with no tracked changes, no untracked files and no
              ignored files except build and cache output (node_modules, .venv, __pycache__, dist, ...).
              The branch goes only if it still points at the PR head (an atomic update-ref), and its SHA is
              printed. A PR worktree missing from disk loses its registration; other worktrees are not pruned.
-  5 sync     the main checkout fast-forwards to origin/<base>, only if it is on <base> with no tracked changes.
+  5 sync     the main checkout fast-forwards to origin/<base>, only if it is on <base> with no tracked changes,
+             and never over an ignored file the new commits start tracking.
 
 An already-merged PR skips 1 and 2. Run it from any checkout of the repo to get steps 4 and 5.
 
@@ -126,9 +127,11 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     if a.need is not None:
-        names = [x.strip() for x in a.need.split(",")]
+        names = [x.strip().lower() for x in a.need.split(",")]
         if not names or any(n not in BOTS for n in names):
             die("--need takes a comma-separated list of codex, sar, ci or all, not %r" % a.need)
+        names = ["codex", "sar", "ci"] if "all" in names else names
+        a.need = ",".join(sorted(set(names), key=["codex", "sar", "ci"].index))   # what prbots gets
 
     here = os.getcwd()
     repo, pr = a.repo, a.pr
@@ -144,6 +147,8 @@ def main():
         if r.returncode != 0:
             die("not in a GitHub checkout; pass -R owner/repo or a PR URL")
         repo = json.loads(r.stdout)["nameWithOwner"]
+    if not pr and a.repo:
+        die("with -R, give the PR number too: the current branch's PR may live in another repo")
     if not pr:
         r = run(["gh", "pr", "view", "--json", "number"], cwd=here)
         if r.returncode != 0:
@@ -234,26 +239,19 @@ def main():
         say("dry-run", "would delete origin/%s if it is still at %s" % (branch, head[:7]))
     elif merged_now or p["state"] == "MERGED":
         if main_wt:
-            r = git(main_wt, "push", "--quiet", "--force-with-lease=refs/heads/%s:%s" % (branch, head), "origin",
+            url = git(main_wt, "config", "--get", "remote.origin.url").stdout.strip()   # verified as this repo
+            r = git(main_wt, "push", "--quiet", "--force-with-lease=refs/heads/%s:%s" % (branch, head), url,
                     "--delete", branch)
             err = (r.stderr or "").strip()
             if r.returncode == 0:
                 say("remote", "deleted %s (was %s)" % (branch, head[:7]))
-            elif "remote ref does not exist" in err or "unable to delete" in err and "not found" in err:
+            elif "remote ref does not exist" in err:
                 say("remote", "%s was already gone" % branch)
             else:
                 say("remote", "kept %s: %s" % (branch, err.splitlines()[-1][:200] if err else "push failed"))
         else:
-            r = run(["gh", "api", "repos/%s/git/ref/heads/%s" % (repo, branch)], cwd=neutral)
-            sha = (json.loads(r.stdout).get("object") or {}).get("sha") if r.returncode == 0 else None
-            if not sha:
-                say("remote", "%s was already gone" % branch)
-            elif sha != head:
-                say("remote", "kept %s: it moved to %s after the merge" % (branch, sha[:7]))
-            else:
-                d = run(["gh", "api", "-X", "DELETE", "repos/%s/git/refs/heads/%s" % (repo, branch)], cwd=neutral)
-                say("remote", ("deleted %s (was %s)" % (branch, head[:7])) if d.returncode == 0
-                    else "delete failed: " + d.stderr.strip()[:200])
+            say("remote", "kept %s: only a checkout of %s can delete it with a lease (run prland there, "
+                          "or let GitHub's auto-delete do it)" % (branch, repo))
 
     # 4 clean
     if not main_wt:
@@ -284,9 +282,11 @@ def main():
                 keep_branch = keep_branch or r.returncode != 0
                 continue
             why = local_data(path)
+            if a.allow_ignored and why and why.startswith("ignored files"):
+                why = None
             if not why and git(path, "rev-parse", "HEAD").stdout.strip() != head:
                 why = "it is not on the PR head %s" % head[:7]
-            if why and not (a.allow_ignored and why.startswith("ignored files")):
+            if why:
                 say("worktree", "%s left in place: %s" % (path, why))
                 keep_branch = True
             elif a.dry_run:
@@ -332,7 +332,8 @@ def main():
         say("dry-run", "would fast-forward %s to origin/%s" % (main_wt, base))
     else:
         f = git(main_wt, "fetch", "--quiet", "origin", "refs/heads/%s:refs/remotes/origin/%s" % (base, base))
-        r = f if f.returncode else git(main_wt, "merge", "--ff-only", "--quiet", "refs/remotes/origin/" + base)
+        r = f if f.returncode else git(main_wt, "merge", "--ff-only", "--no-overwrite-ignore", "--quiet",
+                                       "refs/remotes/origin/" + base)
         now = git(main_wt, "rev-parse", "--short", "HEAD").stdout.strip()
         say("sync", ("%s is at %s (origin/%s)" % (main_wt, now, base)) if r.returncode == 0
             else "fast-forward failed: " + r.stderr.strip()[:200])

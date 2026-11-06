@@ -85,8 +85,12 @@ setup; FAKE_VERDICT=CLEAN FAKE_PB_REPO=x/y run 7
 check "a verdict for another repo does not merge" '[ $rc -eq 1 ] && [ ! -e "$FAKE/merge.log" ]'
 setup; FAKE_VERDICT=CLEAN run 7 --need sra
 check "a misspelled --need is a usage error" '[ $rc -eq 3 ] && [ ! -e "$FAKE/merge.log" ]'
-setup; FAKE_VERDICT=CLEAN run 7 --need sar,ci
-check "--need goes to prbots" 'grep -q -- "--need sar,ci" "$FAKE/prbots.log"'
+setup; FAKE_VERDICT=CLEAN run 7 --need " sar , ci"
+check "--need goes to prbots normalized" 'grep -q -- "--need sar,ci" "$FAKE/prbots.log"'
+setup; FAKE_VERDICT=CLEAN run 7 --need all,ci
+check "--need all expands to every bot" 'grep -q -- "--need codex,sar,ci" "$FAKE/prbots.log"'
+setup; FAKE_VERDICT=CLEAN run -R o/r
+check "-R without a PR number is a usage error" '[ $rc -eq 3 ] && [ ! -e "$FAKE/merge.log" ]'
 setup; FAKE_VERDICT=CLEAN run https://github.com/other/project/pull/7 -R o/r
 check "a PR URL from another repo with -R o/r is refused" '[ $rc -eq 3 ] && [ ! -e "$FAKE/merge.log" ]'
 setup; FAKE_VERDICT=CLEAN run https://github.com/o/r/pull/7
@@ -100,6 +104,8 @@ setup; echo SECRET=1 > "$W/.env"; FAKE_VERDICT=CLEAN run 7
 check "an ignored .env keeps the worktree" '[ -e "$W/.env" ] && [[ $out == *".env"* ]]'
 setup; echo SECRET=1 > "$W/.env"; FAKE_VERDICT=CLEAN run 7 --allow-ignored
 check "--allow-ignored lets it go" '[ ! -d "$W" ]'
+setup; echo SECRET=1 > "$W/.env"; echo more >> "$W/a.txt"; git -C "$W" commit -qam extra; FAKE_VERDICT=CLEAN run 7 --allow-ignored
+check "--allow-ignored still keeps a worktree with commits past the PR head" '[ -d "$W" ] && [[ $out == *"not on the PR head"* ]]'
 setup; mkdir -p "$W/node_modules/x"; echo 1 > "$W/node_modules/x/i.js"; FAKE_VERDICT=CLEAN run 7
 check "build output alone (node_modules) does not keep the worktree" '[ ! -d "$W" ]'
 setup; echo more >> "$W/a.txt"; git -C "$W" commit -qam extra; FAKE_VERDICT=CLEAN run 7
@@ -118,6 +124,13 @@ check "a fork PR: remote and local branches left alone" '[ $rc -eq 0 ] && [ -d "
 
 setup; echo dirty >> "$M/a.txt"; FAKE_VERDICT=CLEAN run 7
 check "a main checkout with tracked changes is not synced" '[[ $out == *"changed tracked files"* ]] && [ "$(git -C "$M" rev-parse HEAD)" != "$SQUASH" ]'
+setup; git -C "$FAKE_HELPER" reset -q --hard HEAD~1; echo tracked-now > "$FAKE_HELPER/.env"; git -C "$FAKE_HELPER" add -f .env
+git -C "$FAKE_HELPER" commit -qm "Title (#7)"; git -C "$FAKE_HELPER" push -q -f origin main; echo LOCAL-SECRET > "$M/.env"
+FAKE_VERDICT=CLEAN run 7
+check "sync never overwrites an ignored file the new commits start tracking" 'grep -q LOCAL-SECRET "$M/.env" && [[ $out == *"fast-forward failed"* ]]'
+setup; git -C "$M" config remote.origin.pushurl "$T/r/fork.git"; git init -q --bare -b main "$T/r/fork.git"; git -C "$W" push -q "$T/r/fork.git" feat
+FAKE_VERDICT=CLEAN run 7
+check "the remote delete goes to the verified repo, not a pushurl" '! remote_has_feat && [ -n "$(git -C "$T/r/fork.git" for-each-ref refs/heads/feat)" ]'
 setup; git -C "$M" branch -q --set-upstream-to=origin/feat main; FAKE_VERDICT=CLEAN run 7
 check "sync uses origin/<base>, not main's configured upstream" '[ "$(git -C "$M" rev-parse HEAD)" = "$SQUASH" ]'
 setup; git -C "$M" worktree remove "$W"; git -C "$M" checkout -q feat; FAKE_VERDICT=CLEAN run 7
@@ -130,7 +143,7 @@ check "an unrelated missing worktree keeps its registration (no global prune)" '
 setup; FAKE_VERDICT=CLEAN run 7 --dry-run
 check "--dry-run merges, deletes and removes nothing" '[ $rc -eq 0 ] && [ ! -e "$FAKE/merge.log" ] && [ -d "$W" ] && remote_has_feat && [[ $out == *"would run: gh pr merge"* ]]'
 setup; WD=$T; FAKE_VERDICT=CLEAN run 7 -R o/r
-check "outside a checkout: merged, remote branch deleted through the API, local cleanup skipped" '[ $rc -eq 0 ] && grep -q "DELETE repos/o/r/git/refs/heads/feat" "$FAKE/api.log" && [[ $out == *"not run from a checkout"* ]]'
+check "outside a checkout: merged, remote branch kept, local cleanup skipped" '[ $rc -eq 0 ] && remote_has_feat && [ ! -e "$FAKE/api.log" ] && [[ $out == *"not run from a checkout"* ]]'
 setup; WD=$W; FAKE_VERDICT=CLEAN run
 check "from inside the PR worktree: removes it, deletes the branch, says cd" '[ $rc -eq 0 ] && [ ! -d "$W" ] && ! git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"your shell was inside it"* ]]'
 

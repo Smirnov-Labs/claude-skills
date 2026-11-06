@@ -56,8 +56,9 @@ Report the merge SHA, plus anything it left in place and why.
 
 - Merge without a CLEAN verdict for this repo, this PR and its current head SHA. It reads `prbots --json`, so text in a check name cannot fake the verdict. A misspelled `--need` is an error, not an empty gate.
 - Merge a draft, or a head that moved after the check (`--match-head-commit`).
-- Delete the remote branch if someone pushed to it after the merge. The delete carries a lease on the PR head.
+- Delete the remote branch if someone pushed to it after the merge. The delete carries a lease on the PR head, goes to the verified repo URL (never a `pushurl`), and runs only from a checkout of the repo.
 - Remove a worktree with `--force`, or one with changed tracked files, untracked files, commits past the PR head, or ignored files other than build and cache output (`.env` and notes stay). It reads these with `git ls-files`, so `status.showUntrackedFiles` cannot hide them.
 - Delete a local branch that moved: the delete is an atomic `update-ref` on the PR head.
 - Prune other worktrees, or touch any branch except the PR's own. A fork PR's branches are left alone.
-- Switch branches in the main checkout, sync it while it has tracked changes, or follow its upstream: it fast-forwards to `origin/<base>`.
+- Switch branches in the main checkout, sync it while it has tracked changes, or follow its upstream: it fast-forwards to `origin/<base>`, and never over an ignored file the new commits start tracking.
+- Guess a PR number across repos: with `-R`, give the number.
