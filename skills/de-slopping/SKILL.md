@@ -41,13 +41,12 @@ needs a voice. A de-slop pass with no light mode is a footgun.
 
 ## With the other writing skills
 
-For a deliverable, run three passes in this order:
+For a deliverable, run the passes in this order:
 
-1. minto-pyramid: put the answer first.
-2. de-slopping (this skill): cut the slop and the hedges.
+1. minto-pyramid, if the text argues, reports or asks for a decision (a PR description, a report, a proposal, an update): put the answer first. Skip it for reference docs, runbooks and narrative, as that skill says.
+2. de-slopping (this skill): cut the slop and the hedges. Every fact stays.
 3. humanizer: remove the AI tells that remain.
-
-Each pass changes the text the next one reads. Run the linter once more after the last pass.
+4. Run the linter again and fix every `hard` finding. The last two passes can bring back long sentences.
 
 ## Rules the linter enforces (mechanical)
 
