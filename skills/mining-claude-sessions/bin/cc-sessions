@@ -57,9 +57,11 @@ RAWWORD = re.compile(r"(?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^\s'\"\\])+")
 SHELL_HINT = re.compile(r"\b(?:curl|wget|xh|sshpass|sudo)\b|(?:^|[\s;&|(`'\"])https?(?=[\s'\"])|\\[\"']")
 SHELL_MAX = 20000          # shorter text always gets the shell pass; longer text only with a hint (speed)
 ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=", re.S)
-HEREDOC = re.compile(r"(<<-?[ \t]*(['\"]?)(?P<d>\w+)\2[^\n]*\n)(.*?)(\n[ \t]*(?P=d)[ \t]*(?:\n|$))", re.S)
+HEREDOC = re.compile(r"(?P<head><<-?[ \t]*(['\"]?)(?P<d>\w+)\2[^\n]*\n)(?P<body>.*?)(?P<tail>\n[ \t]*(?P=d)[ \t]*(?:\n|$))",
+                     re.S)
 # DB_PASSWORD=rose&petal in a .env body or an env dump: the whole rest of the line is the value
 ENVLINE = re.compile(r"(?m)^([ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*)(?!<redacted>|<masked>)(\S.*)$")
+ENVDATA = re.compile(r"(?m)^([ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=)(?!<redacted>|<masked>)(\S+)[ \t]*$")
 SECRET_NAME = re.compile(r"(?i)(?:" + SENSITIVE + r")(?:_|$)")    # GITHUB_TOKEN, PGPASSWORD; not TOKENIZERS_
 SECRET_HEADER = re.compile(r"(?i)^\s*((?:set-)?cookie|(?:proxy-)?authorization)\s*:")
 CRED_OPTS = {   # program: ((short options that take a secret, long ones), every short option that takes a value)
@@ -207,7 +209,7 @@ def mask_text(s):
     """The header, key=value and token patterns, for one shell word. Headers go first: a label pass would mask only
     the first word of 'Authorization: Bearer x'."""
     s = mask_cookies(s)
-    s = URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s)
+    s = (URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s) if "://" in s else s)
     s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
     s = LABELLED.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", s)
     s = FORMKV.sub(lambda m: m.group(1) + "<redacted>", s)
@@ -242,7 +244,9 @@ def mask_shell(s, depth=0):
     swallow the next command: option values of HTTP clients and sshpass, Cookie and Authorization headers, a
     password piped or here-stringed into sudo -S, and key=value secrets that shell escaping hid. None when s does not
     parse as shell (an open quote)."""
-    toks = scan(HEREDOC.sub(lambda m: m.group(1) + re.sub(r"[^\n]", " ", m.group(3)) + m.group(4), s))
+    blanked = HEREDOC.sub(lambda m: m.group("head") + re.sub(r"[^\n]", " ", m.group("body")) + m.group("tail"), s)
+    assert len(blanked) == len(s)                    # edits below use offsets into s
+    toks = scan(blanked)
     if toks is None:
         return None
     edits, assign_at = [], set()
@@ -324,6 +328,13 @@ def mask_shell(s, depth=0):
         if depth < 3 and " " in text and SHELL_HINT.search(text):    # bash -c '...', ssh host '...', $(...)
             inner = re.sub(r"\$\(([^()]*)\)", lambda m: "$(" + (mask_shell(m.group(1), depth + 1) or m.group(1)) + ")",
                            inner) if inner.startswith("$(") or "=$(" in inner else (mask_shell(inner, depth + 1) or inner)
+        if re.match(r"^[\w.-]+=", text) and tok[2] not in assign_at:   # name=value&...: a form body or a field
+            fields = text.split("&")
+            masked = "&".join(f.split("=", 1)[0] + "=<redacted>" if "=" in f and SECRET_NAME.search(f.split("=", 1)[0])
+                              else f for f in fields)
+            if masked != text:
+                edits.append((tok[2], tok[3], masked if src == text and "<" not in src else shlex.quote(masked)))
+                continue
         if inner == text and src == text:              # a plain word: the patterns, kept inside this word
             plain = mask_text(src)
             if plain != src:
@@ -355,12 +366,13 @@ def mask(s):
         if v in s:
             s = s.replace(v, "<masked>")
     s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)   # {"Cookie": "x"}: before the word pass splits it
+    s = ENVDATA.sub(lambda m: m.group(1) + "<redacted>" if SECRET_NAME.search(m.group(2)) else m.group(0), s)
     if len(s) <= SHELL_MAX or SHELL_HINT.search(s):
         whole = mask_shell(s)
         s = whole if whole is not None else "\n".join(mask_shell(line) or line for line in s.split("\n"))
     s = "\n".join(mask_regex(line) for line in s.split("\n"))
     s = mask_cookies(s)
-    s = URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s)
+    s = (URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s) if "://" in s else s)
     s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
     s = ENVLINE.sub(lambda m: m.group(1) + "<redacted>" if SECRET_NAME.search(m.group(2)) else m.group(0), s)
     s = LABELLED.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", s)

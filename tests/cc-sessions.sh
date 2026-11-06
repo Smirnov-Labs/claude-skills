@@ -71,6 +71,8 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
      "message": {"content": "Cookie: session=abc; refresh=def"}},
     {"type": "user", "timestamp": "2026-11-04T09:00:20Z", "origin": {"kind": "human"},
      "message": {"content": "Cookie: session=abc; refresh=def"}},
+    {"type": "user", "timestamp": "2026-11-04T09:00:25Z", "origin": {"kind": "human"},
+     "message": {"content": "DB_PASSWORD=rose&envpw841\nAPI_TOKEN=a;envpw842"}},
     {"type": "user", "timestamp": "2026-11-04T09:00:30Z", "origin": {"kind": "human"},
      "message": {"content": "it's failing on {\\\"password\\\":\\\"promptpw782\\\"} and {\"password\":\"firstpart\\\"secondpw814\"} and {\"password\":\"first\\\\secondpw815\"}\nAuthorization: ApiKey hdrpw817"}},
     {"type": "assistant", "timestamp": "2026-11-04T09:01:00Z", "message": {"content": [
@@ -139,6 +141,8 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "n2", "name": "Bash", "input": {"command": "cat <<'EOF' > .env\nDB_PASSWORD=rose&hdocpw835\nAPI_TOKEN=a;hdocpw836\nPLAIN=keepplain\nEOF\ngit status"}},
         {"type": "tool_use", "id": "n3", "name": "Bash", "input": {"command": "curl -d 'password=rose&username=keepuser&action=login' https://example.test"}},
         {"type": "tool_use", "id": "n4", "name": "Bash", "input": {"command": "curl https://example.test/?password=qpw837;ruby -v"}},
+        {"type": "tool_use", "id": "n5", "name": "Bash", "input": {"command": "cat <<EOF\nDB_PASSWORD=rosepetal\nEOF\ncurl -u bob:afterpw838 https://keepafter.example"}},
+        {"type": "tool_use", "id": "n6", "name": "Bash", "input": {"command": "curl --data-urlencode 'password=rose#fpw839' --data-urlencode 'password=correct horse fpw840' https://example.test"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -196,7 +200,7 @@ run show abc
 check "an unknown prefix is an error" '[ $rc -ne 0 ] && [[ $out == *"no session id starts with"* ]]'
 
 run stats --mask-file "$T/mask"
-check "stats counts sessions, subagents and prompts" '[[ $out == *"4 sessions, 1 subagent transcripts, 12 typed prompts"* ]]'
+check "stats counts sessions, subagents and prompts" '[[ $out == *"4 sessions, 1 subagent transcripts, 13 typed prompts"* ]]'
 check "stats never prints a sudo -S password from repeated prompts" '[[ $out != *orchidpetal* ]]'
 check "stats parses sudo -u and if/then: psql and git, not postgres" '[[ $out == *"psql "* ]] && [[ $out == *"git "* ]] && [[ $out != *"postgres "* ]]'
 check "a mask-file value is masked in every stats line" '[[ $out != *PrivateClient* ]]'
@@ -245,6 +249,9 @@ check "a sudo -S here-string is masked, and only that one" '! grep -q herepw822 
 check "a JSON Cookie or Authorization field with a space after the colon is masked" '! grep -q -E "jsonpw829|jsonpw830|jsonpw834" "$T/ev.jsonl"'
 check "a form password with commas, first or after another field, is masked whole" '! grep -q -E "formpw831|formpw832" "$T/ev.jsonl"'
 check "a COOKIE= assignment keeps the commands after it" '! grep -q asgnpw833 "$T/ev.jsonl" && grep -q -F "curl https://keepasgn.example; git status" "$T/ev.jsonl"'
+check "a command after a heredoc stays whole and masked" '! grep -q afterpw838 "$T/ev.jsonl" && grep -q -F "curl -u <redacted> https://keepafter.example" "$T/ev.jsonl"'
+check "a --data-urlencode password keeps nothing after # or a space" '! grep -q -E "fpw839|fpw840" "$T/ev.jsonl"'
+check "a pasted .env line keeps nothing after & or ;" '! grep -q -E "envpw841|envpw842" "$T/ev.jsonl"'
 check "a heredoc body is data: a .env password keeps nothing after & or ;" '! grep -q -E "hdocpw835|hdocpw836" "$T/ev.jsonl" && grep -q keepplain "$T/ev.jsonl"'
 check "a password-first form keeps its other fields" 'grep -q -F "username=keepuser&action=login" "$T/ev.jsonl"'
 check "a query password stops at a shell operator" '! grep -q qpw837 "$T/ev.jsonl" && grep -q -F ";ruby -v" "$T/ev.jsonl"'
