@@ -21,7 +21,7 @@ Do not look versions up by hand. GitHub's `releases/latest` picks by date, so a 
 | The digest, to pin an image | `latest-version registry.k8s.io/pause --digest 3.10.2` |
 | All fields, for a script | add `--json` |
 
-GitHub calls use `gh api` when gh has a login, else the public API (60 calls an hour). `latest-version --help` lists every flag.
+With a gh login, GitHub calls send gh's token, else they use the public API (60 calls an hour). `latest-version --help` lists every flag.
 
 ## Reading the output
 

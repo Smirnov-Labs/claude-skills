@@ -142,6 +142,13 @@ class H(BaseHTTPRequestHandler):
             slug, kind = parts[1] + "/" + parts[2], "refs"
         else:
             return self.send(404, {"message": "Not Found"})
+        if self.headers.get("Authorization") == "Bearer gho_staleToken1234567890abcdef":
+            return self.send(401, {"message": "Bad credentials"})
+        if slug in ("acme/hop", "acme/downgrade"):   # off to another host, or to plain http on a real one
+            host, query = self.headers.get("Host"), ("?" + urllib.parse.urlencode(q)) if q else ""
+            target = (f"http://{host.replace('127.0.0.1', 'localhost')}/gh/{path.replace(slug, 'acme/tool')}"
+                      if slug == "acme/hop" else f"http://api.github.example.invalid/{path}")
+            return self.send(307, b"", {"Location": target + query})
         if slug == "acme/limited":
             return self.send(403, {"message": "API rate limit exceeded for 203.0.113.9."},
                              {"X-RateLimit-Remaining": "0"})
@@ -255,6 +262,11 @@ class H(BaseHTTPRequestHandler):
             if self.command == "HEAD":
                 return self.send(405)
             return self.send(200, NOHEAD, ctype="application/vnd.oci.image.manifest.v1+json")
+        if repo == "org/signin":   # an SSO page with 200 instead of a manifest
+            return self.send(200, b"<html>Sign in</html>", ctype="text/html")
+        if repo == "org/baddigest":
+            return self.send(200, NOHEAD, {"Docker-Content-Digest": "sha256:not-a-digest"},
+                             ctype="application/vnd.oci.image.manifest.v1+json")
         if repo != "org/img" or ref != "1.10.0":
             return self.send(404, {"errors": [{"code": "MANIFEST_UNKNOWN", "message": "manifest unknown"}]})
         if "application/vnd.oci.image.index.v1+json" in self.headers.get("Accept", ""):
@@ -275,31 +287,16 @@ EOF
 # CRLF headers, a blank line, the body; exit 1 on an HTTP error).
 mkdir -p "$T/bin"
 cat > "$T/gh.py" <<'EOF'
-import os, sys, urllib.error, urllib.request
-base, url, mode = os.environ["FAKE_GH_BASE"], sys.argv[-1], os.environ.get("FAKE_GH", "")
-if mode == "loggedout":
-    sys.stderr.write("To get started with GitHub CLI, please run:  gh auth login\n")
-    sys.exit(4)
-if url.startswith("https://api.github.com/"):
-    url = base + url[len("https://api.github.com"):]
-elif not url.startswith("http"):
-    url = base + "/" + url
-opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-try:
-    r = opener.open(url)
-    code, reason, headers, body = r.status, r.reason, r.headers, r.read()
-except urllib.error.HTTPError as e:
-    code, reason, headers, body = e.code, e.reason, e.headers, e.read()
-if mode == "stale":
-    code, reason, body = 401, "Unauthorized", b'{"message":"Bad credentials"}'
-out = sys.stdout.buffer
-out.write(f"HTTP/2.0 {code} {reason}\n".encode())
-for k, v in headers.items():
-    out.write(f"{k}: {v.replace(base, 'https://api.github.com')}\r\n".encode())
-out.write(b"\r\n" + body)
-if code >= 400:
-    sys.stderr.write(f"gh: {reason} (HTTP {code})\n")
-    sys.exit(1)
+import os, sys
+mode = os.environ.get("FAKE_GH", "")
+if sys.argv[1:3] == ["auth", "token"]:
+    if mode == "loggedout":
+        sys.stderr.write("no oauth token found for github.com\n")
+        sys.exit(1)
+    print("gho_staleToken1234567890abcdef" if mode == "stale" else "gho_fakeToken1234567890abcdef")   # pragma: allowlist secret (fake test tokens)
+    sys.exit(0)
+sys.stderr.write("fake gh: only `gh auth token` is supported\n")
+sys.exit(2)
 EOF
 cat > "$T/bin/gh" <<EOF
 #!/usr/bin/env bash
@@ -328,7 +325,7 @@ check "-n 3 finds a release beyond the first page by its tag" '[ $rc -eq 0 ] && 
 check "a tag with no release is looked up, then skipped" '[ "$(logged "releases/tags/v1.11.0")" -eq 1 ] && [ "$(logged "releases/tags/v1.1.0")" -eq 0 ]'
 run acme/tool -n 9 --pre
 check "a draft never shows, not even with --pre" '[ $rc -eq 0 ] && [[ $out != *v9.9.9* ]] && [[ $out != *nightly* ]]'
-check "the override base means gh is never called" '[ ! -s "$T/gh.log" ]'
+check "gh is only asked for its token, never handed a URL" '[ -s "$T/gh.log" ] && ! grep -v -q "^auth token" "$T/gh.log"'
 run https://github.com/acme/tool
 check "a github.com URL works" '[ $rc -eq 0 ] && [ "$out" = v1.10.0 ]'
 run acme/flagged
@@ -386,26 +383,19 @@ check "an HTTP 500 exits 2" '[ $rc -eq 2 ] && [[ $err == *"HTTP 500"* ]]'
 run acme/badjson
 check "a reply that is not JSON exits 2" '[ $rc -eq 2 ] && [[ $err == *"not JSON"* ]]'
 
-# ---- GitHub through a fake gh (no override, so the script picks gh)
-(
-  unset LATEST_VERSION_GITHUB_API
-  export FAKE_GH_BASE=http://$R/gh https_proxy=http://$R HTTPS_PROXY=http://$R
-  run acme/tool -n 3
-  check "gh api: the same answer through the tag walk" '[ $rc -eq 0 ] && [ "$(lines)" = "v1.10.0 v1.9.0 v1.2.0" ]'
-  check "gh api: every call uses -i, the tag list and lookups too" '[ "$(grep -c "^api -i" "$T/gh.log")" -eq "$(wc -l < "$T/gh.log")" ] && grep -q "matching-refs" "$T/gh.log" && grep -q "releases/tags/v1.2.0" "$T/gh.log"'
-  : > "$LOG"; : > "$T/gh.log"; run acme/sparse
-  check "gh api: the fallback follows the absolute Link URL" '[ $rc -eq 0 ] && [ "$out" = v1.5.0 ] && grep -q "https://api.github.com/repositories/" "$T/gh.log"'
-  : > "$LOG"; : > "$T/gh.log"; run acme/plainlink
-  check "gh api: a next page over plain http is refused before gh sees it" '[ $rc -eq 2 ] && [[ $err == *"not https"* ]] && ! grep -q "http://api.github.com" "$T/gh.log"'
-  : > "$LOG"; run acme/missing
-  check "gh api: a 404 exits 2 and does not retry without a token" '[ $rc -eq 2 ] && [[ $err == *"no such repo"* ]] && [ "$(logged CONNECT)" -eq 0 ]'
-  : > "$LOG"; FAKE_GH=loggedout run acme/tool
-  check "gh not logged in: falls back to the API without a token" '[ "$(logged "^CONNECT .*api.github.com:443")" -eq 1 ] && [ $rc -eq 2 ]'
-  : > "$LOG"; FAKE_GH=stale run acme/tool
-  check "gh with a stale token (401): falls back too" '[ "$(logged "^CONNECT .*api.github.com:443")" -eq 1 ]'
-  echo "$pass $fail" > "$T/sub.count"
-)
-read -r pass fail < "$T/sub.count"
+# ---- the token of a gh login, and redirects
+: > "$LOG"; run acme/tool -n 3
+check "a gh login's token goes to the GitHub API in the Authorization header" '[ $rc -eq 0 ] && [ "$(lines)" = "v1.10.0 v1.9.0 v1.2.0" ] && grep -q "path=/gh/.*auth=Bearer gho_fakeToken" "$LOG"'
+: > "$LOG"; FAKE_GH=loggedout run acme/tool
+check "no gh login: the public API, without a token" '[ $rc -eq 0 ] && [ "$out" = v1.10.0 ] && ! grep -q "auth=Bearer" "$LOG"'
+: > "$LOG"; FAKE_GH=stale run acme/tool
+check "a stale token (401): asked again without it" '[ $rc -eq 0 ] && [ "$out" = v1.10.0 ] && grep -q "auth=Bearer gho_staleToken" "$LOG" && grep -q "path=/gh/.*auth=- " "$LOG"'
+: > "$LOG"; run acme/hop
+check "a redirect to another host never carries the token" '[ $rc -eq 0 ] && grep -q "host=localhost.*auth=- " "$LOG" && ! grep -q "host=localhost.*auth=Bearer" "$LOG"'
+run acme/downgrade
+check "a GitHub redirect to plain http is refused" '[ $rc -eq 2 ] && [[ $err == *"not https"* ]]'
+run acme/plainlink
+check "a GitHub next page over plain http is refused" '[ $rc -eq 2 ] && [[ $err == *"not https"* ]]'
 
 # ---- registries: token challenge, pagination, sorting
 I=$R/org/img
@@ -467,6 +457,10 @@ run "$I" --digest 1.10.0 --json
 check "--digest --json names the media type" '[[ $out == *"application/vnd.oci.image.index.v1+json"* ]]'
 run "$R/org/nohead" --digest 1.0.0
 check "no HEAD: --digest hashes the GET body" '[ $rc -eq 0 ] && [ "$out" = "$(sha "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\"}")" ]'
+run "$R/org/signin" --digest 1.0.0
+check "a sign-in page with HTTP 200 is no digest (exit 2)" '[ $rc -eq 2 ] && [[ $err == *"not a manifest"* ]]'
+run "$R/org/baddigest" --digest 1.0.0
+check "a malformed digest header is refused" '[ $rc -eq 2 ] && [[ $err == *"malformed digest"* ]]'
 run "$I" --digest nope
 check "--digest of a missing tag exits 1" '[ $rc -eq 1 ] && [ -z "$out" ] && [[ $err == *"not found"* ]]'
 

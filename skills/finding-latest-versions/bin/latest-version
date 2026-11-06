@@ -25,8 +25,9 @@ one tag per line.
 
 TARGET
   OWNER/REPO     GitHub releases, drafts skipped. A repo with no releases falls
-                 back to its tags. A github.com URL works too. Uses `gh api`
-                 when gh is logged in, else the public API without a token.
+                 back to its tags. A github.com URL works too. With a gh
+                 login it sends gh's token (read with `gh auth token`) to the
+                 GitHub API, else it uses the public API without a token.
   IMAGE          Tags from an OCI registry, with an anonymous token:
                  ghcr.io/org/img, quay.io/org/img, registry.k8s.io/pause,
                  host:port/path, docker.io/user/img, or a bare name such as
@@ -73,7 +74,8 @@ EXIT STATUS
 
 ENVIRONMENT (for tests)
   LATEST_VERSION_GITHUB_API       GitHub API base (default https://api.github.com).
-                                  When it is set, gh is never called.
+                                  The token goes there only if it is
+                                  api.github.com or this machine (tests).
   LATEST_VERSION_REGISTRY_SCHEME  http, for a local test registry only: tokens
                                   then travel without TLS
   LATEST_VERSION_DOCKER_HUB       Docker Hub registry host
@@ -94,6 +96,8 @@ MANIFEST_TYPES = ", ".join([
     "application/vnd.oci.image.manifest.v1+json",
     "application/vnd.docker.distribution.manifest.v2+json",
 ])
+MANIFEST_MEDIA = {m.strip() for m in MANIFEST_TYPES.split(",")}
+DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 DOCKER_HUB = {"docker.io", "index.docker.io", "registry-1.docker.io",
               "registry.hub.docker.com"}
 
@@ -333,42 +337,42 @@ def prefix_hint(tags):
 
 # ---------------------------------------------------------------- GitHub
 
+def gh_token():
+    """The token gh is logged in with for github.com, or None. It only ever goes into an Authorization header."""
+    gh = shutil.which("gh")
+    if not gh:
+        return None
+    env = dict(os.environ, GH_PROMPT_DISABLED="1", GH_NO_UPDATE_NOTIFIER="1", NO_COLOR="1")
+    try:
+        p = subprocess.run([gh, "auth", "token", "--hostname", "github.com"], capture_output=True, text=True,
+                           timeout=TIMEOUT, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    token = p.stdout.strip()
+    return token if p.returncode == 0 and re.fullmatch(r"[A-Za-z0-9_]{20,255}", token) else None
+
+
 class GitHub:
+    """Every call goes through fetch(), so each redirect is checked: never to plain http, and the token never
+    follows a redirect to another host. gh only lends its token."""
+
     def __init__(self):
         base = os.environ.get("LATEST_VERSION_GITHUB_API")
         self.base = (base or "https://api.github.com").rstrip("/")
-        self.gh = None if base else shutil.which("gh")
+        host = urllib.parse.urlsplit(self.base).hostname
+        self.token = gh_token() if host in ("api.github.com", "127.0.0.1", "localhost", "::1") else None
 
     def get(self, url):
-        if not _secure(url):             # checked before gh too: gh attaches the token by host name alone
+        if not _secure(url):
             raise Fail(f"refusing {url}: it is not https")
-        if self.gh:
-            resp = self._gh_api(url)
-            if resp is not None:
-                return resp
-            self.gh = None   # gh is missing a login: go on without a token
-        return fetch("GET", url, GITHUB_HEADERS)
-
-    def _gh_api(self, url):
-        """The reply through `gh api -i`, or None when gh cannot make the call."""
-        env = dict(os.environ, GH_PROMPT_DISABLED="1", GH_NO_UPDATE_NOTIFIER="1",
-                   NO_COLOR="1")
-        # No shell runs, and every URL here is absolute (https://...), so no
-        # argument can read as a gh option.
-        try:
-            p = subprocess.run([self.gh, "api", "-i", "-H", "Accept: application/vnd.github+json", url],
-                               capture_output=True, timeout=TIMEOUT * 2, env=env)
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        m = re.match(rb"HTTP/\S+ (\d{3})[^\n]*\n(.*?)\r?\n\r?\n", p.stdout, re.S)
-        if not m:
-            return None          # no HTTP exchange: not logged in, or gh failed
-        status = int(m.group(1))
-        if status == 401:
-            return None          # a stale gh token: the anonymous API may still work
-        pairs = [line.split(":", 1) for line in m.group(2).decode("latin-1").splitlines()
-                 if ":" in line]
-        return Response(status, _header_map(pairs), p.stdout[m.end():], url)
+        headers = dict(GITHUB_HEADERS)
+        if self.token and _netloc(url) == _netloc(self.base):
+            headers["Authorization"] = f"Bearer {self.token}"
+        resp = fetch("GET", url, headers)
+        if resp.status == 401 and "Authorization" in headers:
+            self.token = None            # a stale gh token: the anonymous API may still work
+            resp = fetch("GET", url, GITHUB_HEADERS)
+        return resp
 
 
 def github_fail(resp, slug, bare):
@@ -613,7 +617,7 @@ class Registry:
         url = f"{self.base}/v2/{self.path}/manifests/{urllib.parse.quote(tag, safe='')}"
         accept = {"Accept": MANIFEST_TYPES}
         resp = self.get("HEAD", url, accept)       # HEAD does not count as a pull
-        if resp.status == 200 and resp.header("docker-content-digest"):
+        if resp.status == 200 and DIGEST.fullmatch(resp.header("docker-content-digest") or ""):
             return resp.header("docker-content-digest"), resp.header("content-type")
         if resp.status == 404:
             return None
@@ -623,8 +627,18 @@ class Registry:
         if resp.status != 200:
             detail = registry_error(resp) or f"HTTP {resp.status}"
             raise Fail(f"{self.name}: the registry refused the manifest of {tag} ({detail})")
-        digest = resp.header("docker-content-digest") or "sha256:" + hashlib.sha256(resp.body).hexdigest()
-        return digest, resp.header("content-type")
+        ctype = (resp.header("content-type") or "").split(";")[0].strip().lower()
+        try:
+            doc = json.loads(resp.body)
+        except ValueError:
+            doc = None
+        if ctype not in MANIFEST_MEDIA or not isinstance(doc, dict) or doc.get("schemaVersion") != 2:
+            # a sign-in page or an error page answered with 200: its hash would be a useless pin
+            raise Fail(f"{self.name}: the registry answered {tag} with {ctype or 'no content type'}, not a manifest")
+        header = resp.header("docker-content-digest")
+        if header and not DIGEST.fullmatch(header):
+            raise Fail(f"{self.name}: the registry sent a malformed digest for {tag}: {header[:80]}")
+        return header or "sha256:" + hashlib.sha256(resp.body).hexdigest(), ctype
 
 
 # ---------------------------------------------------------------- targets
