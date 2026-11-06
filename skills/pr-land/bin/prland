@@ -12,8 +12,9 @@ In order:
              (codex, sar, ci, all; comma-separated) goes to prbots. A repo with no review bots: --need ci.
   2 merge    gh pr merge --squash --match-head-commit <head> --subject "<title> (#N)", from a temp dir, so gh
              never touches your checkouts.
-  3 confirm  GitHub must report MERGED. Then, from a checkout of the repo, the remote branch is deleted with a
-             lease on the PR head, so a push that landed after the merge survives. Outside a checkout it stays.
+  3 confirm  GitHub must report MERGED. Then the remote branch is deleted through the GitHub API's updateRefs
+             with beforeOid set to the PR head: a compare-and-delete on that exact repository, so a push that
+             landed after the merge survives, and no git URL rewrite can redirect it.
   4 clean    only the PR's own worktree and branch, never a fork PR's. The worktree goes (git worktree remove,
              no --force) only when it sits on the PR head with no tracked changes, no untracked files and no
              ignored files except build and cache output (node_modules, .venv, __pycache__, dist, ...).
@@ -89,6 +90,37 @@ def worktrees(where):
     return out
 
 
+UPDATE_REFS = ("mutation($id:ID!,$name:GitRefname!,$before:GitObjectID!){updateRefs(input:{repositoryId:$id,"
+               "refUpdates:[{name:$name,beforeOid:$before,afterOid:\"0000000000000000000000000000000000000000\"}]})"
+               "{clientMutationId}}")
+
+
+def delete_remote(repo, branch, head, neutral):
+    """Delete the PR branch on GitHub only if it still points at the PR head (an atomic compare-and-delete)."""
+    r = run(["gh", "api", "repos/%s/git/ref/heads/%s" % (repo, branch)], cwd=neutral)
+    if r.returncode != 0:
+        return "%s was already gone" % branch
+    try:
+        now = (json.loads(r.stdout).get("object") or {}).get("sha")
+    except ValueError:
+        now = None
+    if now != head:
+        return "kept %s: it moved to %s after the merge" % (branch, (now or "?")[:7])
+    r = run(["gh", "api", "repos/%s" % repo], cwd=neutral)
+    try:
+        node = json.loads(r.stdout).get("node_id") if r.returncode == 0 else None
+    except ValueError:
+        node = None
+    if not node:
+        return "kept %s: could not read the repository id" % branch
+    r = run(["gh", "api", "graphql", "-f", "query=" + UPDATE_REFS, "-f", "id=" + node,
+             "-f", "name=refs/heads/" + branch, "-f", "before=" + head], cwd=neutral)
+    if r.returncode == 0 and '"errors"' not in r.stdout:
+        return "deleted %s (was %s)" % (branch, head[:7])
+    return "kept %s: GitHub refused the delete (%s)" % (branch, (r.stderr or r.stdout).strip().splitlines()[-1][:160]
+                                                       if (r.stderr or r.stdout).strip() else "no detail")
+
+
 def slug(url):
     url = url.strip().lower()
     return re.sub(r"\.git$", "", re.sub(r"^.*?github\.com[:/]+", "", url))
@@ -146,13 +178,16 @@ def main():
 
     here = os.getcwd()
     repo, pr = a.repo, a.pr
+    host = (os.environ.get("GH_HOST") or "github.com").lower()          # the host every gh call here uses
     if pr and "/" in pr:
-        m = re.match(r"^https?://github\.com/([^/]+/[^/]+)/pull/(\d+)/?(?:[#?].*)?$", pr)
+        m = re.match(r"^https?://([^/]+)/([^/]+/[^/]+)/pull/(\d+)/?(?:[#?].*)?$", pr)
         if not m:
             die("not a GitHub PR URL: %s" % pr)
-        if repo and repo.lower() != m.group(1).lower():
-            die("the URL is a PR in %s, but -R says %s" % (m.group(1), repo))
-        repo, pr = m.group(1), m.group(2)
+        if m.group(1).lower() != host:
+            die("the URL is on %s, but gh talks to %s (GH_HOST)" % (m.group(1), host))
+        if repo and repo.lower() != m.group(2).lower():
+            die("the URL is a PR in %s, but -R says %s" % (m.group(2), repo))
+        repo, pr = m.group(2), m.group(3)
     if not repo:
         r = run(["gh", "repo", "view", "--json", "nameWithOwner"], cwd=here)
         if r.returncode != 0:
@@ -170,6 +205,9 @@ def main():
     neutral = tempfile.mkdtemp(prefix="prland.")   # gh runs here, outside every checkout
 
     p = pr_view(pr, repo, neutral)
+    want = "https://%s/%s/pull/%s" % (host, repo.lower(), pr)
+    if str(p.get("url", "")).lower().rstrip("/") != want:
+        die("gh returned %s, not %s: refusing to act on another PR" % (p.get("url"), want), 2)
     n, head, branch, base = p["number"], p["headRefOid"], p["headRefName"], p["baseRefName"]
     say("prland", "PR #%s · %s · %s -> %s · %s" % (n, repo, branch, base, p["url"]))
 
@@ -249,20 +287,7 @@ def main():
     elif a.dry_run:
         say("dry-run", "would delete origin/%s if it is still at %s" % (branch, head[:7]))
     elif merged_now or p["state"] == "MERGED":
-        if main_wt:
-            url = git(main_wt, "config", "--get", "remote.origin.url").stdout.strip()   # verified as this repo
-            r = git(main_wt, "push", "--quiet", "--force-with-lease=refs/heads/%s:%s" % (branch, head), url,
-                    "--delete", branch)
-            err = (r.stderr or "").strip()
-            if r.returncode == 0:
-                say("remote", "deleted %s (was %s)" % (branch, head[:7]))
-            elif "remote ref does not exist" in err:
-                say("remote", "%s was already gone" % branch)
-            else:
-                say("remote", "kept %s: %s" % (branch, err.splitlines()[-1][:200] if err else "push failed"))
-        else:
-            say("remote", "kept %s: only a checkout of %s can delete it with a lease (run prland there, "
-                          "or let GitHub's auto-delete do it)" % (branch, repo))
+        say("remote", delete_remote(repo, branch, head, neutral))
 
     # 4 clean
     if not main_wt:

@@ -32,8 +32,15 @@ PY
       echo late >> "$FAKE_HELPER/late.txt" && git -C "$FAKE_HELPER" add -A && git -C "$FAKE_HELPER" commit -qm late &&
       git -C "$FAKE_HELPER" push -q origin late:feat
     fi ;;
-  "api repos/o/r/git/ref/heads/feat") echo "{\"object\":{\"sha\":\"$head\"}}" ;;
-  "api -X") printf '%s\n' "$*" >> "$FAKE/api.log" ;;
+  "api repos/o/r/git/ref/heads/feat")   # the remote branch as GitHub sees it: the bare origin's ref
+    sha=$(git -C "$FAKE_ORIGIN" rev-parse -q --verify refs/heads/feat) || exit 1
+    echo "{\"object\":{\"sha\":\"$sha\"}}" ;;
+  "api repos/o/r") echo '{"node_id":"R_fake"}' ;;
+  "api graphql")    # updateRefs: compare-and-delete on the bare origin, like GitHub's beforeOid
+    before=""; for a in "$@"; do case $a in before=*) before=${a#before=} ;; esac; done
+    printf 'graphql before=%s\n' "$before" >> "$FAKE/api.log"
+    if git -C "$FAKE_ORIGIN" update-ref -d refs/heads/feat "$before" 2>/dev/null; then echo '{"data":{"updateRefs":{"clientMutationId":null}}}'
+    else echo '{"data":{"updateRefs":null},"errors":[{"message":"twirp error not_found: missing"}]}'; exit 1; fi ;;
   *) echo "fake gh: unexpected: $*" >&2; exit 9 ;;
 esac
 EOF
@@ -52,7 +59,7 @@ export PATH="$T/bin:$PATH"
 # pushed commit. A helper clone then lands the squash commit on origin/main, as GitHub would.
 setup() {
   rm -rf "$T/r" "$FAKE"/*; mkdir -p "$T/r"
-  O=$T/r/origin.git; git init -q --bare -b main "$O"
+  O=$T/r/origin.git; git init -q --bare -b main "$O"; export FAKE_ORIGIN=$O
   git config --file "$GIT_CONFIG_GLOBAL" url."$O".insteadOf "https://github.com/o/r.git"
   M=$T/r/main; git init -q -b main "$M"; git -C "$M" remote add origin https://github.com/o/r.git
   echo base > "$M/a.txt"; printf '.env\nnode_modules/\n' > "$M/.gitignore"; git -C "$M" add -A
@@ -72,7 +79,7 @@ setup; FAKE_VERDICT=CLEAN run 7
 check "clean PR: exit 0" '[ $rc -eq 0 ]'
 check "merge is squash, -R, the full head SHA and a (#7) subject" 'grep -q -- "--squash" "$FAKE/merge.log" && grep -q -- "-R o/r" "$FAKE/merge.log" && grep -q -- "--match-head-commit $HEADSHA" "$FAKE/merge.log" && grep -q -- "--subject Title (#7)" "$FAKE/merge.log"'
 check "gh merges from outside every checkout" '! grep -q "cwd=$T/r" "$FAKE/merge.log"'
-check "the remote branch is deleted, with a lease" '! remote_has_feat && [[ $out == *"remote   deleted feat"* ]]'
+check "the remote branch is deleted by a compare-and-delete on the PR head" '! remote_has_feat && [[ $out == *"remote   deleted feat"* ]] && grep -q "before=$HEADSHA" "$FAKE/api.log"'
 check "the PR worktree is removed" '[ ! -d "$W" ] && ! git -C "$M" worktree list | grep -q wt-feat'
 check "the local branch is deleted and its SHA printed" '! git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"deleted feat (was ${HEADSHA:0:10})"* ]]'
 check "the main checkout fast-forwards to the squash commit" '[ "$(git -C "$M" rev-parse HEAD)" = "$SQUASH" ]'
@@ -122,7 +129,7 @@ check "a draft: exit 1" '[ $rc -eq 1 ] && [ ! -e "$FAKE/merge.log" ]'
 setup; FAKE_VERDICT=CLEAN FAKE_MERGE_FAIL=1 run 7
 check "a failed merge: exit 2 and nothing cleaned" '[ $rc -eq 2 ] && [ -d "$W" ] && remote_has_feat'
 setup; FAKE_VERDICT=CLEAN FAKE_MOVE_REMOTE=1 run 7
-check "a push after the merge keeps the remote branch (lease)" '[ $rc -eq 0 ] && remote_has_feat && [[ $out == *"remote   kept feat"* ]]'
+check "a push after the merge keeps the remote branch" '[ $rc -eq 0 ] && remote_has_feat && [[ $out == *"remote   kept feat"* ]]'
 setup OPEN false true; FAKE_VERDICT=CLEAN run 7
 check "a fork PR: remote and local branches left alone" '[ $rc -eq 0 ] && [ -d "$W" ] && remote_has_feat && [[ $out == *"fork PR"* ]]'
 
@@ -147,7 +154,13 @@ check "an unrelated missing worktree keeps its registration (no global prune)" '
 setup; FAKE_VERDICT=CLEAN run 7 --dry-run
 check "--dry-run merges, deletes and removes nothing" '[ $rc -eq 0 ] && [ ! -e "$FAKE/merge.log" ] && [ -d "$W" ] && remote_has_feat && [[ $out == *"would run: gh pr merge"* ]]'
 setup; WD=$T; FAKE_VERDICT=CLEAN run 7 -R o/r
-check "outside a checkout: merged, remote branch kept, local cleanup skipped" '[ $rc -eq 0 ] && remote_has_feat && [ ! -e "$FAKE/api.log" ] && [[ $out == *"not run from a checkout"* ]]'
+check "outside a checkout: merged, remote branch deleted, local cleanup skipped" '[ $rc -eq 0 ] && ! remote_has_feat && [[ $out == *"not run from a checkout"* ]]'
+setup; FAKE_VERDICT=CLEAN GH_HOST=ghe.example.com run https://github.com/o/r/pull/7
+check "a github.com URL while gh talks to another host is refused" '[ $rc -eq 3 ] && [ ! -e "$FAKE/merge.log" ]'
+setup; python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['url']='https://github.com/x/y/pull/7'; json.dump(d,open(p,'w'))" "$FAKE/pr.json"; FAKE_VERDICT=CLEAN run 7
+check "a PR whose URL names another repo is refused" '[ $rc -eq 2 ] && [ ! -e "$FAKE/merge.log" ]'
+setup; git -C "$M" config url."$T/r/fork.git".pushInsteadOf https://github.com/o/r.git; git init -q --bare -b main "$T/r/fork.git"; git -C "$W" push -q "$T/r/fork.git" feat; FAKE_VERDICT=CLEAN run 7
+check "pushInsteadOf cannot redirect the remote delete" '! remote_has_feat && [ -n "$(git -C "$T/r/fork.git" for-each-ref refs/heads/feat)" ]'
 setup; WD=$W; FAKE_VERDICT=CLEAN run
 check "from inside the PR worktree: removes it, deletes the branch, says cd" '[ $rc -eq 0 ] && [ ! -d "$W" ] && ! git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"your shell was inside it"* ]]'
 
