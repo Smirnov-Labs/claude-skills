@@ -136,6 +136,9 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "m8", "name": "Bash", "input": {"command": "echo '{\"Cookie\": \"session=jsonpw829\", \"Authorization\": \"Basic jsonpw830xyz\"}'; echo {\"Cookie\": \"session=jsonpw834\"}"}},
         {"type": "tool_use", "id": "m9", "name": "Bash", "input": {"command": "curl -d 'username=alice&password=rose,formpw831' https://example.test/login; curl -d 'password=orchid,formpw832' https://example.test"}},
         {"type": "tool_use", "id": "n1", "name": "Bash", "input": {"command": "COOKIE=session=asgnpw833 curl https://keepasgn.example; git status"}},
+        {"type": "tool_use", "id": "n2", "name": "Bash", "input": {"command": "cat <<'EOF' > .env\nDB_PASSWORD=rose&hdocpw835\nAPI_TOKEN=a;hdocpw836\nPLAIN=keepplain\nEOF\ngit status"}},
+        {"type": "tool_use", "id": "n3", "name": "Bash", "input": {"command": "curl -d 'password=rose&username=keepuser&action=login' https://example.test"}},
+        {"type": "tool_use", "id": "n4", "name": "Bash", "input": {"command": "curl https://example.test/?password=qpw837;ruby -v"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -242,6 +245,9 @@ check "a sudo -S here-string is masked, and only that one" '! grep -q herepw822 
 check "a JSON Cookie or Authorization field with a space after the colon is masked" '! grep -q -E "jsonpw829|jsonpw830|jsonpw834" "$T/ev.jsonl"'
 check "a form password with commas, first or after another field, is masked whole" '! grep -q -E "formpw831|formpw832" "$T/ev.jsonl"'
 check "a COOKIE= assignment keeps the commands after it" '! grep -q asgnpw833 "$T/ev.jsonl" && grep -q -F "curl https://keepasgn.example; git status" "$T/ev.jsonl"'
+check "a heredoc body is data: a .env password keeps nothing after & or ;" '! grep -q -E "hdocpw835|hdocpw836" "$T/ev.jsonl" && grep -q keepplain "$T/ev.jsonl"'
+check "a password-first form keeps its other fields" 'grep -q -F "username=keepuser&action=login" "$T/ev.jsonl"'
+check "a query password stops at a shell operator" '! grep -q qpw837 "$T/ev.jsonl" && grep -q -F ";ruby -v" "$T/ev.jsonl"'
 check "a quoted header outside an HTTP command is masked whole" '! grep -q -E "hdrpw826|ckpw827|ckpw828" "$T/ev.jsonl"'
 check "a literal stays masked in a nested word that names a program" '! grep -q -F "private\\\\\\\"client curl" "$T/ev.jsonl"'
 check "a labelled password keeps no part of itself (commas, &, ; and backslashes)" '! grep -q -E "lblpw823|lblpw824|lblpw825|summer|rose," "$T/ev.jsonl"'

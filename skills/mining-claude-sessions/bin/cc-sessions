@@ -57,6 +57,9 @@ RAWWORD = re.compile(r"(?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^\s'\"\\])+")
 SHELL_HINT = re.compile(r"\b(?:curl|wget|xh|sshpass|sudo)\b|(?:^|[\s;&|(`'\"])https?(?=[\s'\"])|\\[\"']")
 SHELL_MAX = 20000          # shorter text always gets the shell pass; longer text only with a hint (speed)
 ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=", re.S)
+HEREDOC = re.compile(r"(<<-?[ \t]*(['\"]?)(?P<d>\w+)\2[^\n]*\n)(.*?)(\n[ \t]*(?P=d)[ \t]*(?:\n|$))", re.S)
+# DB_PASSWORD=rose&petal in a .env body or an env dump: the whole rest of the line is the value
+ENVLINE = re.compile(r"(?m)^([ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*)(?!<redacted>|<masked>)(\S.*)$")
 SECRET_NAME = re.compile(r"(?i)(?:" + SENSITIVE + r")(?:_|$)")    # GITHUB_TOKEN, PGPASSWORD; not TOKENIZERS_
 SECRET_HEADER = re.compile(r"(?i)^\s*((?:set-)?cookie|(?:proxy-)?authorization)\s*:")
 CRED_OPTS = {   # program: ((short options that take a secret, long ones), every short option that takes a value)
@@ -239,10 +242,10 @@ def mask_shell(s, depth=0):
     swallow the next command: option values of HTTP clients and sshpass, Cookie and Authorization headers, a
     password piped or here-stringed into sudo -S, and key=value secrets that shell escaping hid. None when s does not
     parse as shell (an open quote)."""
-    toks = scan(s)
+    toks = scan(HEREDOC.sub(lambda m: m.group(1) + re.sub(r"[^\n]", " ", m.group(3)) + m.group(4), s))
     if toks is None:
         return None
-    edits = []
+    edits, assign_at = [], set()
     cmds, cur = [], []
     for tok in toks:
         if tok[1]:
@@ -255,6 +258,9 @@ def mask_shell(s, depth=0):
         words = [tok[0] for tok in cmd]
         i = program_at(words)
         prog = words[i].rsplit("/", 1)[-1] if i < len(words) else ""
+        assign_at.update(cmd[k][2] for k in range(min(i, len(cmd))))
+        if prog in ("export", "declare", "local", "readonly", "typeset", "env"):
+            assign_at.update(tok[2] for tok in cmd[i + 1:])
         after = [tok[0] for tok in cmds[n + 1][0]] if n + 1 < len(cmds) else []
         say = next((k for k, w in enumerate(words) if w.rsplit("/", 1)[-1] in ("echo", "printf")), None)
         if say is not None and op in ("|", "|&") and say + 1 < len(cmd) and sudo_reads_stdin(after):
@@ -308,7 +314,7 @@ def mask_shell(s, depth=0):
         if tok[1]:
             continue
         text, a = tok[0], ASSIGN.match(tok[0])
-        if a and SECRET_NAME.search(a.group(1)):        # PASSWORD=..., however its value is quoted
+        if a and tok[2] in assign_at and SECRET_NAME.search(a.group(1)):   # PASSWORD=..., however it is quoted
             edits.append((tok[2], tok[3], a.group(1) + "=<redacted>"))
             continue
         src, inner = s[tok[2]:tok[3]], text
@@ -318,6 +324,11 @@ def mask_shell(s, depth=0):
         if depth < 3 and " " in text and SHELL_HINT.search(text):    # bash -c '...', ssh host '...', $(...)
             inner = re.sub(r"\$\(([^()]*)\)", lambda m: "$(" + (mask_shell(m.group(1), depth + 1) or m.group(1)) + ")",
                            inner) if inner.startswith("$(") or "=$(" in inner else (mask_shell(inner, depth + 1) or inner)
+        if inner == text and src == text:              # a plain word: the patterns, kept inside this word
+            plain = mask_text(src)
+            if plain != src:
+                edits.append((tok[2], tok[3], plain))
+            continue
         if inner != text or src != text:               # nested, or a secret that shell escaping hid
             plain = mask_text(src)
             if inner == text and plain != src:          # the patterns see it in the source: keep the source's quoting
@@ -351,6 +362,7 @@ def mask(s):
     s = mask_cookies(s)
     s = URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s)
     s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
+    s = ENVLINE.sub(lambda m: m.group(1) + "<redacted>" if SECRET_NAME.search(m.group(2)) else m.group(0), s)
     s = LABELLED.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", s)
     s = FORMKV.sub(lambda m: m.group(1) + "<redacted>", s)
     s = PFX.sub("<redacted>", s)
