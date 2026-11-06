@@ -43,7 +43,30 @@ SUDO_PIPE = re.compile(r"(\b(?:printf|echo)\b)" + ARGS + r"(\|\s*(?:command\s+)?
 SUDO = re.compile(SUDO_S)
 HERE = re.compile(r"(<<<\s*)('[^']*'|\"[^\"]*\"|\S+)")
 SSHPASS = re.compile(r"(\bsshpass\b[^|;&\n]*?\s-p\s*)('[^']*'|\"[^\"]*\"|[^\s'\"]+)")
-COOKIE = re.compile(r"(?i)\b((?:set-)?cookie\s*[:=]\s*)([^\n]+)")         # the whole header, to the end of the line
+COOKIE = re.compile(r"(?i)\b(?:set-)?cookie\s*[:=]\s*")
+URLCRED = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@'\"]+:)([^@\s/'\"]+)(@)")          # scheme://user:PASS@
+USEROPT = re.compile(r"(\b(?:curl|wget|http|https|xh)\b[^|;&\n]*?\s(?:-u|--user|--http-user|--http-password|--password)"
+                     r"(?:\s+|=))('[^']*'|\"[^\"]*\"|\S+)")
+
+
+def mask_cookies(s):
+    """A Cookie header's value: to the closing quote when the header sits inside a quoted argument, else to the
+    end of the line."""
+    out, pos = [], 0
+    for m in COOKIE.finditer(s):
+        if m.start() < pos:
+            continue
+        line_start = s.rfind("\n", 0, m.start()) + 1
+        before = s[line_start:m.start()]
+        quote = "'" if before.count("'") % 2 else ('"' if before.count('"') % 2 else None)
+        end = s.find(quote, m.end()) if quote else -1
+        if end < 0:
+            end = s.find("\n", m.end())
+            end = len(s) if end < 0 else end
+        out.append(s[pos:m.end()] + "<redacted>")
+        pos = end
+    out.append(s[pos:])
+    return "".join(out)
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 LITERALS = []
 
@@ -51,15 +74,17 @@ LITERALS = []
 SENSITIVE_KEY = re.compile(r"(?i)(password|passwd|secret|token|cookie|authorization|api[_-]?key)")
 
 
-def mask_obj(o):
-    """Mask every string in a structure before it is serialized (JSON escaping would hide literals)."""
+def mask_obj(o, redact=False):
+    """Mask every string in a structure before it is serialized (JSON escaping would hide literals). Everything
+    under a sensitive key (Cookie, password, token...) is redacted, lists and maps included."""
     if isinstance(o, str):
-        return mask(o)
+        return "<redacted>" if redact else mask(o)
+    if isinstance(o, (int, float)) and redact:
+        return "<redacted>"
     if isinstance(o, dict):
-        return {mask(str(k)): ("<redacted>" if SENSITIVE_KEY.search(str(k)) and isinstance(v, (str, int, float))
-                               else mask_obj(v)) for k, v in o.items()}
+        return {mask(str(k)): mask_obj(v, redact or bool(SENSITIVE_KEY.search(str(k)))) for k, v in o.items()}
     if isinstance(o, (list, tuple)):
-        return [mask_obj(v) for v in o]
+        return [mask_obj(v, redact) for v in o]
     return o
 
 
@@ -93,7 +118,9 @@ def mask(s):
     if SUDO.search(s):
         s = HERE.sub(lambda m: m.group(1) + "<redacted>", s)
     s = SSHPASS.sub(lambda m: m.group(1) + "<redacted>", s)
-    s = COOKIE.sub(lambda m: m.group(1) + "<redacted>", s)
+    s = mask_cookies(s)
+    s = URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s)
+    s = USEROPT.sub(lambda m: m.group(1) + "<redacted>", s)
     s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
     s = PFX.sub("<redacted>", s)
     s = KV.sub(lambda m: m.group(1) + "<redacted>", s)
@@ -181,55 +208,80 @@ SHELL = {"fi", "done", "esac", "}", ")", "case", "for", "in", "select", "functio
 OPS = {";", "&&", "||", "|", "&", "(", ")", "|&", ";;"}
 
 
-def flatten(cmd):
-    """The command with unquoted comments removed and unquoted newlines turned into ';'. Quotes are kept."""
-    out, q, esc, i = [], None, False, 0
+OPS2 = ("&&", "||", ";;", "|&")
+
+
+def tokenize(cmd):
+    """(text, is_operator) pairs with shell quoting: quotes can start anywhere in a word, quoted text is never an
+    operator, an unquoted # starts a comment that ends at the newline, and an unquoted newline separates commands.
+    None when a quote is left open."""
+    toks, cur, has, q, esc, i = [], [], False, None, False, 0
+
+    def push():
+        nonlocal cur, has
+        if has:
+            toks.append(("".join(cur), False))
+        cur, has = [], False
     while i < len(cmd):
         c = cmd[i]
         if esc:
-            out.append(c)
-            esc = False
-        elif c == "\\" and q != "'":
-            out.append(c)
-            esc = True
-        elif q:
-            out.append(c)
-            if c == q:
+            cur.append(c)
+            has, esc = True, False
+        elif q == "'":
+            if c == "'":
                 q = None
+            else:
+                cur.append(c)
+        elif q == '"':
+            if c == '"':
+                q = None
+            elif c == "\\":
+                esc = True
+            else:
+                cur.append(c)
+        elif c == "\\":
+            esc, has = True, True
         elif c in "'\"":
-            out.append(c)
-            q = c
-        elif c == "#" and (i == 0 or cmd[i - 1] in " \t\n;&|("):
+            q, has = c, True
+        elif c == "#" and not has and (i == 0 or cmd[i - 1] in " \t\n;&|()"):
             while i < len(cmd) and cmd[i] != "\n":
                 i += 1
             continue
+        elif c in " \t\r":
+            push()
         elif c == "\n":
-            out.append(" ; ")
+            push()
+            toks.append((";", True))
+        elif c in ";&|()":
+            push()
+            op = cmd[i:i + 2] if cmd[i:i + 2] in OPS2 else c
+            toks.append((op, True))
+            i += len(op)
+            continue
         else:
-            out.append(c)
+            cur.append(c)
+            has = True
         i += 1
-    return "".join(out)
+    if q:
+        return None
+    push()
+    return toks
 
 
 def segments(cmd):
-    """Commands split at unquoted shell operators; [] when the quoting does not parse. Tokens keep their quotes
-    (shlex non-posix), so a quoted '|' or ';' is an argument, never an operator."""
+    """Commands split at unquoted shell operators; [] when the quoting does not parse."""
     cmd = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?.*?\n.*?\n\1\b", " ", cmd, flags=re.S)   # drop heredoc bodies
-    lex = shlex.shlex(flatten(cmd), posix=False, punctuation_chars=";&|()")
-    lex.whitespace_split = True
-    lex.commenters = ""
-    try:
-        toks = list(lex)
-    except ValueError:
+    toks = tokenize(cmd)
+    if toks is None:
         return []
     out, cur = [], []
-    for tok in toks:
-        if tok and set(tok) <= set(";&|()"):
+    for text, is_op in toks:
+        if is_op:
             if cur:
                 out.append(cur)
             cur = []
         else:
-            cur.append(tok.strip("'\"") if tok[:1] in "'\"" else tok)
+            cur.append(text)
     if cur:
         out.append(cur)
     return out

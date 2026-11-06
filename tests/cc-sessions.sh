@@ -84,6 +84,12 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "e2", "name": "Bash", "input": {"command": "grep '|' notes.txt"}},
         {"type": "tool_use", "id": "e3", "name": "Bash", "input": {"command": "# Check repository\ngit status\npytest -q"}},
         {"type": "tool_use", "id": "e4", "name": "Bash", "input": {"command": "git log # inline note\nmake test"}},
+        {"type": "tool_use", "id": "f1", "name": "Bash", "input": {"command": "psql 'postgresql://alice:urlpw551@db.example/app'"}},
+        {"type": "tool_use", "id": "f2", "name": "Bash", "input": {"command": "curl -u alice:curlpw552 https://example.test"}},
+        {"type": "tool_use", "id": "f3", "name": "Bash", "input": {"command": "LABEL='hello world' rustc --version"}},
+        {"type": "tool_use", "id": "f4", "name": "Bash", "input": {"command": "curl --data='a|zzfake; yyfake' https://example.test"}},
+        {"type": "tool_use", "id": "f5", "name": "Bash", "input": {"command": "curl -H 'Cookie: session=ck553; refresh=ck554' https://keepme.example && cargo build"}},
+        {"type": "tool_use", "id": "f6", "name": "mcp__x__z", "input": {"headers": {"Cookie": ["session=listck555"]}}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -124,7 +130,10 @@ check "SQL inside quotes is not a command" '[[ $out != *"DROP"* ]]'
 check "a quoted pipe never turns a password into a command" '[[ $out != *qpipepw77* ]]'
 check "a quoted pipe invents no command" '[[ $out != *"notes.txt"* ]]'
 check "comments do not swallow the lines after them" '[[ $out == *"pytest 1"* ]] && [[ $out == *"make 1"* ]]'
-check "wrapper long options and clusters: psql and git, not postgres or TERM" '[[ $out == *"psql 2"* ]] && [[ $out == *"git 3"* ]] && [[ $out != *postgres* ]] && [[ $out != *TERM* ]]'
+check "an assignment with a quoted space still finds the command" '[[ $out == *"rustc 1"* ]]'
+check "quotes inside an option value invent no command" '[[ $out != *zzfake* ]] && [[ $out != *yyfake* ]]'
+check "a Cookie header does not hide the commands after it" '[[ $out == *"cargo 1"* ]]'
+check "wrapper long options and clusters: psql and git, not postgres or TERM" '[[ $out == *"psql "* ]] && [[ $out == *"git "* ]] && [[ $out != *postgres* ]] && [[ $out != *TERM* ]]'
 check "a masked literal in the directory stays masked in the resume command" '[[ $out != *"quote"*"side"* ]]'
 run find PrivateClient --mask-file "$T/mask"
 check "a failed search does not echo a masked word" '[[ $out != *rivate* ]]'
@@ -152,6 +161,9 @@ check "export writes mode 600" '[ "$(stat -c %a "$T/ev.jsonl" 2>/dev/null || sta
 check "export masks the sudo -S password, the bearer token and the mask-file value" '! grep -q -E "hunter2pass|abcdef123456789|SECRETVALUE42" "$T/ev.jsonl"'
 check "export masks whole Cookie headers, sshpass -v -p and sudo -kS" '! grep -q -E "cookieone|cookietwo|sshpwd99|kspw" "$T/ev.jsonl"'
 check "export masks paths and directories too" '! grep -q PrivateClient "$T/ev.jsonl"'
+check "export masks URL and curl -u credentials" '! grep -q -E "urlpw551|curlpw552" "$T/ev.jsonl"'
+check "export masks a Cookie value but keeps the rest of the command" '! grep -q -E "ck553|ck554" "$T/ev.jsonl" && grep -q "keepme.example && cargo build" "$T/ev.jsonl"'
+check "export redacts list values under a sensitive key" '! grep -q listck555 "$T/ev.jsonl"'
 check "export masks sudo by path, quoted pipes, quoted passwords and quoted cookies" '! grep -q -E "pathpw11|tulipkey|horse battery|quotedck1|quotedck2" "$T/ev.jsonl"'
 check "export masks literals and cookies inside MCP inputs before JSON escaping" '! python3 -c "
 import json,sys
