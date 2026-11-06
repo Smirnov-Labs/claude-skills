@@ -31,9 +31,11 @@ exit  0  merged (cleanup steps it skipped say why)
       3  usage error
 """
 import argparse
+import atexit
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -209,6 +211,7 @@ def main():
     if not pr.isdigit():
         die("PR must be a number or a PR URL, not %r" % pr)
     neutral = tempfile.mkdtemp(prefix="prland.")   # gh runs here, outside every checkout
+    atexit.register(shutil.rmtree, neutral, True)    # removed on every exit, errors included
 
     p = pr_view(pr, repo, neutral)
     want = "https://%s/%s/pull/%s" % (host, repo.lower(), pr)
@@ -267,12 +270,17 @@ def main():
         q = run(["gh", "api", "graphql", "-f", "query=query($o:String!,$n:String!,$b:String!){repository(owner:$o,"
                  "name:$n){mergeQueue(branch:$b){id}}}", "-f", "o=" + owner, "-f", "n=" + name, "-f", "b=" + base],
                 cwd=neutral)
-        if q.returncode != 0 or '"mergeQueue":null' not in q.stdout.replace(" ", ""):
+        try:
+            queue = (json.loads(q.stdout).get("data") or {}).get("repository") or {}
+            known = q.returncode == 0 and "mergeQueue" in queue
+        except ValueError:
+            queue, known = {}, False
+        if not known or queue.get("mergeQueue") is not None:
             say("gate", "%s uses a merge queue (or the check failed): prland only merges directly, so merge it "
                         "through the queue yourself" % base)
             return 1
 
-        subject = a.subject or p["title"]
+        subject = " ".join((a.subject or p["title"]).split())     # one line: no newlines in a commit subject
         if not re.search(r"\(#%s\)\s*$" % n, subject):
             subject = "%s (#%s)" % (subject, n)
         merge = ["gh", "pr", "merge", str(n), "-R", repo, "--" + a.method, "--match-head-commit", head]
