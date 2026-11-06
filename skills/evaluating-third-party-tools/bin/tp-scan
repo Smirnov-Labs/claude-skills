@@ -375,9 +375,11 @@ def loads_code(value, yaml=False):
 
     An empty value sets nothing in .npmrc. In YAML the value can go on the next lines, so read it."""
     value = value.strip()
-    quoted = re.match(r'(["\'])(.*?)\1', value)
+    quoted = re.fullmatch(r'(["\'])(.*?)\1[ \t]*(?:%s.*)?' % ('#' if yaml else '[;#]'), value)
     if quoted:
         value = quoted.group(2)
+    elif value[:1] in ('"', "'"):
+        return True  # more after the closing quote: npm and Node still read it
     elif yaml:
         value = re.sub(r'(?:^|[ \t])#.*', '', value)
     else:
@@ -1092,7 +1094,11 @@ class Scan:
             if scripts is None:
                 m = re.search(r'"%s"\s*:\s*"' % name, nt.s)
             else:
-                m = re.compile(r'"%s"\s*:\s*"' % re.escape(name)).search(nt.s, starts[0]) if len(starts) == 1 else None
+                # A key twice after "scripts" (a duplicate, or a later dependency): JSON keeps the
+                # last, so show the parsed value rather than the first one in the text.
+                key = re.compile(r'"%s"\s*:\s*"' % re.escape(name))
+                hits = list(key.finditer(nt.s, starts[0])) if len(starts) == 1 else []
+                m = hits[0] if len(hits) == 1 else None
             if m is None and scripts is None:
                 continue
             line = nt.line_no(m.start()) if m else None
