@@ -75,6 +75,7 @@ This section grows as patterns and preferences are discovered during work on thi
 - **Test a skill change like code.** First run the old instructions as written, and watch them fail. Then copy the code blocks out of the new SKILL.md and run them with only the placeholders filled in. (#9 and #15 were tested this way.)
 - **Leak-scan before every push.** Run `detect-secrets scan <files>`. Also grep the added lines for client names, internal hostnames, RFC1918 IPs, private repo names, tokens and home-directory paths.
 - **After a change to `bin/skillsync`,** run `tests/skillsync.sh`. On macOS, also run it under `/bin/bash` (3.2).
+- **After a change to `cc-sessions`,** run `tests/cc-sessions.sh`. It builds synthetic transcripts and never reads your real ones.
 - **Merges:** squash, with a subject that ends in `(#N)`, then delete the branch. Machines pick up main at their next `skillsync`.
 
 ---
@@ -119,6 +120,7 @@ After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds an
 | `codex-plan-review` | Send the current plan to Codex (high effort, read-only) for an independent architectural review |
 | `detect-overengineering` | Audit a plan document for LLM-style overengineering — rubric pass + Codex adversarial pass + merged findings with proposed edits |
 | `git-recon` | 12-month git-history health check — churn, bus factor, bug hotspots, velocity, firefighting |
+| `mining-claude-sessions` | `cc-sessions`: find and resume a past session, sum one up, or count usage across sessions, with masked output |
 | `watching-pr-bot-reviews` | Wait for and read the PR bots (Codex, SAR, CI) with `prbots` instead of hand-written pollers |
 | `pr-fix` | `/pr-fix`: loop on a PR — fix CI and review feedback, push, wait with `prbots`, repeat until clean (user-invoked only) |
 | `bd-to-br-migration` | Migrate docs from bd (beads) to br (beads_rust) |
