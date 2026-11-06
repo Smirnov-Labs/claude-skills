@@ -1,6 +1,17 @@
 ---
 name: hyprland-lua
-description: Use when scripting, controlling, debugging, or building UI for a Hyprland (Wayland) compositor configured in Lua (hyprland.lua, native since Hyprland 0.55, not hyprland.conf). Symptoms: `hyprctl dispatch`/`keyword` fail with Lua parse errors. A special/scratchpad workspace toggles the wrong (default `special:special`) workspace or won't hide. follow_mouse steals focus, or a toggle hits the wrong monitor. A named workspace's `id` reads `null`, a rename fails with `'workspace' is required`, or `name:<new>` finds nothing after a rename. A rofi/fuzzel launcher can't see native Wayland windows. A Quickshell/QML bar won't switch or track workspaces. Or you need runtime `hyprctl eval` + `hl.dispatch(hl.dsp…)`, live inspection (`hyprctl -j` + jq + grim), and GUI-spawn workarounds.
+description: >-
+  Use when scripting, controlling, debugging, or building UI for a Hyprland
+  (Wayland) compositor configured in Lua (hyprland.lua, native since Hyprland
+  0.55, not hyprland.conf). Symptoms: `hyprctl dispatch`/`keyword` fail with Lua
+  parse errors. A special/scratchpad workspace toggles the wrong (default
+  `special:special`) workspace or won't hide. follow_mouse steals focus, or a
+  toggle hits the wrong monitor. A named workspace's `id` reads `null`, a rename
+  fails with `'workspace' is required`, or `name:<new>` finds nothing after a
+  rename. A rofi/fuzzel launcher can't see native Wayland windows. A
+  Quickshell/QML bar won't switch or track workspaces. Or you need runtime
+  `hyprctl eval` + `hl.dispatch(hl.dsp…)`, live inspection (`hyprctl -j` + jq +
+  grim), and GUI-spawn workarounds.
 ---
 
 # Controlling a Lua-configured Hyprland
