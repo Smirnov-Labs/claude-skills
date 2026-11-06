@@ -24,6 +24,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import sys
 import time
 
@@ -35,12 +36,33 @@ PFX = re.compile(r"(sk-[A-Za-z0-9_\-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[
 KV = re.compile(r"(?i)((?:api[_-]?key|token|secret|passw(?:or)?d|pwd|authorization|bearer|cookie|client[_-]?secret)"
                 r"[\"']?\s*[:=]?\s*(?:bearer\s+|token\s+|basic\s+)?[\"']?)([^\s\"'&,;)]{6,})")
 LONG = re.compile(r"[A-Za-z0-9+_\-]{32,}={0,2}")
-SUDO_PIPE = re.compile(r"(\b(?:printf|echo)\b)([^|\n]*?)(\|\s*(?:command\s+)?sudo\b[^|;&\n]*?\s-S\b)")
-SUDO = re.compile(r"\bsudo\b[^|;&\n]*\s-S\b")
+SUDO_S = r"\bsudo\b[^|;&\n]*?\s(?:-[A-Za-z]*S[A-Za-z]*|--stdin)\b"          # -S, -kS, -Sv, --stdin
+SUDO_PIPE = re.compile(r"(\b(?:printf|echo)\b)([^|\n]*?)(\|\s*(?:command\s+)?" + SUDO_S + ")")
+SUDO = re.compile(SUDO_S)
 HERE = re.compile(r"(<<<\s*)('[^']*'|\"[^\"]*\"|\S+)")
-SSHPASS = re.compile(r"(\bsshpass\s+-p\s*)('[^']*'|\"[^\"]*\"|\S+)")
+SSHPASS = re.compile(r"(\bsshpass\b[^|;&\n]*?\s-p\s*)('[^']*'|\"[^\"]*\"|[^\s'\"]+)")
+COOKIE = re.compile(r"(?i)\b((?:set-)?cookie\s*[:=]\s*)([^\n\"']+)")
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 LITERALS = []
+
+
+def mask_obj(o):
+    if isinstance(o, str):
+        return mask(o)
+    if isinstance(o, dict):
+        return {k: mask_obj(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [mask_obj(v) for v in o]
+    return o
+
+
+def out(text=""):
+    print(mask(text))
+
+
+def fail(text, code=3):
+    sys.stderr.write(mask("cc-sessions: " + text) + "\n")
+    sys.exit(code)
 
 
 def load_mask_file(path):
@@ -50,7 +72,7 @@ def load_mask_file(path):
         with open(os.path.expanduser(path), encoding="utf-8", errors="replace") as fh:
             vals = {l.rstrip("\n") for l in fh if l.strip() and not l.lstrip().startswith("#")}
     except OSError as e:
-        sys.exit("cc-sessions: cannot read the mask file %s: %s" % (path, e.strerror))
+        sys.exit("cc-sessions: cannot read the mask file: %s" % e.strerror)
     LITERALS.extend(sorted(vals, key=len, reverse=True))
 
 
@@ -64,6 +86,7 @@ def mask(s):
     if SUDO.search(s):
         s = HERE.sub(lambda m: m.group(1) + "<redacted>", s)
     s = SSHPASS.sub(lambda m: m.group(1) + "<redacted>", s)
+    s = COOKIE.sub(lambda m: m.group(1) + "<redacted>", s)
     s = PFX.sub("<redacted>", s)
     s = KV.sub(lambda m: m.group(1) + "<redacted>", s)
 
@@ -131,26 +154,44 @@ def prompt_text(o):
     return text
 
 
-WRAP = {"command", "sudo", "timeout", "env", "time", "nohup", "exec", "builtin", "nice", "ionice", "xargs"}
-SHELL = {"cd", "then", "do", "else", "fi", "done", "if", "for", "while", "until", "case", "esac", "in", "{", "}", "(",
-         ")", "!", "[", "[[", "export", "local", "set", "true", "false", "return", "break", "continue", "echo", "printf",
-         "read", "test", "function", "select", "elif", "wait", "exit", "trap", "shift", "source", "."}
+WRAP = {"command", "sudo", "doas", "timeout", "env", "time", "nohup", "exec", "builtin", "nice", "ionice", "xargs",
+        "stdbuf", "chronic", "unbuffer", "caffeinate", "systemd-run"}
+WRAP_ARG = {"sudo": "ugCDhprtUT", "doas": "uC", "nice": "n", "ionice": "cnp", "env": "uCS", "xargs": "InPdLsaE",
+            "timeout": "sk", "stdbuf": "ioe"}                    # options that take the next token
+CONTROL = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "time", "coproc"}
+SHELL = {"fi", "done", "esac", "}", ")", "case", "for", "in", "select", "function", "export", "local", "set", "true",
+         "false", "return", "break", "continue", "echo", "printf", "read", "wait", "exit", "trap", "shift", "source",
+         ".", "cd", "[", "[[", "]]", "eval", "declare", "unset", "let", "alias"}
 
 
 def programs(cmd):
     cmd = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?.*?\n.*?\n\1\b", " ", cmd, flags=re.S)   # drop heredoc bodies
-    out = []
+    found = []
     for seg in re.split(r"\s*(?:&&|\|\||;|\||\n|\$\(|`)\s*", cmd):
-        toks = seg.split()
-        i = 0
-        while i < len(toks) and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[i]) or toks[i] in WRAP
-                                 or toks[i].startswith("-") or re.fullmatch(r"\d+[smh]?", toks[i])):
-            i += 1
+        try:
+            toks = shlex.split(seg, comments=True)
+        except ValueError:
+            toks = seg.split()
+        i, wrapper = 0, None
+        while i < len(toks):
+            tok = toks[i]
+            if tok in CONTROL or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok):
+                i += 1
+            elif tok.rsplit("/", 1)[-1] in WRAP:
+                wrapper = tok.rsplit("/", 1)[-1]
+                i += 1
+                if wrapper == "timeout" and i < len(toks) and not toks[i].startswith("-"):
+                    i += 1                                              # timeout DURATION command
+            elif wrapper and tok.startswith("-"):
+                takes = WRAP_ARG.get(wrapper, "")
+                i += 2 if (len(tok) == 2 and tok[1] in takes) else 1    # -u postgres, -n 10
+            else:
+                break
         if i < len(toks):
             p = toks[i].rsplit("/", 1)[-1]
             if p not in SHELL and re.fullmatch(r"[A-Za-z][\w.+-]*", p):
-                out.append(p)
-    return out
+                found.append(p)
+    return found
 
 
 class Session:
@@ -206,7 +247,7 @@ class Session:
                     for p in set(programs(cmd)):
                         self.progs[p] += 1
                     if keep_cmds:
-                        self.cmds.append((cmd[:500] + " " + inp.get("description", "")).lower())
+                        self.cmds.append((cmd + " " + inp.get("description", "")).lower())
                 elif name == "Skill":
                     self.skills[inp.get("skill") or "?"] += 1
                 elif name in ("Agent", "Task"):
@@ -244,13 +285,16 @@ def utc_to_local(ts):
 
 
 def one_line(text, n):
+    text = mask(text)                                  # mask the whole text first, then shape it
     text = re.sub(r"<command-[a-z]+>(.*?)</command-[a-z]+>", r"\1 ", text, flags=re.S)
     text = re.sub(r"\s+", " ", text).strip()
-    return mask(text[:n] + ("…" if len(text) > n else ""))
+    return text[:n] + ("…" if len(text) > n else "")
 
 
 def resume_line(s):
-    return "cd %s && claude --resume %s" % (tilde(s.cwd) if s.cwd else "<its directory>", s.sid)
+    if not s.cwd:
+        return "claude --resume %s   (run it in the session's directory)" % shlex.quote(s.sid)
+    return "cd -- %s && claude --resume %s" % (shlex.quote(s.cwd), shlex.quote(s.sid))
 
 
 def selected(root, days, project, subagents=True):
@@ -266,13 +310,13 @@ def selected(root, days, project, subagents=True):
 def cmd_find(a):
     terms = [w.lower() for w in a.words if len(w) >= 2]
     if not terms:
-        sys.exit("cc-sessions: find needs at least one word of two or more letters")
+        fail("find needs at least one word of two or more letters")
     hits = []
     for path, sub in selected(a.root, a.days, a.project, subagents=False):
         s = load(path, sub, keep_cmds=True)
         fields = {
             "title": (5, [(s.title or "").lower()]),
-            "prompts": (3, [t.lower()[:3000] for _, t in s.prompts]),
+            "prompts": (3, [t.lower() for _, t in s.prompts]),
             "files": (2, [p.lower() for p in s.edits]),
             "commands": (1, s.cmds),
         }
@@ -291,26 +335,26 @@ def cmd_find(a):
         if not missing and score:
             hits.append((score, s.last or "", s, matched))
     if not hits:
-        print("no session matches all of: %s (try fewer or other words, or --days)" % " ".join(terms))
+        out("no session matches all of: %s (try fewer or other words, or --days)" % " ".join(terms))
         return 1
     hits.sort(key=lambda h: (h[0], h[1]), reverse=True)
     for score, _, s, matched in hits[:a.limit]:
         first = one_line(s.prompts[0][1], 160) if s.prompts else "(no typed prompt)"
-        print("%s  %s  %s  %s" % (utc_to_local(s.last), s.sid[:8], tilde(s.cwd), mask(s.title or "(untitled)")))
-        print("    first prompt: " + first)
-        print("    matched: " + ", ".join("%s (%d)" % kv for kv in matched.items()))
-        print("    resume: " + resume_line(s))
+        out("%s  %s  %s  %s" % (utc_to_local(s.last), s.sid[:8], tilde(s.cwd), mask(s.title or "(untitled)")))
+        out("    first prompt: " + first)
+        out("    matched: " + ", ".join("%s (%d)" % kv for kv in matched.items()))
+        out("    resume: " + resume_line(s))
     if len(hits) > a.limit:
-        print("(%d more; --limit to see them)" % (len(hits) - a.limit))
+        out("(%d more; --limit to see them)" % (len(hits) - a.limit))
     return 0
 
 
 def find_session(root, ref):
     found = [f for f in glob.glob(os.path.join(root, "*", "*.jsonl")) if os.path.basename(f).startswith(ref)]
     if not found:
-        sys.exit("cc-sessions: no session id starts with %r" % ref)
+        fail("no session id starts with %r" % ref)
     if len(found) > 1:
-        sys.exit("cc-sessions: %r matches %d sessions; give more of the id" % (ref, len(found)))
+        fail("%r matches %d sessions; give more of the id" % (ref, len(found)))
     return found[0]
 
 
@@ -318,19 +362,19 @@ def cmd_show(a):
     path = find_session(a.root, a.session)
     s = load(path, False)
     subs = glob.glob(os.path.join(os.path.dirname(path), s.sid, "subagents", "*.jsonl"))
-    print("%s  %s" % (s.sid, mask(s.title or "(untitled)")))
-    print("dir      %s   (project %s)" % (tilde(s.cwd), s.project))
-    print("when     %s to %s" % (utc_to_local(s.first), utc_to_local(s.last)))
-    print("size     %d typed prompts · %d tool calls · %d subagents · %d tool errors"
+    out("%s  %s" % (s.sid, mask(s.title or "(untitled)")))
+    out("dir      %s   (project %s)" % (tilde(s.cwd), s.project))
+    out("when     %s to %s" % (utc_to_local(s.first), utc_to_local(s.last)))
+    out("size     %d typed prompts · %d tool calls · %d subagents · %d tool errors"
           % (len(s.prompts), sum(s.tools.values()), len(subs), sum(s.errors.values())))
-    print("resume   " + resume_line(s))
+    out("resume   " + resume_line(s))
     if s.prompts:
-        print("\nprompts (first %d of %d)" % (min(a.prompts, len(s.prompts)), len(s.prompts)))
+        out("\nprompts (first %d of %d)" % (min(a.prompts, len(s.prompts)), len(s.prompts)))
         for ts, text in s.prompts[:a.prompts]:
-            print("  %s  %s" % (utc_to_local(ts)[11:], one_line(text, 300)))
+            out("  %s  %s" % (utc_to_local(ts)[11:], one_line(text, 300)))
     def top(label, counter, n=12):
         if counter:
-            print("\n%s\n  %s" % (label, ", ".join("%s %d" % (mask(str(k)), v) for k, v in counter.most_common(n))))
+            out("\n%s\n  %s" % (label, ", ".join("%s %d" % (mask(str(k)), v) for k, v in counter.most_common(n))))
     top("tools", s.tools)
     top("commands (Bash calls that use each)", s.progs)
     top("skills", s.skills)
@@ -339,13 +383,13 @@ def cmd_show(a):
         kinds = collections.Counter(k for k, _ in s.agents)
         top("subagents by type", kinds)
     if s.edits:
-        print("\nfiles edited")
+        out("\nfiles edited")
         for p, n in s.edits.most_common(15):
-            print("  %3d  %s" % (n, tilde(p)))
+            out("  %3d  %s" % (n, tilde(p)))
     if s.prs:
-        print("\npull requests")
+        out("\npull requests")
         for url in s.prs:
-            print("  " + url)
+            out("  " + url)
     if s.errors:
         top("tool errors", s.errors)
     return 0
@@ -366,7 +410,7 @@ def cmd_stats(a):
             for _, text in s.prompts:
                 for m in re.findall(r"<command-name>/?([^<]+)</command-name>", text):
                     slash[m] += 1
-                t = re.sub(r"<[^>]+>.*?</[^>]+>", "", text, flags=re.S).strip().lower()
+                t = re.sub(r"<[^>]+>.*?</[^>]+>", "", mask(text), flags=re.S).strip().lower()   # mask first
                 t = re.sub(r"\d+", "N", re.sub(r"\s+", " ", t))
                 if 0 < len(t) <= 70:
                     short[t] += 1
@@ -401,14 +445,14 @@ def cmd_stats(a):
         "repeated_short_prompts": [(t, n, len(short_s[t])) for t, n in short.most_common(a.top * 2) if n >= 2],
     }
     if a.json:
-        print(mask(json.dumps(data, indent=1)))
+        out(mask(json.dumps(data, indent=1)))
         return 0
     window = ("last %d days" % a.days) if a.days else "every transcript on disk"
-    print("%d sessions, %d subagent transcripts, %d typed prompts, %d tool calls (%s%s)"
+    out("%d sessions, %d subagent transcripts, %d typed prompts, %d tool calls (%s%s)"
           % (main, subs, prompts, data["tool_calls"], window, ", project ~ %s" % a.project if a.project else ""))
     def row(label, items, fmt="%s %d"):
         if items:
-            print("\n%s\n  %s" % (label, ", ".join(mask(fmt % tuple(i)) for i in items)))
+            out("\n%s\n  %s" % (label, ", ".join(mask(fmt % tuple(i)) for i in items)))
     row("tools (calls)", data["tools"])
     row("skills (calls)", data["skills_calls"])
     row("skills (sessions that used them)", data["skills_sessions"])
@@ -418,23 +462,24 @@ def cmd_stats(a):
     row("tool errors", data["tool_errors"])
     row("slash commands", data["slash_commands"])
     if data["repeated_short_prompts"]:
-        print("\nrepeated short prompts (times, sessions)")
+        out("\nrepeated short prompts (times, sessions)")
         for t, n, k in data["repeated_short_prompts"]:
-            print("  %3d %3d  %s" % (n, k, mask(t)))
+            out("  %3d %3d  %s" % (n, k, mask(t)))
     return 0
 
 
 def cmd_export(a):
-    old = os.umask(0o077)
     try:
-        out = open(a.file, "w", encoding="utf-8")
-    finally:
-        os.umask(old)
+        fd = os.open(a.file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)   # refuses existing files and symlinks
+    except FileExistsError:
+        fail("%s already exists; pick a new file name (export never overwrites)" % a.file)
+    except OSError as e:
+        fail("cannot create %s: %s" % (a.file, e.strerror))
     n = 0
-    with out:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         def emit(**k):
             nonlocal n
-            out.write(json.dumps(k) + "\n")
+            fh.write(json.dumps(mask_obj(k)) + "\n")
             n += 1
         for path, sub in selected(a.root, a.days, a.project, subagents=a.subagents):
             sid = os.path.basename(path)[:-6]
@@ -480,7 +525,7 @@ def cmd_export(a):
                         elif name and name.startswith("mcp__"):
                             d.update(input=mask(json.dumps(inp))[:400])
                         emit(**d)
-    print("wrote %d events to %s (mode 600)" % (n, a.file))
+    out("wrote %d events to %s (mode 600)" % (n, a.file))
     return 0
 
 
@@ -515,7 +560,7 @@ def main():
     a = ap.parse_args()
     a.root = root_dir(a.root)
     if not os.path.isdir(a.root):
-        sys.exit("cc-sessions: no transcripts at %s (set --root or CLAUDE_CONFIG_DIR)" % a.root)
+        fail("no transcripts at %s (set --root or CLAUDE_CONFIG_DIR)" % a.root)
     load_mask_file(a.mask_file)
     return {"find": cmd_find, "show": cmd_show, "stats": cmd_stats, "export": cmd_export}[a.verb](a)
 
