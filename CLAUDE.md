@@ -78,6 +78,7 @@ This section grows as patterns and preferences are discovered during work on thi
 - **After a change to `codex-review`,** run `tests/codex-review.sh`. A fake `codex` on PATH plays each failure the real one has shown.
 - **After a change to `prland`,** run `tests/prland.sh`. Fake `gh` and `prbots` on PATH, real git repos and worktrees in a temp dir.
 - **After a change to `cc-sessions`,** run `tests/cc-sessions.sh`. It builds synthetic transcripts and never reads your real ones.
+- **After a change to `add-to-claude-link`,** run `tests/add-to-claude-link.sh`. It decodes each format in Python before it compares, so a stray `&amp;` or a `+` for a space fails it.
 - **Merges:** `prland <PR> --need sar` (the pr-land skill): squash, with a subject that ends in `(#N)`, then the branch and worktree go. Machines pick up main at their next `skillsync`.
 
 ---
@@ -133,6 +134,7 @@ After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds an
 | `debugging-nodejs-apps` | Systematic debugging of Node.js startup, dependency, and runtime failures |
 | `operating-frappe-on-kubernetes` | Operate, upgrade, and debug Frappe / ERPNext on Kubernetes: config on the sites PVC, first-site bootstrap, major-version upgrades, Error Log / email / PDF debugging |
 | `hyprland-lua` | Script, control, and debug a Hyprland compositor configured in Lua |
+| `adding-an-add-to-claude-button` | Build the "Add to Claude" link for a remote MCP server, and the README, HTML or React button around it (`add-to-claude-link`) |
 | `de-slopping` | Cut hedges and filler from written deliverables; bundles a Simplified Technical English linter (`ste_lint.py`) and an optional `slop_guard` Stop hook |
 | `minto-pyramid` | Restructure a write-up answer-first (Minto Pyramid) |
 | `humanizer` | Remove signs of AI-generated writing (vendored, see `UPSTREAM`) |
