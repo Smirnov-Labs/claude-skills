@@ -98,18 +98,12 @@ cut before writing code. Be direct and opinionated.
 EOF
 } > "$d/prompt.md"
 
-codex exec \
-  -m gpt-6-astra \
-  -c model_reasoning_effort="high" \
-  --sandbox read-only \
-  --skip-git-repo-check \
-  -o "$d/codex.md" \
-  - < "$d/prompt.md" > "$d/codex.log" 2>&1
+codex-review prompt "$d/prompt.md" --out "$d"
 ```
 
-Run it in the background: on a long plan it takes several minutes. It uses the same model, effort and sandbox as `codex-plan-review`.
+Run it in the background: on a long plan it takes several minutes. `codex-review` comes from the codex-review skill, which holds the model pin.
 
-Codex's findings are in `$d/codex.md`. If the exit status is not 0, read the end of `$d/codex.log`. A 400 "model is not supported" means the `gpt-6-astra` pin is stale. Then rerun once without `-m`, so Codex uses the model in `~/.codex/config.toml`, and say so in the report.
+Codex's findings are in `$d/review.md`. Exit 2 means there is no usable answer: read the log tail it prints, and say so in the report. A stale model pin falls back on its own, with a note.
 
 Parse Codex's prose response into the same finding shape with `source: "codex"`.
 
