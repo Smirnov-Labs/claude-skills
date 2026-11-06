@@ -9,7 +9,7 @@ git clone -q https://github.com/Smirnov-Labs/claude-skills ~/.local/share/skills
   && ~/.local/share/skillsync/claude-skills/bin/skillsync
 ```
 
-That clones the repo and symlinks each skill into `~/.claude/skills/`, plus the commands the skills ship (`prbots`, and `skillsync` itself) into `~/.local/bin/`. New Claude Code sessions pick the skills up.
+That clones the repo and symlinks each skill into `~/.claude/skills/`, plus the commands the skills ship (`prbots`, `tp-scan`, and `skillsync` itself) into `~/.local/bin/`. New Claude Code sessions pick the skills up.
 
 | Command | What it does |
 |---------|--------------|
@@ -40,6 +40,7 @@ Use one method or the other on a machine, not both, or each skill loads twice.
 | **codex-plan-review** | Sends your current plan to Codex through `codex-review` for an independent architectural second opinion before you execute | "review plan with codex", "get a second opinion", "iterate on plan" |
 | **detect-overengineering** | Audits an implementation-plan doc for LLM-style overengineering: a rubric-driven Claude pass plus a Codex adversarial pass, merged into specific edits that slim the plan | "check this plan for bloat", "is this overengineered", "detect overengineering" |
 | **git-recon** | 12-month git-history health check: surfaces high-churn files, bus factor, bug hotspots, velocity trends, and firefighting patterns before you read any code | "git recon", "codebase health check", "where are the landmines" |
+| **evaluating-third-party-tools** | Answers "is this useful to us?" about an outside repo or tool. Clone it without running anything, scan it with `tp-scan` (install and editor hooks, setup commands, pipe-to-shell, decode-and-run, credential reads, binaries, telemetry, license, git health), check fit, and give an Adopt, Trial or Skip verdict | "is this useful to us", "should we use X", "is this safe to install" |
 | **watching-pr-bot-reviews** | Waits for and reads the automated PR reviewers (Codex, the Architecture/SAR review, CI) with `prbots`: one background `prbots wait`, then a digest with a CLEAN / FIX / BLOCK / PENDING verdict for the PR's HEAD commit | "what did the bots say", "wait for Codex", before merging |
 | **pr** | `/pr`: commits, pushes, and opens or updates the PR, after checking that the push carries only your commits and files. It keeps a repo's own `.claude/commands/pr.md` rules (runs only when you invoke it) | `/pr` |
 | **pr-fix** | `/pr-fix`: drives a PR to clean by fixing CI failures and review feedback, pushing, and waiting with `prbots`, round after round (runs only when you invoke it) | `/pr-fix` |
@@ -66,6 +67,8 @@ The `presentation-blueprint` skill requires `document-skills:pptx` for rendering
 The `codex-plan-review` skill requires the [Codex CLI](https://github.com/openai/codex) on your `PATH`, signed in to an account that can use `gpt-6-astra`. `detect-overengineering` uses it too, for its second pass.
 
 The `git-recon` skill needs only `git` — runs locally against the repo you're standing in.
+
+The `evaluating-third-party-tools` skill's `tp-scan` needs Python 3 (standard library only). It reads git history when `git` is on your `PATH`.
 
 The `watching-pr-bot-reviews` and `pr-fix` skills require the [GitHub CLI](https://cli.github.com/) (`gh`) authenticated against the repo, and a repo whose PRs are reviewed by Codex and/or an Architecture-Review GitHub Action.
 
