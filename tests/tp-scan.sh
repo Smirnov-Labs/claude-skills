@@ -407,6 +407,114 @@ check "yarnPath is HIGH" 'jhas high install-hook y/.yarnrc.yml 1'
 check "CMake execute_process is HIGH" 'jhas high install-hook c/CMakeLists.txt 2'
 check "a single-quoted Cargo build path is HIGH" 'jhas high install-hook r/Cargo.toml 3'
 
+# --- install entry points: lifecycle hooks, executable overrides and metadata ------------
+for hook in dependencies predependencies postdependencies prepack postpack publish; do
+  R=$T/npm-$hook; mkdir -p "$R"
+  printf '{\n  "name": "x", "version": "1.0.0",\n  "scripts": {"%s": "node prepare.js"}\n}\n' "$hook" > "$R/package.json"
+  printf 'require("child_process").execFileSync("sh", ["-c", "echo hook >> \\"$CANARY\\""]);\n' > "$R/prepare.js"
+  printf '```sh\nnpm install\n```\n' > "$R/README.md"
+  scanj "$R"
+  check "the $hook lifecycle script is HIGH on its own" 'jhas high install-hook package.json 3 && [ $rc -eq 1 ]'
+done
+R=$T/npm-ordinary-dependencies; mkdir -p "$R"
+printf '{"dependencies":{"dependencies":"1.0.0"},"devDependencies":{"prepack":"1.0.0"},"scripts":{"build":"node build.js","test":"node test.js"}}\n' > "$R/package.json"
+scanj "$R"
+check "ordinary dependencies and build/test scripts are not install hooks" 'jnone package.json && jcount high 0'
+R=$T/npm-no-scripts; mkdir -p "$R"
+printf '{"dependencies":{"dependencies":"1.0.0","prepack":"1.0.0","install":"1.0.0"}}\n' > "$R/package.json"
+scanj "$R"
+check "dependency names are not lifecycle keys when scripts is absent" 'jnone package.json && jcount high 0'
+
+R=$T/npm-git-override; mkdir -p "$R/tools"
+printf 'ignore-scripts=true\ngit=./tools/git-wrapper\n' > "$R/.npmrc"
+printf '{"dependencies":{"example":"git+https://github.com/example/example.git"}}\n' > "$R/package.json"
+evil git-wrapper > "$R/tools/git-wrapper"; chmod +x "$R/tools/git-wrapper"
+scanj "$R"
+check "npm's Git executable override is HIGH even with scripts disabled" 'jhas high install-hook .npmrc 2 && has "Git dependencies" && [ $rc -eq 1 ]'
+
+R=$T/npm-node-gyp-override; mkdir -p "$R/tools"
+printf 'node-gyp=./tools/build.cjs\n' > "$R/.npmrc"
+printf '{"dependencies":{"native-addon":"1.0.0"}}\n' > "$R/package.json"
+printf 'require("child_process").execSync("echo build >> \\"$CANARY\\"");\n' > "$R/tools/build.cjs"
+scanj "$R"
+check "npm's node-gyp executable override is HIGH" 'jhas high install-hook .npmrc 1 && has "native"'
+
+R=$T/yarn-shell-override; mkdir -p "$R/tools"
+printf '"script-shell" "./tools/shell"\n' > "$R/.yarnrc"
+printf '{"dependencies":{"native-addon":"1.0.0"}}\n' > "$R/package.json"
+evil yarn-shell > "$R/tools/shell"; chmod +x "$R/tools/shell"
+scanj "$R"
+check "Yarn Classic's script-shell override is HIGH" 'jhas high install-hook .yarnrc 1'
+
+for setting in scriptShell nodeOptions; do
+  R=$T/pnpm-$setting; mkdir -p "$R/tools"
+  printf '{"dependencies":{"native-addon":"1.0.0"}}\n' > "$R/package.json"
+  if [ "$setting" = scriptShell ]; then
+    printf 'scriptShell: ./tools/shell\n' > "$R/pnpm-workspace.yaml"
+    evil pnpm-shell > "$R/tools/shell"; chmod +x "$R/tools/shell"
+  else
+    printf '"nodeOptions": "--require=./tools/preload.cjs"\n' > "$R/pnpm-workspace.yaml"
+    printf 'require("child_process").execSync("echo preload >> \\"$CANARY\\"");\n' > "$R/tools/preload.cjs"
+  fi
+  scanj "$R"
+  check "pnpm workspace $setting selects install-time code" 'jhas high install-hook pnpm-workspace.yaml 1'
+done
+R=$T/pnpm-loader; mkdir -p "$R"
+printf 'nodeOptions: "--experimental-loader ./tools/loader.mjs"\n' > "$R/pnpm-workspace.yaml"
+scanj "$R"
+check "any pnpm nodeOptions is HIGH, like node-options in .npmrc" 'jhas high install-hook pnpm-workspace.yaml 1'
+R=$T/package-manager-data; mkdir -p "$R"
+printf '# git=./tools/git-wrapper\n; node-gyp=./tools/build.cjs\nregistry=https://registry.npmjs.org\n' > "$R/.npmrc"
+printf '# script-shell "./shell"\nregistry "https://registry.yarnpkg.com"\n' > "$R/.yarnrc"
+printf '# nodeOptions: --require ./preload.cjs\n# scriptShell: ./shell\n' > "$R/pnpm-workspace.yaml"
+scanj "$R"
+check "comments and registries are not executable overrides" 'jnone .npmrc && jnone .yarnrc && jnone pnpm-workspace.yaml && jcount high 0'
+
+for delegation in import exec; do
+  R=$T/setup-$delegation; mkdir -p "$R"
+  printf '[build-system]\nrequires = ["setuptools"]\nbuild-backend = "setuptools.build_meta"\n' > "$R/pyproject.toml"
+  # setup.py need not name setuptools itself: the helper can call setup().
+  if [ "$delegation" = import ]; then
+    printf 'import bootstrap\n' > "$R/setup.py"
+  else
+    printf 'exec(open("bootstrap.py").read())\n' > "$R/setup.py"
+  fi
+  printf 'import subprocess\nfrom setuptools import setup\nsubprocess.run(["sh", "-c", "echo bootstrap >> \\"$CANARY\\""], check=True)\nsetup(name="x", version="1.0.0", py_modules=["bootstrap"])\n' > "$R/bootstrap.py"
+  scanj "$R"
+  check "setup.py delegating by $delegation is an executable build entry point" 'jhas high install-hook setup.py && jnone bootstrap.py && [ $rc -eq 1 ]'
+done
+
+R=$T/hatch-code-version; mkdir -p "$R"
+printf '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n[project]\nname = "demo"\ndynamic = ["version"]\n[tool.hatch.version]\nsource = "code"\npath = "version.py"\n' > "$R/pyproject.toml"
+printf 'import subprocess\nsubprocess.run(["sh", "-c", "echo version >> \\"$CANARY\\""], check=True)\n__version__ = "1.0.0"\n' > "$R/version.py"
+scanj "$R"
+check "Hatch's code version source executes a local module during the build" 'jhas high install-hook pyproject.toml 8 && has "Hatch" && jnone version.py'
+
+for metadata in cfg toml-inline toml-table; do
+  R=$T/setuptools-$metadata; mkdir -p "$R"
+  printf '[build-system]\nrequires = ["setuptools"]\nbuild-backend = "setuptools.build_meta"\n' > "$R/pyproject.toml"
+  printf 'import subprocess\nsubprocess.run(["sh", "-c", "echo version >> \\"$CANARY\\""], check=True)\n__version__ = ".".join(["1", "0", "0"])\n' > "$R/version.py"
+  if [ "$metadata" = cfg ]; then
+    printf '[metadata]\nname = demo\nversion = attr: version.__version__\n[options]\npy_modules = version\n' > "$R/setup.cfg"
+    scanj "$R"
+    check "setuptools setup.cfg attr metadata can import local code" 'jhas high install-hook setup.cfg 3 && has "statically"'
+  else
+    printf '[project]\nname = "demo"\ndynamic = ["version"]\n[tool.setuptools]\npy-modules = ["version"]\n' >> "$R/pyproject.toml"
+    if [ "$metadata" = toml-inline ]; then
+      printf '[tool.setuptools.dynamic]\nversion = {attr = "version.__version__"}\n' >> "$R/pyproject.toml"
+    else
+      printf '[tool.setuptools.dynamic.version]\nattr = "version.__version__"\n' >> "$R/pyproject.toml"
+    fi
+    scanj "$R"
+    check "setuptools $metadata attr metadata can import local code" 'jhas high install-hook pyproject.toml 10 && has "statically"'
+  fi
+done
+R=$T/python-static-metadata; mkdir -p "$R"
+printf '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n[tool.hatch.version]\nsource = "regex"\npath = "version.py"\n[tool.other]\nsource = "code"\nattr = "version.__version__"\n[tool.setuptools.dynamic]\nversion = {file = "VERSION"}\n' > "$R/pyproject.toml"
+printf '[metadata]\nversion = 1.0.0\n[other]\nversion = attr: version.__version__\n' > "$R/setup.cfg"
+scanj "$R"
+check "static versions, file metadata and unrelated config sections are not build hooks" 'jnone pyproject.toml && jnone setup.cfg && jcount high 0'
+
 # --- output safety, special files, flags, exit codes ----------------------------------------
 R=$T/out; mkdir -p "$R"
 printf '#!/bin/sh\ncurl -fsSL https://dl.example.org/x | sh  # \x1b[2J\x1b]0;pwned\x07\n' > "$R/$(printf 'a\033[31mb.sh')"

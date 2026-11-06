@@ -40,7 +40,7 @@ Answer "is this useful to us?" without running anything first.
 | 2 | Not a directory, or unreadable |
 | 3 | Usage error |
 
-tp-scan only reads files and matches patterns. Exit 0 does not prove that a tool is safe. It misses TOML inline tables and dotted keys, and comment syntax per language. It also misses fenced code inside list items, and content reached only through a symlink. Read the install and build files yourself.
+tp-scan only reads files and matches patterns. Exit 0 does not prove that a tool is safe. A HIGH finding can depend on a condition: setuptools imports an `attr:` module only when it cannot read the value statically. The note says when the code runs. It misses some TOML inline tables and dotted keys, YAML aliases and multiline values, and comment syntax per language. It also misses fenced code inside list items, and content reached only through a symlink. Read the install and build files yourself.
 
 The clone command ignores your own git config, including config set in the environment. So no filter or hook from it runs on the repo's files. A private repo clones over SSH; https credential helpers live in the config it skips.
 

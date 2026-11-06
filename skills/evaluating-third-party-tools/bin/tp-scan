@@ -286,10 +286,16 @@ GIT_CMD_KEY = re.compile(
     r'|trailer\..+\.(?:command|cmd)|alias\..+)$')
 NPM_NOTES = {'preinstall': 'npm runs it before npm install', 'install': 'npm runs it on npm install',
              'postinstall': 'npm runs it after npm install',
+             'predependencies': 'npm runs it before the dependencies hook when an install changes node_modules',
+             'dependencies': 'npm runs it when an install changes node_modules',
+             'postdependencies': 'npm runs it after the dependencies hook when an install changes node_modules',
              'preprepare': 'npm runs it on a plain npm install in this folder',
              'prepare': 'npm runs it on a plain npm install in this folder, and when installed from git',
              'postprepare': 'npm runs it on a plain npm install in this folder',
-             'prepublish': 'older npm versions run it on npm install',
+             'prepublish': 'npm runs it on a plain npm install or npm ci in this folder',
+             'prepack': 'Yarn runs it when packing a Git dependency during install; pnpm can also run it when preparing a Git dependency',
+             'postpack': 'Yarn runs it after packing a Git dependency during install',
+             'publish': 'pnpm runs it when preparing a Git dependency with a prepare script or a missing main file',
              'pnpm:devPreinstall': 'pnpm runs it before it installs dependencies on a local pnpm install'}
 SHELL_RC = {'.envrc', '.bashrc', '.zshrc', '.kshrc', '.cshrc', '.tcshrc', '.mkshrc'}
 LICENSE_NAME = re.compile(r'(?:licen[cs]e|copying|unlicense)(?:[-_.][\w.-]*)?$')
@@ -873,7 +879,22 @@ class Scan:
             if root and m:
                 self.manifest_licenses.append((rel, next(g for g in m.groups() if g)))
 
+        def setting(section, rx, note):
+            # Small INI/TOML section check, not a parser. Keep offsets for evidence and
+            # avoid treating another tool's source/attr settings as Python build hooks.
+            current, offset = '', 0
+            for line in s.splitlines(keepends=True):
+                header = re.match(r'^[ \t]*\[([^\]\n]+)\][ \t]*(?:[#;].*)?$', line.rstrip('\r\n'))
+                if header:
+                    current = header.group(1).strip()
+                elif current == section and re.match(rx, line):
+                    add('HIGH', 'install-hook', rel, nt.line_no(offset),
+                        nt.evidence(offset, offset + len(line.rstrip('\r\n'))), note)
+                offset += len(line)
+
         build_note = 'pip runs it when it builds or installs this package from source'
+        attr_note = ('setuptools may import the module named by attr while preparing build metadata '
+                     'if it cannot read the attribute statically')
         if low == 'package.json':
             self.npm(rel, t, root)
         elif low == 'composer.json':
@@ -881,17 +902,27 @@ class Scan:
                  r'|post-root-package-install|post-create-project-cmd)"\s*:',
                  'HIGH', 'install-hook', 'Composer runs this script on composer install or update')
             license_field(r'"license"\s*:\s*\[?\s*"([^"\n]+)"')
-        elif low == 'setup.py' and re.search(r'\b(?:setuptools|distutils)\b', s):
+        elif low == 'setup.py':
             each(r'\bcmdclass\s*=', 'HIGH', 'install-hook', 'custom setup command: ' + build_note)
             each(r'\b(?:os\.system|os\.popen|subprocess\.\w+|from\s+subprocess\s+import\b'
                  r'|from\s+os\s+import\s+[^\n]*\b(?:system|popen)\b|urlopen|urlretrieve|requests\.(?:get|post)'
                  r'|socket\.socket)\b', 'HIGH', 'install-hook', 'setup.py runs this: ' + build_note)
+            add('HIGH', 'install-hook', rel, None, '',
+                'setuptools executes setup.py, including its imports and local helpers, when preparing '
+                'metadata or building this package from source')
         elif low == 'setup.cfg':
             each(r'(?m)^[ \t]*cmdclass[ \t]*=', 'HIGH', 'install-hook', 'custom setup command: ' + build_note)
+            setting('metadata', r'[ \t]*version[ \t]*=[ \t]*attr[ \t]*:', attr_note)
             license_field(r'(?m)^[ \t]*license[ \t]*=[ \t]*(\S[^\n]*)')
         elif low == 'pyproject.toml':
             each(PYPROJECT_RE, 'HIGH', 'install-hook', 'build code from this repo (an in-tree backend or a '
                  'build hook): ' + build_note)
+            setting('tool.hatch.version', r'[ \t]*source[ \t]*=[ \t]*["\']code["\']',
+                    'Hatch imports the Python file named by path and evaluates its version expression '
+                    'when resolving a dynamic version during metadata preparation or build')
+            setting('tool.setuptools.dynamic',
+                    r'[ \t]*version[ \t]*=[ \t]*\{[^}\n]*\battr["\']?[ \t]*=', attr_note)
+            setting('tool.setuptools.dynamic.version', r'[ \t]*attr[ \t]*=', attr_note)
             license_field(r'(?m)^[ \t]*license[ \t]*=[ \t]*(?:"([^"\n]+)"|\'([^\'\n]+)\''
                           r'|\{[^}\n]*?\btext[ \t]*=[ \t]*"([^"\n]+)")')
         elif low in ('sitecustomize.py', 'usercustomize.py'):
@@ -935,16 +966,28 @@ class Scan:
         elif low == '.npmrc':
             each(r'(?m)^[ \t]*(?:node-options|script-shell|onload-script)[ \t]*=', 'HIGH', 'install-hook',
                  'npm reads this .npmrc in this folder and runs the code it names')
+            each(r'(?m)^[ \t]*git[ \t]*=', 'HIGH', 'install-hook',
+                 'npm runs this Git executable when resolving Git dependencies, even with --ignore-scripts')
+            each(r'(?m)^[ \t]*node-gyp[ \t]*=', 'HIGH', 'install-hook',
+                 'npm runs this node-gyp program when an install builds a native dependency')
             each(r'(?m)^[ \t]*(?:global-?)?pnpmfile[ \t]*=', 'HIGH', 'install-hook',
                  'pnpm runs the pnpmfile this names on pnpm install, even with --ignore-scripts')
         elif low == 'pnpm-workspace.yaml':
             each(r'(?m)^[ \t]*(?:global)?[pP]npmfile[ \t]*:', 'HIGH', 'install-hook',
                  'pnpm runs the pnpmfile this names on pnpm install, even with --ignore-scripts')
+            each(r'(?m)^["\']?scriptShell["\']?[ \t]*:', 'HIGH', 'install-hook',
+                 'pnpm uses this executable as the shell for lifecycle scripts during install')
+            each(r'(?m)^["\']?nodeOptions["\']?[ \t]*:', 'HIGH', 'install-hook',
+                 'pnpm passes these Node options to the scripts it runs on install; --require, --import '
+                 'and --loader load code')
         elif low in ('.yarnrc.yml', '.yarnrc'):
             each(r'(?m)^[ \t]*(?:["\']?yarnPath["\']?[ \t]*:|["\']?yarn-path["\']?[ \t])', 'HIGH', 'install-hook',
                  'yarn runs this committed file for every yarn command in this folder, install included')
             each(r'(?m)^[ \t]*["\']?plugins["\']?[ \t]*:', 'HIGH', 'install-hook',
                  'yarn loads these plugins before it installs anything: read each plugin file it names')
+            if low == '.yarnrc':
+                each(r'(?m)^[ \t]*["\']?script-shell["\']?[ \t]+', 'HIGH', 'install-hook',
+                     'Yarn Classic uses this executable as the shell for lifecycle scripts during install')
         elif low in ('.pnpmfile.cjs', '.pnpmfile.mjs', 'pnpmfile.js', '.pnpmfile.js'):
             add('HIGH', 'install-hook', rel, None, '', 'pnpm runs this file on pnpm install, even with --ignore-scripts')
         elif low in ('config.toml', 'config') and at(rel, '.cargo/' + low):
@@ -989,7 +1032,9 @@ class Scan:
             scripts = {k: v for k, v in scripts.items() if isinstance(v, str)}
             self.npm_scripts[rel.rpartition('/')[0]] = scripts
         else:
-            scripts = None              # not plain JSON: look for any hook key in the text
+            # Only fall back to text for unparsed JSON. Dependency names and other
+            # fields in a valid manifest are not lifecycle scripts.
+            scripts = {} if isinstance(data, dict) else None
         nt = Text(unescape(t.s))
         for name in NPM_NOTES:
             if scripts is not None and name not in scripts:
