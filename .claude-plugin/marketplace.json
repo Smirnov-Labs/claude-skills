@@ -45,7 +45,9 @@
       "strict": false,
       "skills": [
         "./skills/watching-pr-bot-reviews",
-        "./skills/pr-fix"
+        "./skills/pr-fix",
+        "./skills/pr",
+        "./skills/pr-land"
       ]
     }
   ]

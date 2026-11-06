@@ -10,7 +10,7 @@ description: Use when waiting for, polling, reading, or reporting the automated 
 (~800K output tokens, ~133M context tokens re-read), re-written after every push, keyed on
 five different "done" signals — and three PRs merged code Codex never reviewed.
 Use `prbots`, which ships in this skill's `bin/` and is on PATH wherever skillsync installed
-it (otherwise run `bin/prbots` from this skill's base directory).
+it (otherwise call `<this skill's base directory>/bin/prbots` by its full path, from the PR's checkout).
 
 | Situation | Run | How |
 |---|---|---|
