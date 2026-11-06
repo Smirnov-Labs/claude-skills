@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+"""prland: merge a clean PR, confirm GitHub says MERGED, then clean up its worktree and branch.
+
+  prland [PR] [-R owner/repo] [--need LIST] [--method squash|merge|rebase] [--subject TEXT]
+         [--keep-worktree] [--allow-ignored] [--no-sync] [--dry-run]
+
+PR is a number or a PR URL (default: the PR for the current branch). A URL names its own repo; -R defaults
+to this checkout's repo.
+
+In order:
+  1 gate     `prbots status --json` must say CLEAN for this repo, this PR and its current head SHA. --need
+             (codex, sar, ci, all; comma-separated) goes to prbots. A repo with no review bots: --need ci.
+  2 merge    gh pr merge --squash --match-head-commit <head> --subject "<title> (#N)", from a temp dir, so gh
+             never touches your checkouts.
+  3 confirm  GitHub must report MERGED. Then the remote branch is deleted through the GitHub API's updateRefs
+             with beforeOid set to the PR head: a compare-and-delete on that exact repository, so a push that
+             landed after the merge survives, and no git URL rewrite can redirect it.
+  4 clean    only the PR's own worktree and branch, never a fork PR's. The worktree goes (git worktree remove,
+             no --force) only when it sits on the PR head with no tracked changes, no untracked files and no
+             ignored files except build and cache output (node_modules, .venv, __pycache__, dist, ...).
+             The branch goes only if it still points at the PR head (an atomic update-ref), and its SHA is
+             printed. A PR worktree missing from disk loses its registration; other worktrees are not pruned.
+  5 sync     the main checkout fast-forwards to origin/<base>, only if it is on <base> with no tracked changes,
+             and never over an ignored file the new commits start tracking.
+
+An already-merged PR skips 1 and 2. Run it from any checkout of the repo to get steps 4 and 5.
+
+exit  0  merged (cleanup steps it skipped say why)
+      1  the gate said no: not CLEAN, a draft, closed, or a verdict for another head
+      2  the merge or the MERGED check failed
+      3  usage error
+"""
+import argparse
+import atexit
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+PR_FIELDS = ("number,title,state,isDraft,headRefName,headRefOid,baseRefName,url,isCrossRepository,mergeCommit,"
+             "autoMergeRequest")
+CONFIRM_WAIT = float(os.environ.get("PRLAND_CONFIRM_WAIT", "18"))   # seconds to wait for MERGED
+BOTS = {"codex", "sar", "ci", "all"}
+DISPOSABLE = re.compile(r"(^|/)(node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|"
+                        r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.cache|\.parcel-cache|coverage|"
+                        r"\.gradle|[^/]+\.egg-info)(/|$)|\.py[co]$|(^|/)\.DS_Store$")
+
+
+def die(msg, code=3):
+    print("prland: " + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def run(cmd, cwd=None):
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+
+
+def git(where, *args):
+    return run(["git", "-C", where] + list(args))
+
+
+def say(tag, text):
+    print("%-8s %s" % (tag, text))
+    sys.stdout.flush()
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        die(message + " (prland --help)")
+
+
+def pr_view(pr, repo, neutral):
+    r = run(["gh", "pr", "view", str(pr), "-R", repo, "--json", PR_FIELDS], cwd=neutral)
+    if r.returncode != 0:
+        die("gh pr view %s -R %s failed: %s" % (pr, repo, r.stderr.strip()[:300]), 2)
+    return json.loads(r.stdout)
+
+
+def worktrees(where):
+    """git worktree list --porcelain as dicts; the first is the main checkout."""
+    out, cur = [], {}
+    for line in git(where, "worktree", "list", "--porcelain").stdout.splitlines() + [""]:
+        if not line.strip():
+            if cur:
+                out.append(cur)
+            cur = {}
+            continue
+        key, _, val = line.partition(" ")
+        cur[key] = val if val else True
+    return out
+
+
+UPDATE_REFS = ("mutation($id:ID!,$name:GitRefname!,$before:GitObjectID!){updateRefs(input:{repositoryId:$id,"
+               "refUpdates:[{name:$name,beforeOid:$before,afterOid:\"0000000000000000000000000000000000000000\"}]})"
+               "{clientMutationId}}")
+
+
+def delete_remote(repo, branch, head, neutral):
+    """Delete the PR branch on GitHub only if it still points at the PR head (an atomic compare-and-delete)."""
+    r = run(["gh", "api", "repos/%s/git/ref/heads/%s" % (repo, branch)], cwd=neutral)
+    if r.returncode != 0:
+        return "%s was already gone" % branch
+    try:
+        now = (json.loads(r.stdout).get("object") or {}).get("sha")
+    except ValueError:
+        now = None
+    if now != head:
+        return "kept %s: it moved to %s after the merge" % (branch, (now or "?")[:7])
+    r = run(["gh", "api", "repos/%s" % repo], cwd=neutral)
+    try:
+        node = json.loads(r.stdout).get("node_id") if r.returncode == 0 else None
+    except ValueError:
+        node = None
+    if not node:
+        return "kept %s: could not read the repository id" % branch
+    r = run(["gh", "api", "graphql", "-f", "query=" + UPDATE_REFS, "-f", "id=" + node,
+             "-f", "name=refs/heads/" + branch, "-f", "before=" + head], cwd=neutral)
+    if r.returncode == 0 and '"errors"' not in r.stdout:
+        return "deleted %s (was %s)" % (branch, head[:7])
+    return "kept %s: GitHub refused the delete (%s)" % (branch, (r.stderr or r.stdout).strip().splitlines()[-1][:160]
+                                                       if (r.stderr or r.stdout).strip() else "no detail")
+
+
+def slug(url):
+    url = url.strip().lower()
+    return re.sub(r"\.git$", "", re.sub(r"^.*?github\.com[:/]+", "", url))
+
+
+def local_data(path):
+    """Why removing this worktree would lose data, or None. Config-independent, and fails closed."""
+    tracked = git(path, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none")
+    untracked = git(path, "ls-files", "--others", "--exclude-standard")
+    ignored = git(path, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory")
+    if tracked.returncode or untracked.returncode or ignored.returncode:
+        return "git could not inspect it"
+    if tracked.stdout.strip():
+        return "%d changed tracked files" % len(tracked.stdout.splitlines())
+    flags = git(path, "ls-files", "-v", "-z")
+    if flags.returncode:
+        return "git could not read its index flags"
+    hidden = []
+    for entry in flags.stdout.split("\0"):
+        tag, _, name = entry.partition(" ")
+        # assume-unchanged (a lowercase tag) and skip-worktree (S) hide edits from git status
+        if tag[:1].islower() or (tag == "S" and os.path.lexists(os.path.join(path, name))):
+            hidden.append(name)
+    if hidden:
+        return "%d tracked files are marked assume-unchanged or skip-worktree, so status cannot vouch for them" % len(hidden)
+    if untracked.stdout.strip():
+        return "%d untracked files" % len(untracked.stdout.splitlines())
+    keep = [p for p in ignored.stdout.splitlines() if p.strip() and not DISPOSABLE.search(p.rstrip("/"))]
+    if keep:
+        return "ignored files that are not build output: %s%s" % (", ".join(keep[:4]), " ..." if len(keep) > 4 else "")
+    return None
+
+
+def main():
+    if any(a in ("-h", "--help") for a in sys.argv[1:]):
+        print(__doc__.strip())
+        return 0
+    ap = Parser(prog="prland", add_help=False)
+    ap.add_argument("pr", nargs="?")
+    ap.add_argument("-R", "--repo")
+    ap.add_argument("--need")
+    ap.add_argument("--method", choices=["squash", "merge", "rebase"], default="squash")
+    ap.add_argument("--subject")
+    ap.add_argument("--keep-worktree", action="store_true")
+    ap.add_argument("--allow-ignored", action="store_true")
+    ap.add_argument("--no-sync", action="store_true")
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args()
+    if a.need is not None:
+        names = [x.strip().lower() for x in a.need.split(",")]
+        if not names or any(n not in BOTS for n in names):
+            die("--need takes a comma-separated list of codex, sar, ci or all, not %r" % a.need)
+        names = ["codex", "sar", "ci"] if "all" in names else names
+        a.need = ",".join(sorted(set(names), key=["codex", "sar", "ci"].index))   # what prbots gets
+
+    here = os.getcwd()
+    repo, pr = a.repo, a.pr
+    host = (os.environ.get("GH_HOST") or "github.com").lower()          # the host every gh call here uses
+    if pr and "/" in pr:
+        m = re.match(r"^https?://([^/]+)/([^/]+/[^/]+)/pull/(\d+)/?(?:[#?].*)?$", pr)
+        if not m:
+            die("not a GitHub PR URL: %s" % pr)
+        if m.group(1).lower() != host:
+            die("the URL is on %s, but gh talks to %s (GH_HOST)" % (m.group(1), host))
+        if repo and repo.lower() != m.group(2).lower():
+            die("the URL is a PR in %s, but -R says %s" % (m.group(2), repo))
+        repo, pr = m.group(2), m.group(3)
+    if not repo:
+        r = run(["gh", "repo", "view", "--json", "nameWithOwner,url"], cwd=here)
+        if r.returncode != 0:
+            die("not in a GitHub checkout; pass -R owner/repo or a PR URL")
+        info = json.loads(r.stdout)
+        repo = info["nameWithOwner"]
+        found = re.sub(r"^https?://([^/]+)/.*$", r"\1", info.get("url") or "").lower()
+        if found and found != host:
+            die("this checkout is on %s, but prland's gh calls go to %s (set GH_HOST=%s)" % (found, host, found))
+    if not pr and a.repo:
+        die("with -R, give the PR number too: the current branch's PR may live in another repo")
+    if not pr:
+        r = run(["gh", "pr", "view", "--json", "number"], cwd=here)
+        if r.returncode != 0:
+            die("this branch has no PR; give a PR number")
+        pr = str(json.loads(r.stdout)["number"])
+    if not pr.isdigit():
+        die("PR must be a number or a PR URL, not %r" % pr)
+    neutral = tempfile.mkdtemp(prefix="prland.")   # gh runs here, outside every checkout
+    atexit.register(shutil.rmtree, neutral, True)    # removed on every exit, errors included
+
+    p = pr_view(pr, repo, neutral)
+    want = "https://%s/%s/pull/%s" % (host, repo.lower(), pr)
+    if str(p.get("url", "")).lower().rstrip("/") != want:
+        die("gh returned %s, not %s: refusing to act on another PR" % (p.get("url"), want), 2)
+    n, head, branch, base = p["number"], p["headRefOid"], p["headRefName"], p["baseRefName"]
+    say("prland", "PR #%s · %s · %s -> %s · %s" % (n, repo, branch, base, p["url"]))
+
+    # the local checkout, if this is one of the repo's: everything local runs in the main worktree
+    top = run(["git", "rev-parse", "--show-toplevel"], cwd=here).stdout.strip() or None
+    main_wt = None
+    if top:
+        wts = worktrees(top)
+        main_wt = wts[0]["worktree"] if wts else top
+        origin = git(main_wt, "config", "--get", "remote.origin.url").stdout.strip().lower()
+        m = re.match(r"^(?:[a-z+]+://)?(?:[^@/]+@)?([^/:]+)[:/]", origin)
+        if slug(origin) != repo.lower() or not m or m.group(1) != host:
+            main_wt = None                      # another repo, or the same owner/name on another host
+
+    merged_now = False
+    if p["state"] == "MERGED":
+        say("merged", "already, as %s" % ((p.get("mergeCommit") or {}).get("oid") or "?")[:10])
+    else:
+        if p["state"] != "OPEN":
+            say("gate", "the PR is %s, not open" % p["state"])
+            return 1
+        if p["isDraft"]:
+            say("gate", "the PR is a draft: mark it ready first")
+            return 1
+        cmd = ["prbots", "status", str(n), "-R", repo, "--json"] + (["--need", a.need] if a.need else [])
+        try:
+            r = run(cmd, cwd=neutral)
+        except FileNotFoundError:
+            die("prbots is not on PATH (it comes with the watching-pr-bot-reviews skill)")
+        try:
+            v = json.loads(r.stdout)
+        except ValueError:
+            say("gate", "prbots gave no JSON (exit %s): %s" % (r.returncode, (r.stderr or r.stdout).strip()[:200]))
+            return 1
+        if str(v.get("repo", "")).lower() != repo.lower() or str(v.get("number")) != str(n):
+            say("gate", "prbots answered for %s#%s, not %s#%s" % (v.get("repo"), v.get("number"), repo, n))
+            return 1
+        if v.get("head") != head:
+            say("gate", "prbots saw head %s, the PR head is %s: run prbots wait again" % (str(v.get("head"))[:7], head[:7]))
+            return 1
+        if v.get("verdict") != "CLEAN":
+            sar = (v.get("sar") or {}).get("title") or "no SAR"
+            codex = (v.get("codex") or {}).get("status") or "?"
+            ci = v.get("ci") or {}
+            say("gate", "%s · %s · nothing merged" % (v.get("verdict"), v.get("progress") or ""))
+            print("         codex %s · sar %s · ci failing %s, pending %s"
+                  % (codex, sar, ",".join(ci.get("failing") or []) or "none", ",".join(ci.get("pending") or []) or "none"))
+            return 1
+        say("gate", "CLEAN @%s%s" % (head[:7], " (--need %s)" % a.need if a.need else ""))
+        owner, name = repo.split("/", 1)
+        q = run(["gh", "api", "graphql", "-f", "query=query($o:String!,$n:String!,$b:String!){repository(owner:$o,"
+                 "name:$n){mergeQueue(branch:$b){id}}}", "-f", "o=" + owner, "-f", "n=" + name, "-f", "b=" + base],
+                cwd=neutral)
+        try:
+            queue = (json.loads(q.stdout).get("data") or {}).get("repository") or {}
+            known = q.returncode == 0 and "mergeQueue" in queue
+        except ValueError:
+            queue, known = {}, False
+        if not known or queue.get("mergeQueue") is not None:
+            say("gate", "%s uses a merge queue (or the check failed): prland only merges directly, so merge it "
+                        "through the queue yourself" % base)
+            return 1
+
+        subject = " ".join((a.subject or p["title"]).split())     # one line: no newlines in a commit subject
+        if not re.search(r"\(#%s\)\s*$" % n, subject):
+            subject = "%s (#%s)" % (subject, n)
+        merge = ["gh", "pr", "merge", str(n), "-R", repo, "--" + a.method, "--match-head-commit", head]
+        if a.method != "rebase":
+            merge += ["--subject", subject]
+        if a.dry_run:
+            say("dry-run", "would run: " + " ".join(merge))
+        else:
+            r = run(merge, cwd=neutral)
+            if r.returncode != 0:
+                say("merge", "FAILED: " + (r.stderr or r.stdout).strip()[:400])
+                return 2
+            say("merge", "%s · %s" % (a.method, subject if a.method != "rebase" else "rebased"))
+            deadline = time.time() + CONFIRM_WAIT
+            while True:
+                p = pr_view(pr, repo, neutral)
+                if p["state"] == "MERGED" or time.time() >= deadline:
+                    break
+                time.sleep(min(3, max(0.2, CONFIRM_WAIT / 6)))
+            if p["state"] != "MERGED":
+                if p.get("autoMergeRequest"):
+                    off = run(["gh", "pr", "merge", str(n), "-R", repo, "--disable-auto"], cwd=neutral)
+                    say("confirm", "GitHub queued an auto-merge instead of merging; %s. Nothing merged: check %s"
+                        % ("prland cancelled it" if off.returncode == 0 else "cancelling it FAILED, disable it by hand",
+                           p["url"]))
+                else:
+                    say("confirm", "GitHub still says %s: check %s" % (p["state"], p["url"]))
+                return 2
+            say("merged", ((p.get("mergeCommit") or {}).get("oid") or "?")[:10])
+            merged_now = True
+
+    # 3b the remote branch, with a lease on the PR head
+    if p["isCrossRepository"]:
+        say("remote", "fork PR: its branch is in the fork, left alone")
+    elif a.dry_run:
+        say("dry-run", "would delete origin/%s if it is still at %s" % (branch, head[:7]))
+    elif merged_now or p["state"] == "MERGED":
+        say("remote", delete_remote(repo, branch, head, neutral))
+
+    # 4 clean
+    if not main_wt:
+        say("clean", "skipped: not run from a checkout of %s" % repo)
+        return 0
+    ref = "refs/heads/" + branch
+    if p["isCrossRepository"]:
+        say("clean", "skipped: a fork PR's branch name can match unrelated local work")
+    elif a.keep_worktree:
+        say("clean", "skipped (--keep-worktree)")
+    else:
+        keep_branch = False
+        for w in worktrees(main_wt):
+            if w.get("branch") != ref:
+                continue
+            path = w["worktree"]
+            if path == main_wt:
+                say("worktree", "the main checkout has %s checked out: left as is (switch it yourself)" % branch)
+                keep_branch = True
+                continue
+            if not os.path.isdir(path):
+                if a.dry_run:
+                    say("dry-run", "would drop the registration of %s (gone from disk)" % path)
+                    continue
+                r = git(main_wt, "worktree", "remove", path)
+                say("worktree", ("%s was gone from disk: dropped its registration" % path) if r.returncode == 0
+                    else "could not drop the registration of %s: %s" % (path, r.stderr.strip()[:160]))
+                keep_branch = keep_branch or r.returncode != 0
+                continue
+            why = local_data(path)
+            if a.allow_ignored and why and why.startswith("ignored files"):
+                why = None
+            if not why and git(path, "rev-parse", "HEAD").stdout.strip() != head:
+                why = "it is not on the PR head %s" % head[:7]
+            if why:
+                say("worktree", "%s left in place: %s" % (path, why))
+                keep_branch = True
+            elif a.dry_run:
+                say("dry-run", "would remove worktree " + path)
+            else:
+                r = git(main_wt, "worktree", "remove", path)
+                if r.returncode != 0:
+                    say("worktree", "remove failed, left in place: " + r.stderr.strip()[:200])
+                    keep_branch = True
+                else:
+                    say("worktree", "removed " + path)
+                    if here == path or here.startswith(path + os.sep):
+                        say("note", "your shell was inside it: cd %s" % main_wt)
+        tip = git(main_wt, "rev-parse", "--verify", "--quiet", ref).stdout.strip()
+        if not tip:
+            pass
+        elif keep_branch:
+            say("branch", "kept %s (its worktree stays)" % branch)
+        elif tip != head:
+            say("branch", "kept %s: it is at %s, not the PR head %s" % (branch, tip[:7], head[:7]))
+        elif any(w.get("branch") == ref for w in worktrees(main_wt)):
+            say("branch", "kept %s: a worktree has it checked out" % branch)
+        elif a.dry_run:
+            say("dry-run", "would delete branch %s (at %s)" % (branch, tip[:7]))
+        else:
+            r = git(main_wt, "update-ref", "-d", ref, head)       # atomic: only if it still points at head
+            say("branch", ("deleted %s (was %s)" % (branch, head[:10])) if r.returncode == 0
+                else "kept %s: %s" % (branch, r.stderr.strip()[:200]))
+        if not a.dry_run:
+            git(main_wt, "update-ref", "-d", "refs/remotes/origin/" + branch, head)   # its tracking ref, same rule
+
+    # 5 sync
+    if a.no_sync:
+        say("sync", "skipped (--no-sync)")
+        return 0
+    on = git(main_wt, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
+    changed = [l for l in git(main_wt, "status", "--porcelain", "--untracked-files=no").stdout.splitlines() if l]
+    if on != base:
+        say("sync", "skipped: the main checkout is on %s, not %s" % (on or "a detached HEAD", base))
+    elif changed:
+        say("sync", "skipped: the main checkout has %d changed tracked files" % len(changed))
+    elif a.dry_run:
+        say("dry-run", "would fast-forward %s to origin/%s" % (main_wt, base))
+    else:
+        f = git(main_wt, "fetch", "--quiet", "origin", "refs/heads/%s:refs/remotes/origin/%s" % (base, base))
+        r = f if f.returncode else git(main_wt, "merge", "--ff-only", "--no-overwrite-ignore", "--quiet",
+                                       "refs/remotes/origin/" + base)
+        now = git(main_wt, "rev-parse", "--short", "HEAD").stdout.strip()
+        say("sync", ("%s is at %s (origin/%s)" % (main_wt, now, base)) if r.returncode == 0
+            else "fast-forward failed: " + r.stderr.strip()[:200])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

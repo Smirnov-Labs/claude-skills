@@ -117,7 +117,7 @@ If you hit 5 iterations without converging, stop and report the remaining blocke
 
 ### Step 3: Report
 
-After the loop exits, present:
+After the loop exits, present the report below. When the outcome is `clean` and the user wants it merged, land it with the pr-land skill (`prland`).
 
 #### Final Status
 - **PR:** #$PR_NUMBER ($PR_URL)

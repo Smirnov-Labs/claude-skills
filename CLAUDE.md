@@ -75,8 +75,10 @@ This section grows as patterns and preferences are discovered during work on thi
 - **Test a skill change like code.** First run the old instructions as written, and watch them fail. Then copy the code blocks out of the new SKILL.md and run them with only the placeholders filled in. (#9 and #15 were tested this way.)
 - **Leak-scan before every push.** Run `detect-secrets scan <files>`. Also grep the added lines for client names, internal hostnames, RFC1918 IPs, private repo names, tokens and home-directory paths.
 - **After a change to `bin/skillsync`,** run `tests/skillsync.sh`. On macOS, also run it under `/bin/bash` (3.2).
+- **After a change to `codex-review`,** run `tests/codex-review.sh`. A fake `codex` on PATH plays each failure the real one has shown.
+- **After a change to `prland`,** run `tests/prland.sh`. Fake `gh` and `prbots` on PATH, real git repos and worktrees in a temp dir.
 - **After a change to `cc-sessions`,** run `tests/cc-sessions.sh`. It builds synthetic transcripts and never reads your real ones.
-- **Merges:** squash, with a subject that ends in `(#N)`, then delete the branch. Machines pick up main at their next `skillsync`.
+- **Merges:** `prland <PR> --need sar` (the pr-land skill): squash, with a subject that ends in `(#N)`, then the branch and worktree go. Machines pick up main at their next `skillsync`.
 
 ---
 
@@ -117,12 +119,15 @@ After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds an
 | Skill | Purpose |
 |-------|---------|
 | `presentation-blueprint` | Build pitch/technical/update decks end-to-end (analyze → strategize → outline → style → render) |
-| `codex-plan-review` | Send the current plan to Codex (high effort, read-only) for an independent architectural review |
+| `codex-review` | One read-only Codex review of a plan, spec, diff or prompt: pinned model with a fallback, a parsed verdict and exit status |
+| `codex-plan-review` | Send the current plan to Codex through `codex-review` for an independent architectural review |
 | `detect-overengineering` | Audit a plan document for LLM-style overengineering — rubric pass + Codex adversarial pass + merged findings with proposed edits |
 | `git-recon` | 12-month git-history health check — churn, bus factor, bug hotspots, velocity, firefighting |
 | `mining-claude-sessions` | `cc-sessions`: find and resume a past session, sum one up, or count usage across sessions, with masked output |
 | `watching-pr-bot-reviews` | Wait for and read the PR bots (Codex, SAR, CI) with `prbots` instead of hand-written pollers |
+| `pr` | `/pr`: commit, push, open or update the PR, after checking what the push will carry (user-invoked only) |
 | `pr-fix` | `/pr-fix`: loop on a PR — fix CI and review feedback, push, wait with `prbots`, repeat until clean (user-invoked only) |
+| `pr-land` | Merge a PR once `prbots` says CLEAN, confirm MERGED, then remove its own worktree and branch and sync main (`prland`) |
 | `bd-to-br-migration` | Migrate docs from bd (beads) to br (beads_rust) |
 | `debugging-kubernetes-rollouts` | Debug failed Kubernetes rollouts and ArgoCD / GitOps sync problems |
 | `debugging-nodejs-apps` | Systematic debugging of Node.js startup, dependency, and runtime failures |
@@ -142,7 +147,7 @@ After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds an
 
 ### Project Commands
 
-`.claude/commands/` holds commands that only exist inside this repo: `/pr` (commit, push, create or update a PR), `/plan`, `/loop-review`, `/memory`. Anything meant for every machine belongs in `skills/`, which is why `/pr-fix` moved there.
+`.claude/commands/` holds commands that only exist inside this repo: `/plan`, `/loop-review`, `/memory`. Anything meant for every machine belongs in `skills/`, which is why `/pr-fix` and `/pr` moved there. A personal skill wins over a project command with the same name, so the `pr` skill reads a repo's own `.claude/commands/pr.md` first and keeps its rules.
 
 ---
 

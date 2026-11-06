@@ -39,6 +39,15 @@ needs a voice. A de-slop pass with no light mode is a footgun.
 5. Re-run the linter. Confirm zero `hard` findings.
 6. Send the clean text. Stay quiet about the edit unless asked for an audit.
 
+## With the other writing skills
+
+For a deliverable, run the passes in this order:
+
+1. minto-pyramid's buried-lede move, if the text argues, reports or asks for a decision (a PR description, a report, a proposal, an update): put the conclusion first. Keep every fact (move a detail lower instead of cutting it), and do not invent reasons to reach three. Skip this pass for reference docs, runbooks and narrative, as that skill says.
+2. de-slopping (this skill): cut the slop and the hedges. Every fact stays.
+3. humanizer: remove the AI tells that remain.
+4. Run the linter again and fix every `hard` finding. The last two passes can bring back long sentences.
+
 ## Rules the linter enforces (mechanical)
 
 The linter counts words and matches patterns. It flags:

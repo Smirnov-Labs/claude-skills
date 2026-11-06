@@ -25,7 +25,8 @@
       "strict": false,
       "skills": [
         "./skills/codex-plan-review",
-        "./skills/detect-overengineering"
+        "./skills/detect-overengineering",
+        "./skills/codex-review"
       ]
     },
     {
@@ -44,7 +45,9 @@
       "strict": false,
       "skills": [
         "./skills/watching-pr-bot-reviews",
-        "./skills/pr-fix"
+        "./skills/pr-fix",
+        "./skills/pr",
+        "./skills/pr-land"
       ]
     }
   ]

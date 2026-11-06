@@ -1,0 +1,435 @@
+#!/usr/bin/env python3
+"""codex-review: one read-only Codex review of a plan, a spec, a diff, or a prompt you built.
+
+  codex-review plan FILE    [options]   review an implementation plan
+  codex-review spec FILE    [options]   review a design spec
+  codex-review diff [RANGE] [options]   review commits (default: origin/<default branch>...HEAD)
+  codex-review diff --pr N  [options]   review a pull request's diff (run it in the PR branch's checkout)
+  codex-review prompt FILE  [options]   send your own prompt as is (no review format, no verdict)
+
+options:
+  --context FILE   a file the work must meet (spec, rules, constraints); repeatable
+  --focus TEXT     one line on what to check hardest
+  --model M        model (default: $CODEX_REVIEW_MODEL, else gpt-6-astra)
+  --effort E       reasoning effort (default: high)
+  --out DIR        write prompt.md, review.md and codex.log here (default: a new temp dir)
+  --timeout DUR    give up after DUR (default 40m; 900, 90s, 20m, 1h)
+  --dry-run        build the prompt and print its path; do not run Codex
+
+Run it in the background: a high-effort review takes minutes, and you are told when it exits. Don't poll it.
+
+exit  0  no Critical or Major findings (prompt mode: Codex answered)
+      1  Critical or Major findings, or a review it could not parse: read review.md
+      2  no usable review: Codex failed, timed out, or said it could not review
+      3  usage error
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+PIN = "gpt-6-astra"      # checked 2026-11-05 with codex-cli 0.166: frontier model, 272K context
+BIG = "gpt-6.1-sol"      # 500K context: used when the prompt is too big for the pin
+BIG_AT = 600_000         # prompt characters (about 170K tokens) before the switch to BIG
+MAX_CHARS = 1_400_000    # past this, even BIG can't take it
+
+STALE = re.compile(r"model\W[^\n]{0,80}(not supported|not found|does not exist|unknown|invalid)|unsupported model", re.I)
+REFUSE = r"(could\s*n[o'\u2019]?t|can\s*not|can[\u2019']t|cannot|unable to|not able to)"
+CANT = re.compile(r"\b" + REFUSE + r"\s+(perform|complete|do|run|carry out|finish)?\s*(the|this|a|your)?\s*review", re.I)
+FINDING = re.compile(r"^[#*\-\s\d.]{0,8}\[(CRITICAL|MAJOR|MINOR)\]\**\s*(.*)$", re.I | re.M)
+
+ROLE = {
+    "plan": "You are a senior engineer reviewing an implementation plan before anyone writes code. Find missing "
+            "steps, wrong order, fragile assumptions, risks without a way back, missing tests, and places where a "
+            "simpler approach would do. When the plan names files in your current directory, read them to check "
+            "its claims.",
+    "spec": "You are a senior engineer reviewing a design spec before it becomes a plan. Find requirements that are "
+            "missing, vague or contradictory, assumptions that do not hold, scope beyond the stated goal, and risks "
+            "the spec leaves open. When the spec names files in your current directory, read them to check its "
+            "claims.",
+    "diff": "You are a senior engineer reviewing a code change. The repository is your current directory: read any "
+            "file you need. Find bugs, security problems, ways to lose data, behavior changes the commits do not "
+            "mention, missing or weak tests, and places where the change does not do what its commits or the "
+            "context say it should.",
+}
+
+FORMAT = """Be direct and specific. Do not praise the work and do not restate it.
+
+Report in exactly this shape:
+
+## Verdict
+CLEAN if you found nothing at CRITICAL or MAJOR, otherwise FINDINGS. If you could not do the review, write CANNOT REVIEW and the reason.
+
+## Findings
+Most severe first. For each finding:
+
+### [CRITICAL] or [MAJOR] or [MINOR] <short title>
+- Where: <file:line, or the section heading>
+- Problem: <what is wrong, and the evidence>
+- Fix: <the concrete change>
+
+CRITICAL: data loss, a security hole, or the main path cannot work. MAJOR: a bug, a missing requirement or a wrong assumption that will cause trouble in real use. MINOR: everything else (naming, style, small simplifications, unlikely edge cases).
+"""
+
+
+def die(msg, code=3):
+    print("codex-review: " + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def run(cmd, cwd=None):
+    # patches carry file bytes as they are: a Latin-1 file must not crash the decode
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
+
+
+def git(*args):
+    return run(["git"] + list(args))
+
+
+def duration(text):
+    m = re.fullmatch(r"(\d+)([smh]?)", text.strip())
+    if not m:
+        die("--timeout takes 900, 90s, 20m or 1h, not %r" % text)
+    return int(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600}[m.group(2)]
+
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError as e:
+        die("cannot read %s: %s" % (path, e.strerror))
+
+
+def default_base():
+    r = git("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip()
+    for ref in ("origin/main", "origin/master"):
+        if git("rev-parse", "--verify", "--quiet", ref).returncode == 0:
+            return ref
+    return None
+
+
+DIFF_FLAGS = ["--no-relative", "--no-color", "--no-ext-diff", "--no-textconv",   # config must not narrow the patch
+              "--ignore-submodules=none", "--submodule=short"]
+
+
+def diff_material(args):
+    """The change under review as prompt text, plus a one-line label."""
+    top = git("rev-parse", "--show-toplevel").stdout.strip()
+    if not top:
+        die("diff needs a git repository; run it inside the checkout")
+
+    def g(*a):
+        return run(["git", "-C", top] + list(a))
+    if args.pr:
+        view = run(["gh", "pr", "view", str(args.pr), "--json", "number,title,body,headRefOid,baseRefName,url"])
+        if view.returncode != 0:
+            die("gh pr view %s failed: %s" % (args.pr, view.stderr.strip()[:200]))
+        pr = json.loads(view.stdout)
+        body = run(["gh", "pr", "diff", str(args.pr)])
+        if body.returncode != 0:
+            die("gh pr diff %s failed: %s" % (args.pr, body.stderr.strip()[:200]))
+        diff = body.stdout
+        head = g("rev-parse", "HEAD").stdout.strip()
+        if head and pr["headRefOid"] != head:
+            args.notes.append("your checkout is at %s, the PR head is %s: Codex reads files from your checkout"
+                              % (head[:8], pr["headRefOid"][:8]))
+        files = len(re.findall(r"^diff --git ", diff, re.M))
+        label = "PR #%s · %d files" % (pr["number"], files)
+        text = "CHANGE: pull request #%s, %s\nTITLE: %s\nBASE: %s\n\nDESCRIPTION:\n%s\n\nDIFF:\n%s" % (
+            pr["number"], pr["url"], pr["title"], pr["baseRefName"], pr.get("body") or "(none)", diff)
+    else:
+        rng = args.range
+        if rng and ".." not in rng:
+            rng += "..HEAD"          # a single ref means "from it to HEAD", never the working tree
+        if not rng:
+            base = default_base()
+            if not base:
+                die("no origin/HEAD, origin/main or origin/master; give a RANGE such as main...HEAD")
+            rng = base + "...HEAD"
+        diff = g("diff", *DIFF_FLAGS, "-U5", rng)
+        if diff.returncode != 0:
+            die("git diff %s failed: %s" % (rng, diff.stderr.strip()[:200]))
+        if not diff.stdout.strip():
+            die("nothing to review in %s (commit your work first; uncommitted changes are not included)" % rng)
+        log = g("log", "--no-color", "--format=%h %s%n%b", rng.replace("...", ".."))
+        stat = g("diff", *DIFF_FLAGS, "--shortstat", rng).stdout.strip()
+        label = "%s · %s" % (rng, stat or "no stat")
+        text = "CHANGE: %s\n\nCOMMITS:\n%s\nFILES:\n%s\n\nDIFF:\n%s" % (
+            rng, log.stdout.strip() or "(none)", g("diff", *DIFF_FLAGS, "--stat", rng).stdout, diff.stdout)
+    return label, text
+
+
+def build_prompt(args):
+    parts = []
+    if args.mode == "prompt":
+        return "prompt " + args.file, read(args.file)
+    if args.mode == "diff":
+        label, material = diff_material(args)
+    else:
+        label = "%s %s" % (args.mode, args.file)
+        material = "%s TO REVIEW (%s):\n\n%s" % (args.mode.upper(), args.file, read(args.file))
+    parts.append(ROLE[args.mode])
+    if args.focus:
+        parts.append("Look hardest at: " + args.focus)
+    for path in args.context or []:
+        parts.append("CONTEXT (%s):\n\n%s" % (path, read(path)))
+    parts.append(material)
+    parts.append(FORMAT)
+    return label, "\n\n".join(parts)
+
+
+def codex(model, effort, prompt, review, log, cwd, timeout):
+    cmd = ["codex", "exec"]
+    if model:
+        cmd += ["-m", model]
+    cmd += ["-c", "model_reasoning_effort=" + effort, "--sandbox", "read-only", "-o", review]
+    if run(["git", "rev-parse", "--git-dir"], cwd=cwd).returncode != 0:
+        cmd.append("--skip-git-repo-check")
+    cmd.append("-")
+    with open(prompt, "rb") as fin, open(log, "ab") as flog:
+        flog.write(("$ " + " ".join(cmd) + "\n").encode())
+        flog.flush()
+        p = subprocess.Popen(cmd, stdin=fin, stdout=flog, stderr=subprocess.STDOUT, cwd=cwd,
+                             start_new_session=True)
+
+        def cancelled(signum, frame):
+            raise KeyboardInterrupt
+        # SIGINT too: a background job in a non-interactive shell starts with SIGINT ignored
+        old = {s: signal.signal(s, cancelled) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+        try:
+            return p.wait(timeout=timeout)
+        except KeyboardInterrupt:
+            stop_group(p)
+            raise
+        except subprocess.TimeoutExpired:
+            stop_group(p)
+            return "timeout"
+        finally:
+            for s, h in old.items():
+                signal.signal(s, h)
+
+
+def stop_group(p):
+    """Stop the process group this run started. Children can outlive the leader, so the SIGKILL goes to the
+    group after the grace period whether or not the leader has exited. A second signal cannot cut it short."""
+    for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, signal.SIG_IGN)
+    for sig, grace in ((signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(p.pid, sig)
+        except ProcessLookupError:
+            break
+        deadline = time.time() + grace
+        while time.time() < deadline:
+            p.poll()                       # reap the leader, so the check below sees only the rest
+            try:
+                os.killpg(p.pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.2)
+    try:
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+FINDING_HEAD = r"^\s*(#+\s*)?(\d+\.\s*)?[-*]?\s*\**\s*\[(CRITICAL|MAJOR|MINOR)\]"
+
+
+def prose_lines(review):
+    """The review's lines with fenced and indented code blocks blanked out: examples are not the reply."""
+    out, fence = [], False
+    for line in review.splitlines():
+        if re.match(r"^\s*(```|~~~)", line):
+            fence = not fence
+            out.append("")
+            continue
+        out.append("" if fence or line.startswith(("    ", "\t")) else line)
+    return out
+
+
+def verdict_of(review):
+    """The text of the first Verdict line (after a "Verdict" heading or label), or None."""
+    lines = prose_lines(review)
+    for i, line in enumerate(lines):
+        m = re.match(r"^[#*\s]*verdict[*:\s]*(.*)$", line, re.I)
+        if m:
+            rest = m.group(1).strip(" *")
+            if rest:
+                return rest
+            for nxt in lines[i + 1:i + 4]:
+                if nxt.strip():
+                    return nxt.strip(" *")
+            return ""
+    return None
+
+
+def verdict_word(text):
+    """CLEAN, FINDINGS, CANNOT (a refusal), or None for anything else."""
+    head = re.sub(r"[^A-Za-z'\u2019\s]", " ", text or "").strip().upper()
+    if re.match(r"(CANNOT|COULD\s*N[O'\u2019]?T|CAN[\u2019']T|UNABLE)\b", head):
+        return "CANNOT"
+    word = head.split()[0] if head.split() else ""
+    return word if word in ("CLEAN", "FINDINGS") else None
+
+
+def opening(review):
+    """Where a reply that refuses says so: its first heading and the prose under it, up to the next heading,
+    finding or quotation."""
+    out, headings = [], 0
+    for line in prose_lines(review):
+        if not out and not line.strip():
+            continue                                # leading blank lines
+        if re.match(FINDING_HEAD, line, re.I) or re.match(r"^\s*(\[|>)", line):
+            break                                   # a finding or a quotation: not the reply's own words
+        if re.match(r"^\s*#", line):
+            headings += 1
+            if headings > 1 or out:
+                break
+            out.append(line.lstrip("# "))
+            continue
+        out.append(line)
+    return "\n".join(out)[:800]
+
+
+def tail(path, n=12):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return "".join(fh.readlines()[-n:])
+    except OSError:
+        return ""
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):           # argparse exits 2, which here means "no usable review"
+        die(message + " (codex-review --help)")
+
+
+def main():
+    if any(a in ("-h", "--help") for a in sys.argv[1:]):
+        print(__doc__.strip())
+        return 0
+    ap = Parser(prog="codex-review", add_help=False)
+    ap.add_argument("mode", choices=["plan", "spec", "diff", "prompt"])
+    ap.add_argument("target", nargs="?", help="FILE for plan/spec/prompt; RANGE for diff")
+    ap.add_argument("--pr", type=int)
+    ap.add_argument("--context", action="append")
+    ap.add_argument("--focus")
+    ap.add_argument("--model")
+    ap.add_argument("--effort", default="high")
+    ap.add_argument("--out")
+    ap.add_argument("--timeout", default="40m")
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+    args.notes = []
+    if args.mode == "diff":
+        args.range = args.target
+        if args.pr and args.range:
+            die("give a RANGE or --pr, not both")
+    else:
+        if not args.target:
+            die("%s needs a FILE" % args.mode)
+        if args.pr:
+            die("--pr goes with diff")
+        if args.mode == "prompt" and (args.context or args.focus):
+            die("prompt mode sends your file as is; put the context and focus in it")
+        args.file = args.target
+    timeout = duration(args.timeout)
+    if not args.dry_run and not shutil.which("codex"):
+        die("codex is not on PATH; install the Codex CLI (npm install -g @openai/codex)")
+
+    label, prompt = build_prompt(args)
+    if len(prompt) > MAX_CHARS:
+        die("the prompt is %d characters, too big for any model; narrow the range or split the file" % len(prompt))
+    model = args.model or os.environ.get("CODEX_REVIEW_MODEL") or PIN
+    if len(prompt) > BIG_AT and not args.model and model == PIN:
+        model = BIG
+        args.notes.append("the prompt is %d characters, so this run uses %s (500K context)" % (len(prompt), BIG))
+
+    out = os.path.abspath(args.out) if args.out else tempfile.mkdtemp(prefix="codex-review.")
+    os.makedirs(out, exist_ok=True)
+    paths = {k: os.path.join(out, k) for k in ("prompt.md", "review.md", "codex.log")}
+    with open(paths["prompt.md"], "w", encoding="utf-8") as fh:
+        fh.write(prompt)
+    cwd = (git("rev-parse", "--show-toplevel").stdout.strip() or os.getcwd()) if args.mode == "diff" else os.getcwd()
+    print("codex-review %s · %s, %s" % (label, model, args.effort))
+    print("prompt  %s (%d chars)" % (paths["prompt.md"], len(prompt)))
+    sys.stdout.flush()
+    if args.dry_run:
+        for n in args.notes:
+            print("note    " + n)
+        return 0
+    for k in ("review.md", "codex.log"):                 # a real run starts clean; a dry run keeps them
+        if os.path.exists(paths[k]):
+            os.remove(paths[k])
+
+    started = time.time()
+    try:
+        rc = codex(model, args.effort, paths["prompt.md"], paths["review.md"], paths["codex.log"], cwd, timeout)
+        if rc not in (0, "timeout") and model and STALE.search(tail(paths["codex.log"], 6)):
+            args.notes.append("the pin %s looks stale (see codex.log); this run used the model in "
+                              "~/.codex/config.toml. Update the pin: codex debug models" % model)
+            if os.path.exists(paths["review.md"]):
+                os.remove(paths["review.md"])
+            rc = codex(None, args.effort, paths["prompt.md"], paths["review.md"], paths["codex.log"], cwd, timeout)
+    except KeyboardInterrupt:
+        print("verdict NO REVIEW · cancelled; the Codex run was stopped")
+        return 130
+    took = int(time.time() - started)
+    print("review  " + paths["review.md"])
+    print("log     " + paths["codex.log"])
+    for n in args.notes:
+        print("note    " + n)
+
+    def fail(why):
+        print("verdict NO REVIEW · %s · %dm%02ds" % (why, took // 60, took % 60))
+        last = tail(paths["codex.log"], 8).strip()
+        if last:
+            print("log tail:\n" + "\n".join("  " + line for line in last.splitlines()))
+        return 2
+
+    if rc == "timeout":
+        return fail("timed out after %s" % args.timeout)
+    if rc != 0:
+        return fail("codex exited %s" % rc)
+    review = read(paths["review.md"]) if os.path.exists(paths["review.md"]) else ""
+    if not review.strip():
+        return fail("codex exited 0 but wrote no review")
+    verdict = verdict_of(review)
+    word = verdict_word(verdict) if verdict is not None else None
+    # a refusal is a CANNOT verdict, or the opening prose of a reply with no verdict; finding text never counts
+    if word == "CANNOT" or (verdict is None and CANT.search(opening(review))):
+        return fail("Codex says it could not review: " + (verdict or opening(review).strip().splitlines()[0])[:160])
+    if args.mode == "prompt":
+        print("verdict ANSWERED · %dm%02ds (prompt mode: read review.md)" % (took // 60, took % 60))
+        return 0
+
+    found = FINDING.findall(review)
+    count = {s: sum(1 for sev, _ in found if sev.upper() == s) for s in ("CRITICAL", "MAJOR", "MINOR")}
+    serious = count["CRITICAL"] + count["MAJOR"]
+    if not serious and word != "CLEAN":
+        # only an explicit CLEAN verdict can pass: FINDINGS with no CRITICAL or MAJOR heading, an unknown
+        # verdict, or no verdict at all is UNPARSED
+        print("verdict UNPARSED · Codex said %r and no CRITICAL or MAJOR heading parsed · read review.md · %dm%02ds"
+              % ((verdict if verdict is not None else "no verdict")[:40], took // 60, took % 60))
+        return 1
+    word = "FINDINGS" if serious else "CLEAN"
+    print("verdict %s · critical %d · major %d · minor %d · %dm%02ds"
+          % (word, count["CRITICAL"], count["MAJOR"], count["MINOR"], took // 60, took % 60))
+    for sev, title in found:
+        if sev.upper() in ("CRITICAL", "MAJOR"):
+            print("  [%s] %s" % (sev.upper(), title.strip()[:150]))
+    return 1 if serious else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
