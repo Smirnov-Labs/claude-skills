@@ -478,6 +478,12 @@ printf 'node-options=--max-old-space-size=4096\n' > "$R/heap/.npmrc"
 printf 'nodeOptions: "--max-old-space-size=4096 --no-warnings"  # CI memory\n' > "$R/heap/pnpm-workspace.yaml"
 scanj "$R"
 check "Node options that load code are HIGH; heap and warning flags alone are not" 'jhas high install-hook load/.npmrc 1 && jnone heap/.npmrc && jnone heap/pnpm-workspace.yaml'
+R=$T/node-options-spellings; mkdir -p "$R/u" "$R/e" "$R/y"
+printf 'node-options=--max_old_space_size=4096 --no_warnings\n' > "$R/u/.npmrc"
+printf 'node-options=\n' > "$R/e/.npmrc"
+printf 'nodeOptions:\n  --require ./tools/preload.cjs\n' > "$R/y/pnpm-workspace.yaml"
+scanj "$R"
+check "underscore heap flags and an empty .npmrc value are not HIGH; an empty YAML line is" 'jnone u/.npmrc && jnone e/.npmrc && jhas high install-hook y/pnpm-workspace.yaml 1'
 R=$T/pnpm-quoted-pnpmfile; mkdir -p "$R"
 printf '"pnpmfile": ./tools/hooks.cjs\n' > "$R/pnpm-workspace.yaml"
 scanj "$R"
@@ -547,6 +553,30 @@ for hatch in version hook; do
   scanj "$R"
   check "a Hatch code $hatch in hatch.toml is HIGH" 'jhas high install-hook hatch.toml'
 done
+for flit in inline multiline; do
+  R=$T/flit-$flit; mkdir -p "$R"
+  printf '[build-system]\nrequires = ["flit_core>=3.2,<4"]\nbuild-backend = "flit_core.buildapi"\n[project]\nname = "demo"\n' > "$R/pyproject.toml"
+  if [ "$flit" = inline ]; then
+    printf 'dynamic = ["version", "description"]\n' >> "$R/pyproject.toml"
+  else
+    printf 'dynamic = [\n  "version",\n]\n' >> "$R/pyproject.toml"
+  fi
+  printf 'print("INSTALL-TIME CODE")\n__version__ = ".".join(["1", "0", "0"])\n' > "$R/demo.py"
+  scanj "$R"
+  check "a Flit dynamic version ($flit) is HIGH" 'jhas high install-hook pyproject.toml 6 && has "Flit"'
+done
+R=$T/flit-static; mkdir -p "$R"
+printf '[build-system]\nrequires = ["flit_core>=3.2,<4"]\nbuild-backend = "flit_core.buildapi"\n[project]\nname = "demo"\nversion = "1.0.0"\ndescription = "Demo"\n' > "$R/pyproject.toml"
+scanj "$R"
+check "a Flit project with a static version and description is not HIGH" 'jnone pyproject.toml && jcount high 0'
+R=$T/pdm-call; mkdir -p "$R"
+printf '[build-system]\nrequires = ["pdm-backend"]\nbuild-backend = "pdm.backend"\n[tool.pdm.version]\nsource = "call"\ngetter = "demo.version:get"\n' > "$R/pyproject.toml"
+scanj "$R"
+check "a pdm-backend call version is HIGH" 'jhas high install-hook pyproject.toml 5'
+R=$T/meson; mkdir -p "$R"
+printf "project('demo', 'c')\nver = run_command('sh', 'prepare.sh', check: true)\ncustom_target('gen', output: 'x.h', command: ['sh', 'gen.sh'])\n" > "$R/meson.build"
+scanj "$R"
+check "Meson run_command is HIGH and custom_target MEDIUM" 'jhas high install-hook meson.build 2 && jhas medium dev-env meson.build 3'
 R=$T/python-static-metadata; mkdir -p "$R"
 printf '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n[tool.hatch.version]\nsource = "regex"\npath = "version.py"\n[tool.other]\nsource = "code"\nattr = "version.__version__"\n[tool.setuptools.dynamic]\nversion = {file = "VERSION"}\n' > "$R/pyproject.toml"
 printf '[metadata]\nversion = 1.0.0\n[other]\nversion = attr: version.__version__\n' > "$R/setup.cfg"

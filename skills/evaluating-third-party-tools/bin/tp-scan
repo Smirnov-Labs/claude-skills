@@ -298,9 +298,9 @@ NPM_NOTES = {'preinstall': 'npm runs it before npm install', 'install': 'npm run
              'postpack': 'Yarn runs it after packing a Git dependency during install',
              'publish': 'pnpm runs it when preparing a Git dependency with a prepare script or a missing main file',
              'pnpm:devPreinstall': 'pnpm runs it before it installs dependencies on a local pnpm install'}
-HARMLESS_NODE_OPTION = re.compile(
-    r'--(?:max-old-space-size|max-semi-space-size|stack-size|max-http-header-size)=\d+'
-    r'|--no-(?:warnings|deprecation)|--trace-(?:warnings|deprecation)|--enable-source-maps')
+HARMLESS_NODE_OPTION = re.compile(   # Node takes - or _ between the words of an option
+    r'--(?:max[-_]old[-_]space[-_]size|max[-_]semi[-_]space[-_]size|stack[-_]size|max[-_]http[-_]header[-_]size)=\d+'
+    r'|--no[-_](?:warnings|deprecation)|--trace[-_](?:warnings|deprecation)|--enable[-_]source[-_]maps')
 SHELL_RC = {'.envrc', '.bashrc', '.zshrc', '.kshrc', '.cshrc', '.tcshrc', '.mkshrc'}
 LICENSE_NAME = re.compile(r'(?:licen[cs]e|copying|unlicense)(?:[-_.][\w.-]*)?$')
 
@@ -370,10 +370,14 @@ def toml_keys(s):
     return '\n'.join(out)
 
 
-def loads_code(value):
-    """False when a Node options value holds only heap, stack and warning flags, which load nothing."""
+def loads_code(value, yaml=False):
+    """False when a Node options value holds only heap, stack and warning flags, which load nothing.
+
+    An empty value sets nothing in .npmrc. In YAML the value can go on the next lines, so read it."""
     value = re.sub(r'[ \t]+#.*', '', value).strip().strip('"\'')
-    return not value or not all(HARMLESS_NODE_OPTION.fullmatch(t) for t in value.split())
+    if not value:
+        return yaml
+    return not all(HARMLESS_NODE_OPTION.fullmatch(t) for t in value.split())
 
 
 def human(n):
@@ -937,6 +941,13 @@ class Scan:
             setting('tool.setuptools.dynamic',
                     r'[ \t]*version[ \t]*=[ \t]*\{[^}\n]*\battr["\']?[ \t]*=', attr_note)
             setting('tool.setuptools.dynamic.version', r'[ \t]*attr[ \t]*=', attr_note)
+            setting('tool.pdm.version', r'[ \t]*source[ \t]*=[ \t]*["\']call["\']',
+                    'pdm-backend calls the getter function this names, from this repo, when it builds')
+            if re.search(r'(?m)^[ \t]*build-backend[ \t]*=[ \t]*["\']flit(?:_core)?\.buildapi["\']', s):
+                each(r'(?m)^[ \t]*dynamic[ \t]*=[ \t]*\[[^\]]*["\'](?:version|description)["\']'
+                     r'|^[ \t]*\[[ \t]*tool\.flit\.metadata[ \t]*\]', 'HIGH', 'install-hook',
+                     'Flit imports the module to read its version or docstring when it cannot read them '
+                     'statically, while it prepares metadata or builds')
             license_field(r'(?m)^[ \t]*license[ \t]*=[ \t]*(?:"([^"\n]+)"|\'([^\'\n]+)\''
                           r'|\{[^}\n]*?\btext[ \t]*=[ \t]*"([^"\n]+)")')
         elif low == 'hatch.toml':
@@ -974,6 +985,10 @@ class Scan:
                  'install-hook', 'CMake runs this when it configures the build, or on install')
             each(r'(?i)\badd_custom_(?:command|target)\s*\(', 'MEDIUM', 'dev-env',
                  'CMake runs this command during the build')
+        elif low == 'meson.build':
+            each(r'\brun_command\s*\(', 'HIGH', 'install-hook',
+                 'Meson runs this when it configures the build, and meson-python configures it on pip install')
+            each(r'\b(?:custom_target|run_target)\s*\(', 'MEDIUM', 'dev-env', 'Meson runs this command during the build')
         elif low == 'binding.gyp':
             add('HIGH', 'install-hook', rel, None, '', 'npm runs node-gyp to build native code on npm install')
         elif low == 'extconf.rb':
@@ -996,7 +1011,8 @@ class Scan:
                  'pnpm runs the pnpmfile this names on pnpm install, even with --ignore-scripts')
             each(r'(?m)^[ \t]*["\']?scriptShell["\']?[ \t]*:', 'HIGH', 'install-hook',
                  'pnpm uses this executable as the shell for lifecycle scripts during install')
-            each(r'(?m)^[ \t]*["\']?nodeOptions["\']?[ \t]*:', 'HIGH', 'install-hook', node_note % 'pnpm', keep=loads_code)
+            each(r'(?m)^[ \t]*["\']?nodeOptions["\']?[ \t]*:', 'HIGH', 'install-hook', node_note % 'pnpm',
+                 keep=lambda v: loads_code(v, yaml=True))
         elif low in ('.yarnrc.yml', '.yarnrc'):
             each(r'(?m)^[ \t]*(?:["\']?yarnPath["\']?[ \t]*:|["\']?yarn-path["\']?[ \t])', 'HIGH', 'install-hook',
                  'yarn runs this committed file for every yarn command in this folder, install included')
