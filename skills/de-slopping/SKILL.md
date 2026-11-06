@@ -39,6 +39,16 @@ needs a voice. A de-slop pass with no light mode is a footgun.
 5. Re-run the linter. Confirm zero `hard` findings.
 6. Send the clean text. Stay quiet about the edit unless asked for an audit.
 
+## With the other writing skills
+
+For a deliverable, run three passes in this order:
+
+1. minto-pyramid: put the answer first.
+2. de-slopping (this skill): cut the slop and the hedges.
+3. humanizer: remove the AI tells that remain.
+
+Each pass changes the text the next one reads. Run the linter once more after the last pass.
+
 ## Rules the linter enforces (mechanical)
 
 The linter counts words and matches patterns. It flags:
