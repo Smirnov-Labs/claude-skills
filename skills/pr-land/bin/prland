@@ -191,10 +191,14 @@ def main():
             die("the URL is a PR in %s, but -R says %s" % (m.group(2), repo))
         repo, pr = m.group(2), m.group(3)
     if not repo:
-        r = run(["gh", "repo", "view", "--json", "nameWithOwner"], cwd=here)
+        r = run(["gh", "repo", "view", "--json", "nameWithOwner,url"], cwd=here)
         if r.returncode != 0:
             die("not in a GitHub checkout; pass -R owner/repo or a PR URL")
-        repo = json.loads(r.stdout)["nameWithOwner"]
+        info = json.loads(r.stdout)
+        repo = info["nameWithOwner"]
+        found = re.sub(r"^https?://([^/]+)/.*$", r"\1", info.get("url") or "").lower()
+        if found and found != host:
+            die("this checkout is on %s, but prland's gh calls go to %s (set GH_HOST=%s)" % (found, host, found))
     if not pr and a.repo:
         die("with -R, give the PR number too: the current branch's PR may live in another repo")
     if not pr:

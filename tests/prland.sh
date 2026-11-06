@@ -17,7 +17,7 @@ cat > "$T/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 head=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["headRefOid"])' "$FAKE/pr.json" 2>/dev/null)
 case "$1 $2" in
-  "repo view") echo '{"nameWithOwner":"o/r"}' ;;
+  "repo view") echo "{\"nameWithOwner\":\"o/r\",\"url\":\"https://${FAKE_REPO_HOST:-github.com}/o/r\"}" ;;
   "pr view") if [ "${3:-}" = "--json" ]; then echo '{"number":7}'; else cat "$FAKE/pr.json"; fi ;;
   "pr merge")
     printf 'cwd=%s args=%s\n' "$PWD" "$*" >> "$FAKE/merge.log"
@@ -167,6 +167,8 @@ setup; FAKE_VERDICT=CLEAN run 7 --dry-run
 check "--dry-run merges, deletes and removes nothing" '[ $rc -eq 0 ] && [ ! -e "$FAKE/merge.log" ] && [ -d "$W" ] && remote_has_feat && [[ $out == *"would run: gh pr merge"* ]]'
 setup; WD=$T; FAKE_VERDICT=CLEAN run 7 -R o/r
 check "outside a checkout: merged, remote branch deleted, local cleanup skipped" '[ $rc -eq 0 ] && ! remote_has_feat && [[ $out == *"not run from a checkout"* ]]'
+setup; FAKE_VERDICT=CLEAN FAKE_REPO_HOST=ghe.example.com run 7
+check "a checkout on another host is refused" '[ $rc -eq 3 ] && [ ! -e "$FAKE/merge.log" ]'
 setup; FAKE_VERDICT=CLEAN GH_HOST=ghe.example.com run https://github.com/o/r/pull/7
 check "a github.com URL while gh talks to another host is refused" '[ $rc -eq 3 ] && [ ! -e "$FAKE/merge.log" ]'
 setup; python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['url']='https://github.com/x/y/pull/7'; json.dump(d,open(p,'w'))" "$FAKE/pr.json"; FAKE_VERDICT=CLEAN run 7
