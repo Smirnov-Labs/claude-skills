@@ -295,9 +295,6 @@ def main():
     out = os.path.abspath(args.out) if args.out else tempfile.mkdtemp(prefix="codex-review.")
     os.makedirs(out, exist_ok=True)
     paths = {k: os.path.join(out, k) for k in ("prompt.md", "review.md", "codex.log")}
-    for k in ("review.md", "codex.log"):
-        if os.path.exists(paths[k]):
-            os.remove(paths[k])
     with open(paths["prompt.md"], "w", encoding="utf-8") as fh:
         fh.write(prompt)
     cwd = git("rev-parse", "--show-toplevel").stdout.strip() or os.getcwd()
@@ -308,6 +305,9 @@ def main():
         for n in args.notes:
             print("note    " + n)
         return 0
+    for k in ("review.md", "codex.log"):                 # a real run starts clean; a dry run keeps them
+        if os.path.exists(paths[k]):
+            os.remove(paths[k])
 
     started = time.time()
     rc = codex(model, args.effort, paths["prompt.md"], paths["review.md"], paths["codex.log"], cwd, timeout)
@@ -338,7 +338,8 @@ def main():
     if not review.strip():
         return fail("codex exited 0 but wrote no review")
     verdict = verdict_of(review)
-    if (verdict and re.search(REFUSE, verdict, re.I)) or CANT.search(review[:600]):
+    # a refusal is in the verdict, or opens an answer that has no verdict; text inside findings never counts
+    if (verdict and re.search(REFUSE, verdict, re.I)) or (not verdict and CANT.search(review[:600])):
         return fail("Codex says it could not review: " + (verdict or review.strip().splitlines()[0])[:160])
     if args.mode == "prompt":
         print("verdict ANSWERED · %dm%02ds (prompt mode: read review.md)" % (took // 60, took % 60))
@@ -348,7 +349,7 @@ def main():
     count = {s: sum(1 for sev, _ in found if sev.upper() == s) for s in ("CRITICAL", "MAJOR", "MINOR")}
     serious = count["CRITICAL"] + count["MAJOR"]
     said = (verdict or "").upper()
-    clean = said.startswith("CLEAN")
+    clean = re.match(r"CLEAN\b", said) is not None          # CLEAN, not CLEANUP REQUIRED
     if not serious and not (clean or (not verdict and found)):
         # FINDINGS with nothing parsed at CRITICAL or MAJOR, an unknown verdict, or no structure at all
         print("verdict UNPARSED · Codex said %r but no CRITICAL or MAJOR heading parsed · read review.md · %dm%02ds"

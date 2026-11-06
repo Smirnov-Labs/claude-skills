@@ -42,7 +42,7 @@ Run the review with `codex-review`, from the codex-review skill, in the backgrou
 codex-review plan "$PLAN" --context CLAUDE.md
 ```
 
-`codex-review` is on PATH where skillsync installed the skills. In a plugin install, run it from this skill's base directory as `../codex-review/bin/codex-review`.
+`codex-review` is on PATH where skillsync installed the skills. In a plugin install, call it by its full path and stay in the project directory: `<this skill's base directory>/../codex-review/bin/codex-review`.
 
 Add `--focus "..."` for what to check hardest. A high-effort review of a long plan takes several minutes, and you are told when it exits. It prints the review path and a verdict line. Exit 1 means Critical or Major findings. Exit 2 means there is no usable review: read the log tail it prints.
 

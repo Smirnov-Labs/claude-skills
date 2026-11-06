@@ -101,7 +101,7 @@ EOF
 codex-review prompt "$d/prompt.md" --out "$d"
 ```
 
-`codex-review` is on PATH where skillsync installed the skills. In a plugin install, run it from this skill's base directory as `../codex-review/bin/codex-review`.
+`codex-review` is on PATH where skillsync installed the skills. In a plugin install, call it by its full path and stay in the project directory: `<this skill's base directory>/../codex-review/bin/codex-review`.
 
 Run it in the background: on a long plan it takes several minutes. `codex-review` comes from the codex-review skill, which holds the model pin.
 

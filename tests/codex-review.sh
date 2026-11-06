@@ -36,6 +36,8 @@ case $FAKE_MODE in
   hang)     sleep 30 ;;
   prose)    printf '## Verdict\nFINDINGS\n\nThe merge runs before the check, which loses work.\n' > "$outf" ;;
   incomplete) printf '## Verdict\nINCOMPLETE\n' > "$outf" ;;
+  cleanup)  printf '## Verdict\nCLEANUP REQUIRED\n\nThe merge loses work.\n' > "$outf" ;;
+  quoted)   printf '## Verdict\nFINDINGS\n\n## Findings\n### [MAJOR] A reply saying "I can\xe2\x80\x99t review this diff" exits 0\n- Where: x\n' > "$outf" ;;
   contraction) printf "I can't review because the files are unavailable.\n" > "$outf" ;;
   curly)    printf 'I can\xe2\x80\x99t review this diff.\n' > "$outf" ;;
   leftover) if [ -n "$model" ]; then printf '## Verdict\nCLEAN\n' > "$outf"; echo "The '$model' model is not supported when using Codex with a ChatGPT account." >&2; exit 1; fi ;;
@@ -87,6 +89,10 @@ FAKE_MODE=prose run plan plan.md --out "$T/r1"
 check "FINDINGS with prose findings is UNPARSED (1), never CLEAN" '[ $rc -eq 1 ] && [[ $out == *"UNPARSED"* ]]'
 FAKE_MODE=incomplete run plan plan.md --out "$T/r2"
 check "an unknown verdict is UNPARSED (1)" '[ $rc -eq 1 ] && [[ $out == *"UNPARSED"* ]]'
+FAKE_MODE=cleanup run plan plan.md --out "$T/r2b"
+check "a verdict that only starts with CLEAN is UNPARSED" '[ $rc -eq 1 ] && [[ $out == *"UNPARSED"* ]]'
+FAKE_MODE=quoted run plan plan.md --out "$T/r2c"
+check "refusal words inside a finding do not void the review" '[ $rc -eq 1 ] && [[ $out == *"major 1"* ]]'
 FAKE_MODE=contraction run plan plan.md --out "$T/r3"
 check "\"can't review\" exits 2 in review mode" '[ $rc -eq 2 ]'
 FAKE_MODE=contraction run prompt plan.md --out "$T/r4"
@@ -100,6 +106,9 @@ check "a non-model \"not supported\" error does not retry" '[ $rc -eq 2 ] && [ "
 export FAKE_CHILD=$T/child.pid; FAKE_MODE=hangchild run plan plan.md --out "$T/r8" --timeout 2s
 check "a timeout also kills a child that ignores SIGTERM" '[ $rc -eq 2 ] && ! kill -0 "$(cat "$FAKE_CHILD")" 2>/dev/null'
 
+mkdir -p "$T/keep"; echo old-review > "$T/keep/review.md"; echo old-log > "$T/keep/codex.log"
+FAKE_MODE=crash run plan plan.md --dry-run --out "$T/keep"
+check "a dry run keeps an earlier review and log" 'grep -q old-review "$T/keep/review.md" && grep -q old-log "$T/keep/codex.log"'
 FAKE_MODE=crash run plan plan.md --dry-run --out "$T/o9"
 check "--dry-run never calls codex" '[ $rc -eq 0 ] && [ -s "$T/o9/prompt.md" ] && [ ! -e "$T/o9/review.md" ]'
 
