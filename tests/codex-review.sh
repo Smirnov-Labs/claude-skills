@@ -21,7 +21,7 @@ while [ $# -gt 0 ]; do
   case $1 in -m) model=$2; shift ;; -o) outf=$2; shift ;; esac; shift
 done
 stdin=$(cat)
-printf 'model=%s chars=%s\n' "${model:-none}" "${#stdin}" >> "$FAKE_LOG"
+printf 'model=%s chars=%s pwd=%s\n' "${model:-none}" "${#stdin}" "$PWD" >> "$FAKE_LOG"
 case $FAKE_MODE in
   clean)    printf '## Verdict\nCLEAN\n\n## Findings\nNone.\n' > "$outf" ;;
   major)    printf '## Verdict\nFINDINGS\n\n## Findings\n### [MAJOR] Merge runs before the MERGED check\n- Where: a.sh:3\n\n### [MINOR] Name\n' > "$outf" ;;
@@ -36,6 +36,10 @@ case $FAKE_MODE in
   hang)     sleep 30 ;;
   prose)    printf '## Verdict\nFINDINGS\n\nThe merge runs before the check, which loses work.\n' > "$outf" ;;
   incomplete) printf '## Verdict\nINCOMPLETE\n' > "$outf" ;;
+  minoronly) printf '### [MINOR] Naming\n- Where: x\n' > "$outf" ;;
+  late)     { printf '### [MINOR] Naming\n'; for i in $(seq 1 30); do echo "detail line $i"; done; printf '## Verdict\nCANNOT REVIEW: the files are missing\n'; } > "$outf" ;;
+  fwords)   printf '## Verdict\nFINDINGS: the migration cannot preserve existing records.\n\n### [MAJOR] Loses rows\n' > "$outf" ;;
+  quotenov) printf '### [MAJOR] A reply saying "I cannot review this diff" exits 0\n- Where: x\n' > "$outf" ;;
   cleanup)  printf '## Verdict\nCLEANUP REQUIRED\n\nThe merge loses work.\n' > "$outf" ;;
   quoted)   printf '## Verdict\nFINDINGS\n\n## Findings\n### [MAJOR] A reply saying "I can\xe2\x80\x99t review this diff" exits 0\n- Where: x\n' > "$outf" ;;
   contraction) printf "I can't review because the files are unavailable.\n" > "$outf" ;;
@@ -106,6 +110,19 @@ check "a non-model \"not supported\" error does not retry" '[ $rc -eq 2 ] && [ "
 export FAKE_CHILD=$T/child.pid; FAKE_MODE=hangchild run plan plan.md --out "$T/r8" --timeout 2s
 check "a timeout also kills a child that ignores SIGTERM" '[ $rc -eq 2 ] && ! kill -0 "$(cat "$FAKE_CHILD")" 2>/dev/null'
 
+FAKE_MODE=minoronly run plan plan.md --out "$T/s1"
+check "no verdict and only MINOR findings is UNPARSED, not CLEAN" '[ $rc -eq 1 ] && [[ $out == *"UNPARSED"* ]]'
+FAKE_MODE=late run plan plan.md --out "$T/s2"
+check "a CANNOT verdict late in the review exits 2" '[ $rc -eq 2 ]'
+FAKE_MODE=fwords run plan plan.md --out "$T/s3"
+check "FINDINGS whose text says cannot is still FINDINGS" '[ $rc -eq 1 ] && [[ $out == *"major 1"* ]]'
+FAKE_MODE=quotenov run plan plan.md --out "$T/s4"
+check "a finding that quotes a refusal, with no verdict, is FINDINGS" '[ $rc -eq 1 ] && [[ $out == *"major 1"* ]]'
+export FAKE_CHILD=$T/child2.pid; rm -f "$FAKE_CHILD"
+( cd "$WD" && FAKE_MODE=hangchild exec "$TOOL" plan plan.md --out "$T/s5" --timeout 60 ) > "$T/s5.out" 2>&1 & wpid=$!
+for i in $(seq 1 50); do [ -s "$FAKE_CHILD" ] && break; sleep 0.1; done
+kill -TERM "$wpid"; wait "$wpid"; rc=$?; out=$(cat "$T/s5.out")
+check "SIGTERM to the wrapper stops the Codex run and its children" '[ $rc -eq 130 ] && ! kill -0 "$(cat "$FAKE_CHILD")" 2>/dev/null'
 mkdir -p "$T/keep"; echo old-review > "$T/keep/review.md"; echo old-log > "$T/keep/codex.log"
 FAKE_MODE=crash run plan plan.md --dry-run --out "$T/keep"
 check "a dry run keeps an earlier review and log" 'grep -q old-review "$T/keep/review.md" && grep -q old-log "$T/keep/codex.log"'
@@ -140,6 +157,11 @@ git -C "$WD" config diff.relative true
 out=$(cd "$WD/sub" && FAKE_MODE=clean "$TOOL" diff --out results 2>&1); rc=$?
 check "diff.relative and a subdirectory do not narrow the diff" '[ $rc -eq 0 ] && grep -q "+new line" "$WD/sub/results/prompt.md"'
 check "a relative --out is the same dir for the script and codex" '[ -s "$WD/sub/results/review.md" ]'
+: > "$FAKE_LOG"; printf '# p\n' > "$WD/sub/p.md"
+out=$(cd "$WD/sub" && FAKE_MODE=clean "$TOOL" plan p.md --out "$T/cwd1" 2>&1); rc=$?
+check "plan mode runs Codex in the caller's directory" 'grep -q "pwd=$WD/sub$" "$FAKE_LOG"'
+: > "$FAKE_LOG"; out=$(cd "$WD/sub" && FAKE_MODE=clean "$TOOL" diff --out "$T/cwd2" 2>&1); rc=$?
+check "diff mode runs Codex at the repo root" 'grep -q "pwd=$WD$" "$FAKE_LOG"'
 git -C "$WD" config --unset diff.relative
 echo "uncommitted" >> "$WD/a.txt"
 FAKE_MODE=clean run diff main --out "$T/o13"

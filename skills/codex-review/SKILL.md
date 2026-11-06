@@ -29,6 +29,7 @@ Run it with `run_in_background: true`. A high-effort review takes several minute
 - `--focus "..."` says what to check hardest.
 - Commit before a diff review. Uncommitted changes are not in the diff.
 - `codex-review --help` has the rest (`--out`, `--timeout`, `--model`, `--effort`, `--dry-run`).
+- `codex-review` is on PATH where skillsync installed this skill. In a plugin install, call `<this skill's base directory>/bin/codex-review` by its full path, from the project directory.
 
 ## Read the result
 

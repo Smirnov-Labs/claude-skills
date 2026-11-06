@@ -190,7 +190,7 @@ def codex(model, effort, prompt, review, log, cwd, timeout):
     if model:
         cmd += ["-m", model]
     cmd += ["-c", "model_reasoning_effort=" + effort, "--sandbox", "read-only", "-o", review]
-    if git("rev-parse", "--git-dir").returncode != 0:
+    if run(["git", "rev-parse", "--git-dir"], cwd=cwd).returncode != 0:
         cmd.append("--skip-git-repo-check")
     cmd.append("-")
     with open(prompt, "rb") as fin, open(log, "ab") as flog:
@@ -198,35 +198,49 @@ def codex(model, effort, prompt, review, log, cwd, timeout):
         flog.flush()
         p = subprocess.Popen(cmd, stdin=fin, stdout=flog, stderr=subprocess.STDOUT, cwd=cwd,
                              start_new_session=True)
+
+        def cancelled(signum, frame):
+            raise KeyboardInterrupt
+        old = {s: signal.signal(s, cancelled) for s in (signal.SIGTERM, signal.SIGHUP)}
         try:
             return p.wait(timeout=timeout)
+        except KeyboardInterrupt:
+            stop_group(p)
+            raise
         except subprocess.TimeoutExpired:
-            # only the process group this run started; children can outlive the leader, so the
-            # SIGKILL goes to the group after the grace period whether or not the leader has exited
-            for sig, grace in ((signal.SIGTERM, 5), (signal.SIGKILL, 5)):
-                try:
-                    os.killpg(p.pid, sig)
-                except ProcessLookupError:
-                    break
-                deadline = time.time() + grace
-                while time.time() < deadline:
-                    p.poll()                       # reap the leader, so the check below sees only the rest
-                    try:
-                        os.killpg(p.pid, 0)
-                    except ProcessLookupError:
-                        break
-                    time.sleep(0.2)
-            try:
-                p.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+            stop_group(p)
             return "timeout"
+        finally:
+            for s, h in old.items():
+                signal.signal(s, h)
+
+
+def stop_group(p):
+    """Stop the process group this run started. Children can outlive the leader, so the SIGKILL goes to the
+    group after the grace period whether or not the leader has exited."""
+    for sig, grace in ((signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(p.pid, sig)
+        except ProcessLookupError:
+            break
+        deadline = time.time() + grace
+        while time.time() < deadline:
+            p.poll()                       # reap the leader, so the check below sees only the rest
+            try:
+                os.killpg(p.pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.2)
+    try:
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def verdict_of(review):
-    """The verdict text: after a "Verdict" heading or label, or on the next non-empty line."""
+    """The text of the first Verdict line (after a "Verdict" heading or label), or None."""
     lines = review.splitlines()
-    for i, line in enumerate(lines[:25]):
+    for i, line in enumerate(lines):
         m = re.match(r"^[#*\s]*verdict[*:\s]*(.*)$", line, re.I)
         if m:
             rest = m.group(1).strip(" *")
@@ -235,7 +249,27 @@ def verdict_of(review):
             for nxt in lines[i + 1:i + 4]:
                 if nxt.strip():
                     return nxt.strip(" *")
+            return ""
     return None
+
+
+def verdict_word(text):
+    """CLEAN, FINDINGS, CANNOT (a refusal), or None for anything else."""
+    head = re.sub(r"[^A-Za-z'\u2019\s]", " ", text or "").strip().upper()
+    if re.match(r"(CANNOT|COULD\s*N[O'\u2019]?T|CAN[\u2019']T|UNABLE)\b", head):
+        return "CANNOT"
+    word = head.split()[0] if head.split() else ""
+    return word if word in ("CLEAN", "FINDINGS") else None
+
+
+def opening(review):
+    """The prose before the first heading or finding: where a reply that refuses says so."""
+    out = []
+    for line in review.splitlines():
+        if re.match(r"^\s*(#|\[|[-*]\s*\[|\d+\.\s*\*{0,2}\[)", line):
+            break
+        out.append(line)
+    return "\n".join(out)[:800]
 
 
 def tail(path, n=12):
@@ -297,7 +331,7 @@ def main():
     paths = {k: os.path.join(out, k) for k in ("prompt.md", "review.md", "codex.log")}
     with open(paths["prompt.md"], "w", encoding="utf-8") as fh:
         fh.write(prompt)
-    cwd = git("rev-parse", "--show-toplevel").stdout.strip() or os.getcwd()
+    cwd = (git("rev-parse", "--show-toplevel").stdout.strip() or os.getcwd()) if args.mode == "diff" else os.getcwd()
     print("codex-review %s · %s, %s" % (label, model, args.effort))
     print("prompt  %s (%d chars)" % (paths["prompt.md"], len(prompt)))
     sys.stdout.flush()
@@ -310,13 +344,17 @@ def main():
             os.remove(paths[k])
 
     started = time.time()
-    rc = codex(model, args.effort, paths["prompt.md"], paths["review.md"], paths["codex.log"], cwd, timeout)
-    if rc not in (0, "timeout") and model and STALE.search(tail(paths["codex.log"], 6)):
-        args.notes.append("the pin %s looks stale (see codex.log); this run used the model in ~/.codex/config.toml. "
-                          "Update the pin: codex debug models" % model)
-        if os.path.exists(paths["review.md"]):
-            os.remove(paths["review.md"])
-        rc = codex(None, args.effort, paths["prompt.md"], paths["review.md"], paths["codex.log"], cwd, timeout)
+    try:
+        rc = codex(model, args.effort, paths["prompt.md"], paths["review.md"], paths["codex.log"], cwd, timeout)
+        if rc not in (0, "timeout") and model and STALE.search(tail(paths["codex.log"], 6)):
+            args.notes.append("the pin %s looks stale (see codex.log); this run used the model in "
+                              "~/.codex/config.toml. Update the pin: codex debug models" % model)
+            if os.path.exists(paths["review.md"]):
+                os.remove(paths["review.md"])
+            rc = codex(None, args.effort, paths["prompt.md"], paths["review.md"], paths["codex.log"], cwd, timeout)
+    except KeyboardInterrupt:
+        print("verdict NO REVIEW · cancelled; the Codex run was stopped")
+        return 130
     took = int(time.time() - started)
     print("review  " + paths["review.md"])
     print("log     " + paths["codex.log"])
@@ -338,9 +376,10 @@ def main():
     if not review.strip():
         return fail("codex exited 0 but wrote no review")
     verdict = verdict_of(review)
-    # a refusal is in the verdict, or opens an answer that has no verdict; text inside findings never counts
-    if (verdict and re.search(REFUSE, verdict, re.I)) or (not verdict and CANT.search(review[:600])):
-        return fail("Codex says it could not review: " + (verdict or review.strip().splitlines()[0])[:160])
+    word = verdict_word(verdict) if verdict is not None else None
+    # a refusal is a CANNOT verdict, or the opening prose of a reply with no verdict; finding text never counts
+    if word == "CANNOT" or (verdict is None and CANT.search(opening(review))):
+        return fail("Codex says it could not review: " + (verdict or opening(review).strip().splitlines()[0])[:160])
     if args.mode == "prompt":
         print("verdict ANSWERED · %dm%02ds (prompt mode: read review.md)" % (took // 60, took % 60))
         return 0
@@ -348,12 +387,11 @@ def main():
     found = FINDING.findall(review)
     count = {s: sum(1 for sev, _ in found if sev.upper() == s) for s in ("CRITICAL", "MAJOR", "MINOR")}
     serious = count["CRITICAL"] + count["MAJOR"]
-    said = (verdict or "").upper()
-    clean = re.match(r"CLEAN\b", said) is not None          # CLEAN, not CLEANUP REQUIRED
-    if not serious and not (clean or (not verdict and found)):
-        # FINDINGS with nothing parsed at CRITICAL or MAJOR, an unknown verdict, or no structure at all
-        print("verdict UNPARSED · Codex said %r but no CRITICAL or MAJOR heading parsed · read review.md · %dm%02ds"
-              % ((verdict or "nothing")[:40], took // 60, took % 60))
+    if not serious and word != "CLEAN":
+        # only an explicit CLEAN verdict can pass: FINDINGS with no CRITICAL or MAJOR heading, an unknown
+        # verdict, or no verdict at all is UNPARSED
+        print("verdict UNPARSED · Codex said %r and no CRITICAL or MAJOR heading parsed · read review.md · %dm%02ds"
+              % ((verdict if verdict is not None else "no verdict")[:40], took // 60, took % 60))
         return 1
     word = "FINDINGS" if serious else "CLEAN"
     print("verdict %s · critical %d · major %d · minor %d · %dm%02ds"
