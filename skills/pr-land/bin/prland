@@ -223,8 +223,10 @@ def main():
     if top:
         wts = worktrees(top)
         main_wt = wts[0]["worktree"] if wts else top
-        if slug(git(main_wt, "config", "--get", "remote.origin.url").stdout) != repo.lower():
-            main_wt = None
+        origin = git(main_wt, "config", "--get", "remote.origin.url").stdout.strip().lower()
+        m = re.match(r"^(?:[a-z+]+://)?(?:[^@/]+@)?([^/:]+)[:/]", origin)
+        if slug(origin) != repo.lower() or not m or m.group(1) != host:
+            main_wt = None                      # another repo, or the same owner/name on another host
 
     merged_now = False
     if p["state"] == "MERGED":

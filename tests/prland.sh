@@ -169,6 +169,9 @@ setup; WD=$T; FAKE_VERDICT=CLEAN run 7 -R o/r
 check "outside a checkout: merged, remote branch deleted, local cleanup skipped" '[ $rc -eq 0 ] && ! remote_has_feat && [[ $out == *"not run from a checkout"* ]]'
 setup; FAKE_VERDICT=CLEAN FAKE_REPO_HOST=ghe.example.com run 7
 check "a checkout on another host is refused" '[ $rc -eq 3 ] && [ ! -e "$FAKE/merge.log" ]'
+setup; python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['url']='https://ghe.example.com/o/r/pull/7'; json.dump(d,open(p,'w'))" "$FAKE/pr.json"
+FAKE_VERDICT=CLEAN GH_HOST=ghe.example.com run https://ghe.example.com/o/r/pull/7
+check "a PR on another host never cleans up a github.com checkout" '[ -d "$W" ] && [[ $out == *"not run from a checkout"* ]]'
 setup; FAKE_VERDICT=CLEAN GH_HOST=ghe.example.com run https://github.com/o/r/pull/7
 check "a github.com URL while gh talks to another host is refused" '[ $rc -eq 3 ] && [ ! -e "$FAKE/merge.log" ]'
 setup; python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['url']='https://github.com/x/y/pull/7'; json.dump(d,open(p,'w'))" "$FAKE/pr.json"; FAKE_VERDICT=CLEAN run 7
