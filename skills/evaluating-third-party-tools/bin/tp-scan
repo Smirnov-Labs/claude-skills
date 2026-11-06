@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """tp-scan: a static, read-only scan of a downloaded repo or tool, before you run any of it.
 
 usage: tp-scan [--json] [--max N] [--all] DIR
@@ -43,8 +43,8 @@ import os
 import sys
 
 if not sys.flags.isolated and sys.executable:
-    # Run isolated (-I): no PYTHON* variables, no user site, and no module
-    # from the current directory, which may be the directory under scan.
+    # The shebang runs Python with -I. This covers a run as `python3 tp-scan`: later
+    # imports then ignore PYTHON* variables, the user site and the current directory.
     os.execv(sys.executable, [sys.executable, '-I', os.path.abspath(__file__)] + sys.argv[1:])
 
 import base64
@@ -130,19 +130,26 @@ MEDIUM_ORDER = ['symlink-out', 'auto-run', 'install-hook', 'pipe-to-shell', 'dec
 # One command line: any character but a newline or a pipe, or a backslash-newline.
 _W = r'(?:[^\n|]|\\\r?\n)'
 _PIPE = r'(?<![\\|])\|(?!\|)'       # a pipe: not ||, and not \| (an escaped pipe in a shell or a regex)
-_RUNNERS = (r'(?:sudo(?:\s+-\S+)*\s+)?(?:env(?:\s+\w+=\S*)*\s+)?'
-            r'(?:(?:ba|z|k|da|fi|tc)?sh|python[0-9.]*|perl|ruby|node|php'
+_RUNNERS = (r'(?:(?:sudo|doas)(?:\s+-\S+)*\s+)?(?:(?:[\w./-]*/)?env(?:\s+-\S+)*(?:\s+\w+=\S*)*\s+)?'
+            r'(?:[\w./-]*/)?(?:(?:ba|z|k|da|fi|tc)?sh|python[0-9.]*|perl|ruby|node|php'
             r'|(?i:pwsh|powershell(?:\.exe)?|iex|invoke-expression))\b')
 _FETCH = r'(?:\b(?:curl|wget|fetch)|(?i:\b(?:iwr|irm|invoke-webrequest|invoke-restmethod)))[ \t]'   # with arguments
 PIPE_RE = re.compile(
     _FETCH + _W + r'{0,400}(?:' + _PIPE + _W + r'{0,200}){0,3}?' + _PIPE + r'\s*' + _RUNNERS
     + r'|(?:\b(?:(?:ba|z|k)?sh|source)|(?<![\w.])\.)\s+<\(\s*(?:curl|wget)\b'
-    + r'|\b(?:ba|z|k|da)?sh\s+-c\s+["\']?\$\(\s*(?:curl|wget)\b'
+    + r'|\b(?:(?:ba|z|k|da)?sh|python[0-9.]*|node|perl|ruby|php)\s+-[ce]\s+["\']?\$\(\s*(?:curl|wget)\b'
+    + r'|\b(?:curl|wget)[ \t][^\n&;|]{0,300}?(?:(?:https?|ftp)://|\$\{?\w)[^\n]{0,300}?(?:&&|;)[ \t]*'
+      r'(?:(?:sudo|doas)[ \t]+(?:-\S+[ \t]+)*)?'
+      r'(?:(?:ba|z|k|da)?sh[ \t]+\S|chmod[ \t]+\+x\b|\./\S)'
+    + r'|(?i:\[scriptblock\]::create\s*\([^\n]{0,120}?(?:\biwr\b|\birm\b|invoke-webrequest|invoke-restmethod'
+      r'|downloadstring))'
     + r'|(?i:\b(?:iex|invoke-expression)\b[^\n]{0,60}?(?:\biwr\b|\birm\b|invoke-webrequest'
       r'|invoke-restmethod|downloadstring|net\.webclient))')
 
 _EXEC = (r'(?:\b(?:eval|exec|execSync|execFileSync|Function|runInThisContext|runInNewContext'
-         r'|compileFunction|instance_eval|class_eval|module_eval|loadstring|create_function)'
+         r'|compileFunction|instance_eval|class_eval|module_eval|loadstring|create_function|system|popen'
+         r'|shell_exec|passthru|proc_open|spawn|spawnSync|setTimeout|setInterval|pickle\.loads|cPickle\.loads'
+         r'|dill\.loads)'
          r'|(?i:\b(?:iex|invoke-expression)))')
 _DECODER = (r'(?:b64decode|b32decode|b16decode|a85decode|b85decode|decodebytes|decodestring'
             r'|decompress|unhexlify|fromhex|marshal\.loads|pickle\.loads|\batob\b|fromCharCode'
@@ -151,8 +158,8 @@ _DECODER = (r'(?:b64decode|b32decode|b16decode|a85decode|b85decode|decodebytes|d
             r'|Buffer\.from\s*\([^)\n]{0,300}?["\'](?:base64|hex)["\']|urlopen'
             r'|requests\.(?:get|post)|httpx\.|\bfetch\s*\(|\baxios\b|XMLHttpRequest'
             r'|DownloadString|Invoke-WebRequest|\biwr\b|Net::HTTP|URI\.open'
-            r'|https?\.get\s*\(|file_get_contents\s*\(\s*["\']https?:|curl_exec|HttpGet)')
-_TO_SHELL = (_PIPE + r'\s*(?:sudo(?:\s+-\S+)*\s+)?'
+            r'|https?\.get\s*\(|file_get_contents\s*\(\s*["\']https?:|curl_exec|HttpGet|\bchr\b)')
+_TO_SHELL = (_PIPE + r'\s*(?:(?:sudo|doas)(?:\s+-\S+)*\s+)?(?:[\w./-]*/)?'
              r'(?:(?:ba|z|k|da)?sh|python[0-9.]*|perl|ruby|node)\b')
 DECODE_RE = re.compile(
     _EXEC + r'\s*\([^\n;]{0,300}?' + _DECODER
@@ -160,6 +167,10 @@ DECODE_RE = re.compile(
     + r'|\b(?:eval|(?:ba|z|k|da)?sh\s+-c)\s+["\']?\$\(\s*(?:curl|wget|fetch|base64'
       r'|(?:echo|printf)\s[^)\n]{0,300}?base64)'
     + r'|\beval\s+["\']?`\s*(?:curl|wget)'
+    + r'|\b(?:ba|z|k)?sh\s*<<<\s*["\']?\$\([^)\n]{0,300}?base64'
+    + r'|\beval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*[dr]\s*\)'
+    + r'|\beval\s+(?:pack|unpack|decode_base64|MIME::Base64::decode)\b'
+    + r'|\b(?:printf|echo)\b[^\n|]{0,40}?(?:\\x[0-9a-fA-F]{2}|\\[0-7]{3}){4,}[^\n|]{0,200}' + _TO_SHELL
     + r'|(?i:\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]{0,100}?\s-e[a-z]{0,13}\s+[A-Za-z0-9+/=]{16,})')
 
 CRED_RE = re.compile(
@@ -175,7 +186,10 @@ CRED_RE = re.compile(
     r'|\.config[/\\](?:google-chrome|chromium|BraveSoftware|microsoft-edge)\b'
     r'|\.mozilla[/\\]firefox|Firefox[/\\]Profiles|[/\\](?:Login Data|Local State|Web Data)\b'
     r'|\b(?:Cookies\.binarycookies|cookies\.sqlite|logins\.json|key4\.db|wallet\.dat|exodus\.wallet)\b'
-    r'|nkbihfbeogaeaoehlefnkodbefgpgknn|(?<![\w.-])\.electrum[/\\]|\.config[/\\]solana[/\\]id\.json')
+    r'|nkbihfbeogaeaoehlefnkodbefgpgknn|(?<![\w.-])\.electrum[/\\]|\.config[/\\]solana[/\\]id\.json'
+    r'|(?:~|\$HOME|\$\{HOME\}|homedir\(\)|expanduser\(|Path\.home\(\)|USERPROFILE)[^\n]{0,60}?'
+    r'\.(?:npmrc|pypirc|bash_history|zsh_history|python_history|psql_history|mysql_history)\b'
+    r'|\.local[/\\]share[/\\]keyrings|Local Storage[/\\]leveldb')
 
 HIDDEN_RE = re.compile(r'[\u202a-\u202e\u2066-\u2069]|[\U000e0000-\U000e007f]{2,}'
                        r'|[\ufe00-\ufe0f\U000e0100-\U000e01ef]{4,}|[\u200b-\u200d\u2060\ufeff]{3,}'
@@ -227,7 +241,8 @@ B64_RUN = re.compile(r'(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{%d,}={0,2}' % ENCODED
 ESC_RUN = re.compile(r'(?<!\\x[0-9a-fA-F]{2})(?:\\x[0-9a-fA-F]{2}){%d,}' % (ENCODED_MIN // 4))
 DATA_URI = re.compile(r'data:(?:image|font|audio|video|application/(?:x-)?font[\w.+-]*)'
                       r'(?:/[\w.+-]+)?;base64,$', re.I)
-COMMENT = re.compile(r'[ \t]*(?:#|//|/\*|\*|<!--|rem\s|::)', re.I)
+COMMENT = re.compile(r'[ \t]*(?:#(?![!\[])(?![ \t]*(?:define|include|if|ifdef|ifndef|elif|else|endif|pragma'
+                     r'|undef|error|warning|import|region|endregion|line)\b)|//|/\*|\*|<!--|rem\s|::)', re.I)
 UNSAFE = re.compile('[\x00-\x1f\x7f-\x9f\u00ad\u061c\u115f\u1160\u180e\u200b-\u200f'
                     '\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb'
                     '\U000e0000-\U000e007f\U000e0100-\U000e01ef]')
@@ -243,10 +258,13 @@ DATA_MAGIC = MEDIA_MAGIC + (b'SQLite format 3\x00', b'PAR1', b'\x93NUMPY', b'\x8
                             b'GGUF', b'\x00\x00\x01\x00', b'II*\x00', b'MM\x00*', b'8BPS',
                             b'BM', b'\xd0\xcf\x11\xe0')
 
-PYPROJECT_RE = re.compile(
-    r'^[ \t]*backend-path[ \t]*=|^[ \t]*\[tool\.hatch\.(?:build\.(?:targets\.[^\]\n]+\.)?|metadata\.)'
-    r'hooks\.custom\]|^[ \t]*\[tool\.setuptools\.cmdclass\]|^[ \t]*\[tool\.poetry\.build\]'
-    r'|^[ \t]*custom-hook[ \t]*=|^[ \t]*build[ \t]*=[ \t]*["\'][^"\'\n]+\.py["\']', re.M)
+PYPROJECT_RE = re.compile(       # run on toml_keys() text: keys unquoted, dotted or in [sections]
+    r'^[ \t]*(?:build-system\.)?backend-path[ \t]*='
+    r'|^[ \t]*\[?[^\n=\]]*\bhooks\.custom\b'
+    r'|^[ \t]*\[?[ \t]*tool\.setuptools\.cmdclass\b|^[ \t]*cmdclass[ \t]*='
+    r'|^[ \t]*\[?[ \t]*tool\.poetry\.build\b'
+    r'|^[ \t]*(?:tool\.poetry\.)?build[ \t]*=[ \t]*(?:["\'][^"\'\n]+\.py["\']|\{[^}\n]*\bscript\b)'
+    r'|^[ \t]*(?:tool\.pdm\.build\.)?custom-hook[ \t]*=', re.M)
 GIT_CMD_KEY = re.compile(
     r'(?:core\.(?:fsmonitor|hookspath|pager|editor|sshcommand|askpass|gitproxy|alternaterefscommand)'
     r'|diff\.external|diff\..+\.(?:textconv|command)|merge\..+\.driver|filter\..+\.(?:clean|smudge|process)'
@@ -267,7 +285,7 @@ LICENSE_NAME = re.compile(r'(?:licen[cs]e|copying|unlicense)(?:[-_.][\w.-]*)?$')
 
 def clean(s, limit=160):
     """Make untrusted text safe to print: one line, no control, bidi or invisible characters."""
-    s = s.replace('\t', ' ').strip()
+    s = s.encode('utf-8', 'backslashreplace').decode('utf-8').replace('\t', ' ').strip()
     if len(s) > limit:
         s = s[:limit] + '...'
     return UNSAFE.sub(lambda m: ('\\u%04x' if ord(m.group()) <= 0xffff else '\\U%08x') % ord(m.group()), s)
@@ -300,6 +318,34 @@ def read_bytes(path, limit):
 
 def plural(n, word):
     return '%d %s%s' % (n, word, '' if n == 1 else 's')
+
+
+def decode(data):
+    """Bytes to text for scanning. A NUL becomes a space, so offsets and lines stay put."""
+    if data.startswith((b'\xff\xfe', b'\xfe\xff')):
+        return data.decode('utf-16', 'replace')
+    return data.replace(b'\0', b' ').decode('utf-8', 'replace')
+
+
+def unescape(s):
+    """Decode \\uXXXX and \\xXX escapes, so "post\\u0069nstall" reads as postinstall. Each line stays one line."""
+    def one(m):
+        c = int(m.group(1) or m.group(2), 16)
+        return ' ' if c in (10, 13) else chr(c)
+    return re.sub(r'\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})', one, s)
+
+
+def toml_keys(s):
+    """Unquote TOML keys and table names ("backend-path" = ..., [tool."hatch"]); lines stay put."""
+    out = []
+    for line in s.split('\n'):
+        key, eq, value = line.partition('=')
+        if line.lstrip().startswith('['):
+            line = re.sub(r'["\']([\w.-]+)["\']', r'\1', line)
+        elif eq:
+            line = re.sub(r'["\']([\w.-]+)["\']', r'\1', key) + eq + value
+        out.append(line)
+    return '\n'.join(out)
 
 
 def human(n):
@@ -446,7 +492,18 @@ class Text:
         return line
 
     def is_comment(self, pos):
-        return COMMENT.match(self.s, self.bounds(pos)[0]) is not None
+        """True when pos sits in a comment that starts the line. A block comment that closes
+        before pos (`/* x */ eval(...)`, `*/ eval(...)`) leaves pos in code."""
+        a = self.bounds(pos)[0]
+        m = COMMENT.match(self.s, a)
+        if m is None:
+            return False
+        marker, before = m.group().lstrip(), self.s[a:pos]
+        if marker.startswith(('/*', '*')):
+            return '*/' not in before
+        if marker.startswith('<!--'):
+            return '-->' not in before
+        return True
 
 
 class Report:
@@ -484,25 +541,33 @@ class Report:
             return (order.index(f['rule']) if f['rule'] in order else 99, not unusual_host, f['file'], f['line'] or 0)
         return sorted(items, key=key)
 
-PIPE_WORDS = ('curl', 'wget', 'fetch', 'iwr', 'irm', 'invoke-', 'iex')
-DECODE_WORDS = ('eval', 'exec', 'new function', 'runin', 'loadstring', 'create_function', 'iex',
+PIPE_WORDS = ('curl', 'wget', 'fetch', 'iwr', 'irm', 'invoke-', 'iex', 'scriptblock')
+DECODE_WORDS = ('eval', 'exec', 'function', 'runin', 'loadstring', 'create_function', 'iex',
                 'invoke-expression', 'base64', 'openssl', 'xxd', 'gunzip', 'zcat', 'uudecode',
-                'gpg', 'powershell', 'pwsh')
+                'gpg', 'powershell', 'pwsh', 'system', 'popen', 'passthru', 'proc_open', 'spawn',
+                'settimeout', 'setinterval', 'pickle.loads', 'dill.loads', 'curl', 'wget', 'fetch', '\\x',
+                '\\0', '\\1', '\\2', '\\3', '\\4', '\\5', '\\6', '\\7')
 CRED_WORDS = ('.ssh', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', '.aws', 'gcloud',
               'application_default', '.azure', '.kube', '.docker', '.netrc', '.git-credentials',
               '.vault-token', '.pgpass', '.gnupg', '.password-store', 'hosts.yml', '.terraform.d',
-              '.cargo', 'security ', 'keychain', 'secret-tool', 'cryptunprotectdata', 'credread',
+              '.cargo', 'security', 'keychain', 'secret-tool', 'cryptunprotectdata', 'credread',
               'credenumerate', 'vaultcmd', 'user data', 'application support', 'google-chrome',
               'chromium', 'bravesoftware', 'microsoft-edge', 'firefox', 'login data', 'local state',
               'web data', 'cookies', 'logins.json', 'key4.db', 'wallet',
-              'nkbihfbeogaeaoehlefnkodbefgpgknn', '.electrum', 'solana')
+              'nkbihfbeogaeaoehlefnkodbefgpgknn', '.electrum', 'solana', 'npmrc', 'pypirc', '_history',
+              'keyrings', 'leveldb')
 TELEMETRY_WORDS = ('posthog', 'mixpanel', 'rudderstack', 'bugsnag', 'rollbar', 'logrocket',
                    'fullstory', 'hotjar', 'statsig', 'newrelic', 'new_relic', 'datadog', 'dd-trace',
                    'honeycomb', 'opentelemetry', 'google-analytics', 'googletagmanager', 'plausible',
                    'heapanalytics', 'segment', 'amplitude', 'sentry', 'telemetry', 'gtag')
 DOWNLOAD_WORDS = ('curl', 'wget', 'urlretrieve', 'download', 'invoke-webrequest', 'bitstransfer',
-                  'certutil', 'bitsadmin', 'iwr', 'torch.hub', 'prebuild-install', 'node-pre-gyp',
-                  'git clone')
+                  'certutil', 'bitsadmin', 'iwr', 'torch.hub', 'prebuild-install', 'node-pre-gyp', 'clone')
+SCRIPT_EXT = {'.sh', '.bash', '.zsh', '.ksh', '.fish', '.command', '.ps1', '.psm1', '.bat', '.cmd', '.py', '.pyw',
+              '.rb', '.pl', '.pm', '.php', '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.mts', '.cts', '.lua',
+              '.r', '.jl', '.tcl', '.vbs', '.go', '.rs', '.c', '.cc', '.cpp', '.h', '.hpp', '.java', '.kt', '.kts',
+              '.cs', '.swift', '.m', '.mm', '.scala', '.groovy', '.gradle', '.ex', '.exs'}
+CONFIG_DIRS = {'.vscode', '.claude', '.claude-plugin', '.devcontainer', '.cursor', '.gemini', '.husky',
+               '.githooks', 'hooks'}
 WHERE = {'ci': ' (CI only: it runs on the CI runner)', 'container': ' (it runs inside the container build)'}
 
 
@@ -523,27 +588,6 @@ def telemetry_vendor(token):
     word = re.match(r'[a-z]+', token.lower().lstrip('@')).group()
     return {'googletagmanager': 'google', 'gtag': 'google', 'new': 'newrelic', 'dd': 'datadog',
             'heapanalytics': 'heap'}.get(word, word)
-
-
-def md_code_only(s):
-    """Blank everything in Markdown except code blocks and code spans, keeping every offset."""
-    out, fence = [], None
-    for line in s.split('\n'):
-        m = FENCE_RE.match(line)
-        if fence is None and m:
-            fence = (m.group(1)[0], len(m.group(1)))
-            out.append(' ' * len(line))
-        elif fence is None:
-            keep = [' '] * len(line)
-            for c in re.finditer(r'`[^`\n]+`', line):
-                keep[c.start():c.end()] = line[c.start():c.end()]
-            out.append(''.join(keep))
-        elif m and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1] and not m.group(2):
-            fence = None
-            out.append(' ' * len(line))
-        else:
-            out.append(line)
-    return '\n'.join(out)
 
 
 def at(rel, suffix):
@@ -603,6 +647,7 @@ class Scan:
             return
         real = os.path.realpath(path)
         if real == self.top or real.startswith(self.top.rstrip(os.sep) + os.sep):
+            self.inner_link(rel, real)
             return
         ev = rel + ' -> ' + target
         if CRED_RE.search(target) or CRED_RE.search(real):
@@ -610,6 +655,24 @@ class Scan:
                          'anything that copies or uploads this folder takes the secret along')
         else:
             self.rep.add('MEDIUM', 'symlink-out', rel, None, ev, 'symlink to a path outside the folder; not followed')
+
+    def inner_link(self, rel, real):
+        """A symlink inside DIR. Tools read the target under the link's name, so the link gets the
+        name-based rules (package.json, .mcp.json, ...). The content rules ran on the target itself."""
+        low = rel.rsplit('/', 1)[-1].lower()
+        if os.path.isdir(real):
+            if low == '.git':
+                self.gitdir(real, rel)
+            elif low in CONFIG_DIRS:
+                self.rep.add('HIGH', 'auto-run', rel, None, rel + ' -> ' + os.path.relpath(real, self.top),
+                             'a config folder that is a symlink: tools read what it points to under this name')
+            return
+        data = read_bytes(real, MAX_TEXT)
+        if data is None or (b'\0' in data[:HEAD] and not data.startswith((b'\xff\xfe', b'\xfe\xff'))):
+            return
+        t = Text(decode(data))
+        ext = ext_of(low)
+        self.special(rel, low, ext, text_kind(low, ext, t.s), t)
 
     def file(self, path, rel, size):
         low = rel.rsplit('/', 1)[-1].lower()
@@ -620,17 +683,20 @@ class Scan:
             return
         self.files += 1
         self.bytes += size
-        utf16 = head.startswith((b'\xff\xfe', b'\xfe\xff'))
-        if b'\0' in head and not utf16:
+        if b'\0' in head and not head.startswith((b'\xff\xfe', b'\xfe\xff')):
             self.binary(rel, low, ext, head, size)
-            return
+            if not head.startswith(b'#!') and ext not in SCRIPT_EXT:
+                return
+            if not head.startswith(b'#!'):      # binary() reported the self-extracting script
+                self.rep.add('MEDIUM', 'hidden-code', rel, None, '', 'NUL bytes in a script or source file: '
+                             'a viewer can stop at them; tp-scan read past them')
         data = head if size <= HEAD else read_bytes(path, MAX_TEXT)
         if data is None:
             self.unreadable += 1
             return
         if size > MAX_TEXT:
             self.truncated += 1
-        t = Text(data.decode('utf-16' if utf16 else 'utf-8', 'replace'))
+        t = Text(decode(data))
         if ext in LANGS:
             self.langs[LANGS[ext]] += size
         kind = text_kind(low, ext, t.s)
@@ -647,6 +713,9 @@ class Scan:
         elif label or ext in EXEC_EXT:
             add('HIGH', 'binary', rel, None, label or ext + ' file',
                 'committed binary: nobody can review it, and running or loading it runs its code')
+        elif head.startswith(b'#!'):
+            add('HIGH', 'binary', rel, None, 'script with binary data after it',
+                'a self-extracting script: the part you can read unpacks and runs the part you cannot')
         elif head.startswith(b'\x00asm') or ext == '.wasm':
             add('MEDIUM', 'wasm', rel, None, 'WebAssembly module',
                 'compiled WebAssembly: nobody can review it; check what it is built from')
@@ -770,11 +839,18 @@ class Scan:
 
     def special(self, rel, low, ext, kind, t):
         """Files that a tool runs, or that tell a tool what to run."""
-        s, add, root = t.s, self.rep.add, '/' not in rel
+        add, root = self.rep.add, '/' not in rel
+        # The rules read keys as plain text, so undo the spellings that hide a key: JSON escapes
+        # ("post\\u0069nstall") and quoted TOML keys ("backend-path" = ...). Lines stay put.
+        s = unescape(t.s) if ext in ('.json', '.jsonc', '.json5', '.toml') else t.s
+        s = toml_keys(s) if ext == '.toml' else s
+        nt = t if s is t.s else Text(s)
 
         def each(rx, sev, rule, note):
             for m in re.finditer(rx, s):
-                add(sev, rule, rel, t.line_no(m.start()), t.evidence(m.start(), m.end()), note)
+                if kind in ('code', 'config') and nt.is_comment(m.start()):
+                    continue
+                add(sev, rule, rel, nt.line_no(m.start()), nt.evidence(m.start(), m.end()), note)
 
         def license_field(rx):
             m = re.search(rx, s)
@@ -801,14 +877,29 @@ class Scan:
                  'build hook): ' + build_note)
             license_field(r'(?m)^[ \t]*license[ \t]*=[ \t]*(?:"([^"\n]+)"|\'([^\'\n]+)\''
                           r'|\{[^}\n]*?\btext[ \t]*=[ \t]*"([^"\n]+)")')
+        elif low in ('sitecustomize.py', 'usercustomize.py'):
+            add('HIGH', 'install-hook', rel, None, '', 'once installed, Python imports %s at every start' % low)
+        elif low == 'gemfile' or ext == '.gemspec':
+            each(r'\b(?:system|exec|spawn|IO\.popen|Open3\.\w+|Net::HTTP|URI\.open)\b|\bopen-uri\b', 'HIGH',
+                 'install-hook', 'Bundler runs this Ruby file on bundle install')
+        elif low == 'pom.xml':
+            each(r'<artifactId>\s*(?:exec-maven-plugin|maven-antrun-plugin)\s*</artifactId>', 'HIGH', 'install-hook',
+                 'Maven runs the commands of this plugin during the build')
+        elif ext == '.nix':
+            each(r'\bshellHook\s*=', 'MEDIUM', 'dev-env', 'nix develop or nix-shell runs this shellHook')
+        elif low == 'hooks.json' and at(rel, 'hooks/hooks.json'):
+            each(r'"command"\s*:', 'HIGH', 'auto-run', 'Claude Code runs these hook commands once this plugin is enabled')
+        elif low == 'plugin.json' and at(rel, '.claude-plugin/plugin.json'):
+            each(r'"(?:hooks|mcpServers)"\s*:', 'HIGH', 'auto-run',
+                 'Claude Code runs these commands once this plugin is enabled')
         elif low == 'pdm_build.py':
             add('HIGH', 'install-hook', rel, None, '', 'pdm-backend runs pdm_build.py when it builds the package')
         elif low == 'build.rs':
             add('HIGH', 'install-hook', rel, None, '', 'cargo runs build.rs before it compiles the crate')
         elif low == 'cargo.toml':
-            each(r'(?m)^[ \t]*build[ \t]*=[ \t]*"[^"\n]+"', 'HIGH', 'install-hook',
+            each(r'(?m)^[ \t]*(?:package\.)?build[ \t]*=[ \t]*"[^"\n]+"', 'HIGH', 'install-hook',
                  'cargo runs this build script before it compiles the crate')
-            each(r'(?m)^[ \t]*proc-macro[ \t]*=[ \t]*true', 'HIGH', 'install-hook',
+            each(r'(?m)^[ \t]*(?:lib\.)?proc[-_]macro[ \t]*=[ \t]*true', 'HIGH', 'install-hook',
                  'a proc-macro crate runs its code at compile time')
             license_field(r'(?m)^[ \t]*license[ \t]*=[ \t]*"([^"\n]+)"')
         elif low == 'binding.gyp':
@@ -822,7 +913,7 @@ class Scan:
             each(r'(?m)^[ \t]*(?:node-options|script-shell|onload-script)[ \t]*=', 'HIGH', 'install-hook',
                  'npm reads this .npmrc in this folder and runs the code it names')
         elif low in ('.yarnrc.yml', '.yarnrc'):
-            each(r'(?m)^[ \t]*(?:yarnPath[ \t]*:|yarn-path[ \t])', 'MEDIUM', 'dev-env',
+            each(r'(?m)^[ \t]*(?:["\']?yarnPath["\']?[ \t]*:|["\']?yarn-path["\']?[ \t])', 'MEDIUM', 'dev-env',
                  'yarn runs this committed file for every yarn command in this folder')
         elif ext in ('.csproj', '.vbproj', '.fsproj', '.props', '.targets'):
             each(r'<Exec\s', 'HIGH', 'install-hook', 'MSBuild runs this command when you build')
@@ -855,21 +946,25 @@ class Scan:
     def npm(self, rel, t, root):
         try:
             data = json.loads(t.s.lstrip('\ufeff'))
-        except ValueError:
+        except (ValueError, RecursionError):
             data = None
         scripts = data.get('scripts') if isinstance(data, dict) else None
         if isinstance(scripts, dict):
-            self.npm_scripts[rel.rpartition('/')[0]] = {k: v for k, v in scripts.items() if isinstance(v, str)}
-            names = [k for k in NPM_NOTES if isinstance(scripts.get(k), str)]
+            scripts = {k: v for k, v in scripts.items() if isinstance(v, str)}
+            self.npm_scripts[rel.rpartition('/')[0]] = scripts
         else:
-            names = list(NPM_NOTES)        # not plain JSON: report any hook key
-        done = set()
-        for m in (re.finditer(r'"(%s)"\s*:\s*"' % '|'.join(names), t.s) if names else ()):
-            if m.group(1) not in done:
-                done.add(m.group(1))
-                self.rep.add('HIGH', 'install-hook', rel, t.line_no(m.start()), t.evidence(m.start(), m.end()),
-                             'the "%s" script: %s' % (m.group(1), NPM_NOTES[m.group(1)]),
-                             key=rel + ':' + m.group(1))
+            scripts = None              # not plain JSON: look for any hook key in the text
+        nt = Text(unescape(t.s))
+        for name in NPM_NOTES:
+            if scripts is not None and name not in scripts:
+                continue
+            m = re.search(r'"%s"\s*:\s*"' % name, nt.s)
+            if m is None and scripts is None:
+                continue
+            line = nt.line_no(m.start()) if m else None
+            ev = nt.evidence(m.start(), m.end()) if m else '"%s": "%s"' % (name, scripts[name])
+            self.rep.add('HIGH', 'install-hook', rel, line, ev, 'the "%s" script: %s' % (name, NPM_NOTES[name]),
+                         key=rel + ':' + name)
         if not isinstance(data, dict):
             return
         if data.get('gypfile') is True:
@@ -900,6 +995,8 @@ class Scan:
                 continue
             if name == 'core.fsmonitor' and value.lower() in ('', 'true', 'false', 'yes', 'no', 'on', 'off', '1', '0'):
                 continue
+            if name == 'core.hookspath' and value in ('/dev/null', 'NUL'):
+                continue                # hooks turned off, as the skill's clone command does
             self.rep.add('HIGH', 'auto-run', rel + '/config', n, line,
                          'git runs this command when you use git in this folder')
         hooks = os.path.join(path, 'hooks')
@@ -980,6 +1077,7 @@ README_NAME = re.compile(r'(?:readme|install(?:ation|ing)?|setup|contributing|ge
 SHELL_LANGS = {'', 'sh', 'bash', 'shell', 'zsh', 'ksh', 'fish', 'console', 'terminal', 'shell-session',
                'shellsession', 'sh-session', 'session', 'powershell', 'ps1', 'pwsh', 'ps', 'posh', 'cmd',
                'bat', 'batch', 'dosbatch', 'text', 'txt', 'plaintext', 'plain', 'none', 'nushell'}
+LIST_RE = re.compile(r'[ \t]{0,3}(?:[-*+]|\d{1,9}[.)])[ \t]')
 FENCE_RE = re.compile(r'[ \t]{0,3}(`{3,}|~{3,})[ \t]*([\w+#.-]*)')
 LIFECYCLE = (r'(?:install|setup|bootstrap|configure|init|prepare|build|deps|dependencies|env'
              r'|provision|postinstall|preinstall)')
@@ -1008,25 +1106,66 @@ HOOK_NOTES = {'pre-commit': 'installs the git hooks in .pre-commit-config.yaml; 
               'simple-git-hooks': 'installs the git hooks named in package.json; they run on every commit'}
 
 
+def md_lines(lines):
+    """Kind of each Markdown line: 'fence' (a fence line), 'shell' or 'code' (inside a fenced block
+    of shell or of another language), 'indented' (an indented code block) or 'prose'. An indented
+    line after a list item continues the item, so it stays prose."""
+    fence, indented, after_list, prev_blank = None, False, False, True
+    for line in lines:
+        m = FENCE_RE.match(line)
+        if fence is not None:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1] and not m.group(2):
+                fence = None
+                yield 'fence'
+            else:
+                yield 'shell' if fence[2] else 'code'
+            continue
+        if m:
+            fence, indented = (m.group(1)[0], len(m.group(1)), m.group(2).lower() in SHELL_LANGS), False
+            yield 'fence'
+            continue
+        if not line.strip():
+            prev_blank = True
+            yield 'prose'
+            continue
+        deep = line.startswith(('    ', '\t'))
+        indented = deep and (indented or (prev_blank and not after_list))
+        if not indented:
+            after_list = bool(LIST_RE.match(line)) or (deep and after_list)
+        prev_blank = False
+        yield 'indented' if indented else 'prose'
+
+
+def md_code_only(s):
+    """Blank everything in Markdown except code (fenced, indented, and code spans). Offsets stay put."""
+    lines = s.split('\n')
+    out = []
+    for line, kind in zip(lines, md_lines(lines)):
+        if kind in ('shell', 'code', 'indented'):
+            out.append(line)
+        elif kind == 'fence':
+            out.append(' ' * len(line))
+        else:
+            keep = [' '] * len(line)
+            for c in re.finditer(r'`[^`\n]+`', line):
+                keep[c.start():c.end()] = line[c.start():c.end()]
+            out.append(''.join(keep))
+    return '\n'.join(out)
+
+
 def command_segments(lines, ext):
     """(line number, text, inline) for each part of a README that reads as a shell command."""
-    md = ext in ('.md', '.markdown', '.mdx')
-    fence, block = None, False
-    for n, line in enumerate(lines, 1):
-        if md:
-            m = FENCE_RE.match(line)
-            if fence is None:
-                if m:
-                    fence = (m.group(1)[0], len(m.group(1)), m.group(2).lower() in SHELL_LANGS)
-                else:
-                    for span in re.findall(r'`([^`\n]+)`', line):
-                        yield n, span.strip(), True
-            elif m and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1] and not m.group(2):
-                fence = None
-            elif fence[2]:
+    if ext in MD_EXT:
+        for n, (line, kind) in enumerate(zip(lines, md_lines(lines)), 1):
+            if kind in ('shell', 'indented'):
                 yield n, line.strip(), False
-            continue
-        st = line.strip()                   # reStructuredText or plain text
+            elif kind == 'prose':
+                for span in re.findall(r'`([^`\n]+)`', line):
+                    yield n, span.strip(), True
+        return
+    block = False                       # reStructuredText or plain text
+    for n, line in enumerate(lines, 1):
+        st = line.strip()
         m = re.match(r'\.\.\s+(?:code-block|code|sourcecode)::\s*(\S*)', st)
         if m:
             block = m.group(1).lower() in SHELL_LANGS
@@ -1354,7 +1493,7 @@ def main(argv):
     sc.finish()
     text, code = render(top, sc, info_lines(sc, top, time.time()), opts)
     try:
-        sys.stdout.write(text + '\n')
+        sys.stdout.buffer.write((text + '\n').encode('utf-8', 'replace'))
         sys.stdout.flush()
     except BrokenPipeError:
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
