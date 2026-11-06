@@ -22,6 +22,10 @@ case "$1 $2" in
   "pr merge")
     printf 'cwd=%s args=%s\n' "$PWD" "$*" >> "$FAKE/merge.log"
     if [ -n "${FAKE_MERGE_FAIL:-}" ]; then echo "GraphQL: Head branch was modified" >&2; exit 1; fi
+    case "$*" in *--disable-auto*) printf 'disable-auto\n' >> "$FAKE/api.log"; exit 0 ;; esac
+    if [ -n "${FAKE_AUTO_MERGE:-}" ]; then   # GitHub queues an auto-merge instead of merging
+      python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['autoMergeRequest']={'enabledAt':'x'}; json.dump(d,open(p,'w'))" "$FAKE/pr.json"; exit 0
+    fi
     python3 - "$FAKE/pr.json" <<'PY'
 import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d["state"]="MERGED"; d["mergeCommit"]={"oid":"abcdef0123456789"}
@@ -36,7 +40,11 @@ PY
     sha=$(git -C "$FAKE_ORIGIN" rev-parse -q --verify refs/heads/feat) || exit 1
     echo "{\"object\":{\"sha\":\"$sha\"}}" ;;
   "api repos/o/r") echo '{"node_id":"R_fake"}' ;;
-  "api graphql")    # updateRefs: compare-and-delete on the bare origin, like GitHub's beforeOid
+  "api graphql")
+    case "$*" in *mergeQueue*)
+      if [ -n "${FAKE_MERGE_QUEUE:-}" ]; then echo '{"data":{"repository":{"mergeQueue":{"id":"MQ_1"}}}}'; else echo '{"data":{"repository":{"mergeQueue":null}}}'; fi
+      exit 0 ;; esac
+    # updateRefs: compare-and-delete on the bare origin, like GitHub's beforeOid
     before=""; for a in "$@"; do case $a in before=*) before=${a#before=} ;; esac; done
     printf 'graphql before=%s\n' "$before" >> "$FAKE/api.log"
     if git -C "$FAKE_ORIGIN" update-ref -d refs/heads/feat "$before" 2>/dev/null; then echo '{"data":{"updateRefs":{"clientMutationId":null}}}'
@@ -126,6 +134,10 @@ setup MERGED; run 7
 check "already merged: no gate, no merge, still cleans up" '[ $rc -eq 0 ] && [ ! -e "$FAKE/merge.log" ] && [ ! -e "$FAKE/prbots.log" ] && [ ! -d "$W" ]'
 setup OPEN true; FAKE_VERDICT=CLEAN run 7
 check "a draft: exit 1" '[ $rc -eq 1 ] && [ ! -e "$FAKE/merge.log" ]'
+setup; FAKE_VERDICT=CLEAN FAKE_MERGE_QUEUE=1 run 7
+check "a base branch with a merge queue is refused before any merge" '[ $rc -eq 1 ] && [ ! -e "$FAKE/merge.log" ]'
+setup; FAKE_VERDICT=CLEAN FAKE_AUTO_MERGE=1 PRLAND_CONFIRM_WAIT=1 run 7
+check "a queued auto-merge is cancelled and nothing is cleaned" '[ $rc -eq 2 ] && grep -q disable-auto "$FAKE/api.log" && [ -d "$W" ] && remote_has_feat'
 setup; FAKE_VERDICT=CLEAN FAKE_MERGE_FAIL=1 run 7
 check "a failed merge: exit 2 and nothing cleaned" '[ $rc -eq 2 ] && [ -d "$W" ] && remote_has_feat'
 setup; FAKE_VERDICT=CLEAN FAKE_MOVE_REMOTE=1 run 7

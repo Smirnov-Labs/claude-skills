@@ -39,7 +39,9 @@ import sys
 import tempfile
 import time
 
-PR_FIELDS = "number,title,state,isDraft,headRefName,headRefOid,baseRefName,url,isCrossRepository,mergeCommit"
+PR_FIELDS = ("number,title,state,isDraft,headRefName,headRefOid,baseRefName,url,isCrossRepository,mergeCommit,"
+             "autoMergeRequest")
+CONFIRM_WAIT = float(os.environ.get("PRLAND_CONFIRM_WAIT", "18"))   # seconds to wait for MERGED
 BOTS = {"codex", "sar", "ci", "all"}
 DISPOSABLE = re.compile(r"(^|/)(node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|"
                         r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.cache|\.parcel-cache|coverage|"
@@ -255,6 +257,14 @@ def main():
                   % (codex, sar, ",".join(ci.get("failing") or []) or "none", ",".join(ci.get("pending") or []) or "none"))
             return 1
         say("gate", "CLEAN @%s%s" % (head[:7], " (--need %s)" % a.need if a.need else ""))
+        owner, name = repo.split("/", 1)
+        q = run(["gh", "api", "graphql", "-f", "query=query($o:String!,$n:String!,$b:String!){repository(owner:$o,"
+                 "name:$n){mergeQueue(branch:$b){id}}}", "-f", "o=" + owner, "-f", "n=" + name, "-f", "b=" + base],
+                cwd=neutral)
+        if q.returncode != 0 or '"mergeQueue":null' not in q.stdout.replace(" ", ""):
+            say("gate", "%s uses a merge queue (or the check failed): prland only merges directly, so merge it "
+                        "through the queue yourself" % base)
+            return 1
 
         subject = a.subject or p["title"]
         if not re.search(r"\(#%s\)\s*$" % n, subject):
@@ -270,13 +280,20 @@ def main():
                 say("merge", "FAILED: " + (r.stderr or r.stdout).strip()[:400])
                 return 2
             say("merge", "%s · %s" % (a.method, subject if a.method != "rebase" else "rebased"))
-            for _ in range(6):
+            deadline = time.time() + CONFIRM_WAIT
+            while True:
                 p = pr_view(pr, repo, neutral)
-                if p["state"] == "MERGED":
+                if p["state"] == "MERGED" or time.time() >= deadline:
                     break
-                time.sleep(3)
+                time.sleep(min(3, max(0.2, CONFIRM_WAIT / 6)))
             if p["state"] != "MERGED":
-                say("confirm", "GitHub still says %s (a merge queue, or a failure): check %s" % (p["state"], p["url"]))
+                if p.get("autoMergeRequest"):
+                    off = run(["gh", "pr", "merge", str(n), "-R", repo, "--disable-auto"], cwd=neutral)
+                    say("confirm", "GitHub queued an auto-merge instead of merging; %s. Nothing merged: check %s"
+                        % ("prland cancelled it" if off.returncode == 0 else "cancelling it FAILED, disable it by hand",
+                           p["url"]))
+                else:
+                    say("confirm", "GitHub still says %s: check %s" % (p["state"], p["url"]))
                 return 2
             say("merged", ((p.get("mergeCommit") or {}).get("oid") or "?")[:10])
             merged_now = True

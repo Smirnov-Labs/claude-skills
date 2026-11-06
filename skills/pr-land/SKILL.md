@@ -56,6 +56,7 @@ Report the merge SHA, plus anything it left in place and why.
 
 - Merge without a CLEAN verdict for this repo, this PR and its current head SHA. It reads `prbots --json`, so text in a check name cannot fake the verdict. A misspelled `--need` is an error, not an empty gate.
 - Merge a draft, or a head that moved after the check (`--match-head-commit`).
+- Merge through a merge queue: a base branch with one is refused, and an auto-merge that GitHub queued instead of merging is cancelled.
 - Delete the remote branch if someone pushed to it after the merge. The delete is GitHub's compare-and-delete (`updateRefs` with `beforeOid` set to the PR head) on that exact repository, so no git URL rewrite can redirect it.
 - Act on a PR from another host or repo: a URL's host must match the host `gh` uses, and the PR URL GitHub returns must name the requested repo and number.
 - Remove a worktree with `--force`, or one with changed tracked files, untracked files, commits past the PR head, files marked assume-unchanged or skip-worktree, or ignored files other than build and cache output (`.env` and notes stay). It reads these with `git ls-files`, so `status.showUntrackedFiles` cannot hide them.
