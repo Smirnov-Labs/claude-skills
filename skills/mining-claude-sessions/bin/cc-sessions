@@ -40,6 +40,8 @@ KV = re.compile(r"(?i)(" + SENSITIVE + r"(?:\\?[\"'])?(?:\s*[:=]\s*|[ \t]+)(?:be
                 r"((?!<redacted>|<masked>|<long>)[^\s\"'&,;)\\]{6,})")     # never a value masked already
 # "Password: rose,pw990" in prose or YAML: a label, a colon and a space, then the whole word is the secret
 LABELLED = re.compile(r"(?i)\b(" + SENSITIVE + r")(\s*:[ \t]+)(?!<redacted>|<masked>|<long>)([^\s'\"]+)")
+# username=a&password=rose,pw1: a form or query field, to the next &, space, quote or #
+FORMKV = re.compile(r"(?i)(?<![\w.-])(" + SENSITIVE + r"=)(?!<redacted>|<masked>|<long>)([^&\s'\"#]+)")
 LONG = re.compile(r"[A-Za-z0-9+_\-]{32,}={0,2}")
 SUDO_S = r"(?<![\w.-])sudo\b[^|;&\n]*?\s(?:-[A-Za-z]*S[A-Za-z]*|--stdin)\b"   # -S, -kS, --stdin, /usr/bin/sudo
 ARGS = r"((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^|;&\n'\"\\])*?)"           # one command: quoted pipes stay inside
@@ -48,7 +50,7 @@ SUDO_PIPE = re.compile(r"(\b(?:printf|echo)\b)" + ARGS + r"(\|\s*(?:command\s+)?
 SUDO = re.compile(SUDO_S)
 HERE = re.compile(r"(" + SUDO_S + r"[^|;&\n]*?<<<\s*)" + WORDV)      # only in the sudo -S command itself
 SSHPASS = re.compile(r"(\bsshpass\b[^|;&\n]*?\s-p\s*)" + WORDV)
-COOKIE = re.compile(r"(?i)\b(?:(?:set-)?cookie\s*[:=]|(?:proxy-)?authorization\s*:)\s*")   # whole header value
+COOKIE = re.compile(r"(?i)\b(?:(?:set-)?cookie|(?:proxy-)?authorization)\s*:\s*")   # a header's whole value
 URLCRED = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@'\"]+:)([^@\s/'\"]+)(@)")          # scheme://user:PASS@
 HTTP_SPAN = re.compile(r"(?<![\w./-])(curl|wget|https?|xh)\b((?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^|;&\n'\"\\])*)")
 RAWWORD = re.compile(r"(?:'[^'\n]*'|\"(?:[^\"\\\n]|\\.)*\"|\\.|[^\s'\"\\])+")
@@ -103,7 +105,7 @@ def mask_cookies(s):
     out, pos = [], 0
     for m in COOKIE.finditer(s):
         if (m.start() < pos or s[max(0, m.start() - 2):m.start()] == "--"
-                or re.match(r"<redacted>(?:['\"]|\n|$)", s[m.end():])):
+                or re.match(r"<redacted>(?:['\"]|\n|$)|[ \t]*(?:\n|$)", s[m.end():])):
             continue                                     # --cookie= is an option; a header masked whole stays
         line_start = s.rfind("\n", 0, m.start()) + 1
         quote = open_quote(s[line_start:m.start()])
@@ -205,6 +207,7 @@ def mask_text(s):
     s = URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s)
     s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
     s = LABELLED.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", s)
+    s = FORMKV.sub(lambda m: m.group(1) + "<redacted>", s)
     s = PFX.sub("<redacted>", s)
     return KV.sub(lambda m: m.group(1) + "<redacted>", s)
 
@@ -340,6 +343,7 @@ def mask(s):
     for v in LITERALS:
         if v in s:
             s = s.replace(v, "<masked>")
+    s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)   # {"Cookie": "x"}: before the word pass splits it
     if len(s) <= SHELL_MAX or SHELL_HINT.search(s):
         whole = mask_shell(s)
         s = whole if whole is not None else "\n".join(mask_shell(line) or line for line in s.split("\n"))
@@ -348,6 +352,7 @@ def mask(s):
     s = URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s)
     s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
     s = LABELLED.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", s)
+    s = FORMKV.sub(lambda m: m.group(1) + "<redacted>", s)
     s = PFX.sub("<redacted>", s)
     s = KV.sub(lambda m: m.group(1) + "<redacted>", s)
 

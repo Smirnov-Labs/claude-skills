@@ -133,6 +133,9 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "m5", "name": "Bash", "input": {"command": "echo 'Password: rose,lblpw823 and token: summer&lblpw824 and secret: a;b\\\\lblpw825' > notes.txt"}},
         {"type": "tool_use", "id": "m6", "name": "Bash", "input": {"command": "echo 'Authorization: Bearer hdrpw826abcdef'; echo 'Cookie: session=ckpw827; refresh=ckpw828'"}},
         {"type": "tool_use", "id": "m7", "name": "Bash", "input": {"command": "echo \"private\\\"client curl\" done"}},
+        {"type": "tool_use", "id": "m8", "name": "Bash", "input": {"command": "echo '{\"Cookie\": \"session=jsonpw829\", \"Authorization\": \"Basic jsonpw830xyz\"}'; echo {\"Cookie\": \"session=jsonpw834\"}"}},
+        {"type": "tool_use", "id": "m9", "name": "Bash", "input": {"command": "curl -d 'username=alice&password=rose,formpw831' https://example.test/login; curl -d 'password=orchid,formpw832' https://example.test"}},
+        {"type": "tool_use", "id": "n1", "name": "Bash", "input": {"command": "COOKIE=session=asgnpw833 curl https://keepasgn.example; git status"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -236,6 +239,9 @@ check "a quoted executable name is still read as curl" '! grep -q quotedpw811 "$
 check "a continuation inside a credential joins it, as the shell does" '! grep -q conpw812 "$T/ev.jsonl"'
 check "a quoted separator in a commented curl line does not end its mask" '! grep -q -E "qsepw820|qsepw821" "$T/ev.jsonl"'
 check "a sudo -S here-string is masked, and only that one" '! grep -q herepw822 "$T/ev.jsonl" && grep -q keepherestring "$T/ev.jsonl"'
+check "a JSON Cookie or Authorization field with a space after the colon is masked" '! grep -q -E "jsonpw829|jsonpw830|jsonpw834" "$T/ev.jsonl"'
+check "a form password with commas, first or after another field, is masked whole" '! grep -q -E "formpw831|formpw832" "$T/ev.jsonl"'
+check "a COOKIE= assignment keeps the commands after it" '! grep -q asgnpw833 "$T/ev.jsonl" && grep -q -F "curl https://keepasgn.example; git status" "$T/ev.jsonl"'
 check "a quoted header outside an HTTP command is masked whole" '! grep -q -E "hdrpw826|ckpw827|ckpw828" "$T/ev.jsonl"'
 check "a literal stays masked in a nested word that names a program" '! grep -q -F "private\\\\\\\"client curl" "$T/ev.jsonl"'
 check "a labelled password keeps no part of itself (commas, &, ; and backslashes)" '! grep -q -E "lblpw823|lblpw824|lblpw825|summer|rose," "$T/ev.jsonl"'
