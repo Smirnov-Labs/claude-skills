@@ -162,7 +162,7 @@ _DECODER = (r'(?:b64decode|b32decode|b16decode|a85decode|b85decode|decodebytes|d
 _TO_SHELL = (_PIPE + r'\s*(?:(?:sudo|doas)(?:\s+-\S+)*\s+)?(?:[\w./-]*/)?'
              r'(?:(?:ba|z|k|da)?sh|python[0-9.]*|perl|ruby|node)\b')
 DECODE_RE = re.compile(
-    _EXEC + r'\s*\([^\n;]{0,300}?' + _DECODER
+    _EXEC + r'\s*\([^;)]{0,300}?' + _DECODER
     + r'|\b(?:base64|openssl|xxd|gunzip|zcat|uudecode|gpg)\b' + _W + r'{0,300}' + _TO_SHELL
     + r'|\b(?:eval|(?:ba|z|k|da)?sh\s+-c)\s+["\']?\$\(\s*(?:curl|wget|fetch|base64'
       r'|(?:echo|printf)\s[^)\n]{0,300}?base64)'
@@ -694,6 +694,8 @@ class Scan:
         if data is None:
             self.unreadable += 1
             return
+        if b'\0' not in head and b'\0' in data and head.startswith(b'#!'):   # a long readable header first
+            self.binary(rel, low, ext, head, size)
         if size > MAX_TEXT:
             self.truncated += 1
         t = Text(decode(data))
@@ -880,7 +882,8 @@ class Scan:
         elif low in ('sitecustomize.py', 'usercustomize.py'):
             add('HIGH', 'install-hook', rel, None, '', 'once installed, Python imports %s at every start' % low)
         elif low == 'gemfile' or ext == '.gemspec':
-            each(r'\b(?:system|exec|spawn|IO\.popen|Open3\.\w+|Net::HTTP|URI\.open)\b|\bopen-uri\b', 'HIGH',
+            each(r'\b(?:system|exec|spawn|IO\.popen|Open3\.\w+|Net::HTTP|URI\.open)\b|\bopen-uri\b'
+                 r'|%x\s*[({\[<|]|`(?!\s*git ls-files(?:[ \t]+-[\w-]+|[ \t]+[\w./*-]+)*\s*`)[^`\n]+`', 'HIGH',
                  'install-hook', 'Bundler runs this Ruby file on bundle install')
         elif low == 'pom.xml':
             each(r'<artifactId>\s*(?:exec-maven-plugin|maven-antrun-plugin)\s*</artifactId>', 'HIGH', 'install-hook',

@@ -20,7 +20,7 @@ Answer "is this useful to us?" without running anything first.
 
 | Step | Command |
 |---|---|
-| Clone, with git hooks off | `git clone --config core.hooksPath=/dev/null --filter=blob:none <url> <dir>` |
+| Clone, with no hooks or filters | `env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=0 git -c core.hooksPath=/dev/null clone --filter=blob:none <url> <dir>` |
 | Scan | `tp-scan <dir>`; `--all` also scans `node_modules` and `vendor` |
 | Releases | `gh release list -R <owner>/<repo> -L 10` |
 | Open issues, last push, license | `gh repo view <owner>/<repo> --json issues,pushedAt,licenseInfo,isArchived` |
@@ -40,7 +40,9 @@ Answer "is this useful to us?" without running anything first.
 | 2 | Not a directory, or unreadable |
 | 3 | Usage error |
 
-tp-scan only reads files and matches patterns. Exit 0 does not prove that a tool is safe.
+tp-scan only reads files and matches patterns. Exit 0 does not prove that a tool is safe. It misses TOML inline tables and dotted keys, and comment syntax per language. It also misses fenced code inside list items, and content reached only through a symlink. Read the install and build files yourself.
+
+The clone command ignores your own git config, including config set in the environment. So no filter or hook from it runs on the repo's files. A private repo clones over SSH; https credential helpers live in the config it skips.
 
 ## Untrusted content
 
