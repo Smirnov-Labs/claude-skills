@@ -131,6 +131,8 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "m3", "name": "Bash", "input": {"command": "sudo -S cat <<<herepw822; grep foo <<<\"keepherestring\""}},
         {"type": "tool_use", "id": "m4", "name": "Bash", "input": {"command": "echo \"private\\\"client\" done"}},
         {"type": "tool_use", "id": "m5", "name": "Bash", "input": {"command": "echo 'Password: rose,lblpw823 and token: summer&lblpw824 and secret: a;b\\\\lblpw825' > notes.txt"}},
+        {"type": "tool_use", "id": "m6", "name": "Bash", "input": {"command": "echo 'Authorization: Bearer hdrpw826abcdef'; echo 'Cookie: session=ckpw827; refresh=ckpw828'"}},
+        {"type": "tool_use", "id": "m7", "name": "Bash", "input": {"command": "echo \"private\\\"client curl\" done"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -234,6 +236,8 @@ check "a quoted executable name is still read as curl" '! grep -q quotedpw811 "$
 check "a continuation inside a credential joins it, as the shell does" '! grep -q conpw812 "$T/ev.jsonl"'
 check "a quoted separator in a commented curl line does not end its mask" '! grep -q -E "qsepw820|qsepw821" "$T/ev.jsonl"'
 check "a sudo -S here-string is masked, and only that one" '! grep -q herepw822 "$T/ev.jsonl" && grep -q keepherestring "$T/ev.jsonl"'
+check "a quoted header outside an HTTP command is masked whole" '! grep -q -E "hdrpw826|ckpw827|ckpw828" "$T/ev.jsonl"'
+check "a literal stays masked in a nested word that names a program" '! grep -q -F "private\\\\\\\"client curl" "$T/ev.jsonl"'
 check "a labelled password keeps no part of itself (commas, &, ; and backslashes)" '! grep -q -E "lblpw823|lblpw824|lblpw825|summer|rose," "$T/ev.jsonl"'
 check "a mask-file literal hidden by shell escaping is masked" '! grep -q -F "private\\\\\\\"client" "$T/ev.jsonl" && ! grep -q -F "private\\\"client" "$T/ev.jsonl"'
 check "a key word with no separator masks nothing (nopasswd, then visudo; TOKENIZERS_)" 'grep -q -F "nopasswd\\npasswd -l bob; TOKENIZERS_PARALLELISM=1 nproc" "$T/ev.jsonl" && ! grep -q ghtokpw813 "$T/ev.jsonl"'
@@ -263,7 +267,7 @@ PY
 python3 - "$T/slow/-work-slow/66666666-7777-8888-9999-000000000000.jsonl" <<'PY'
 import json, sys
 recs = [{"type": "user", "cwd": "/work/slow", "timestamp": "2026-11-04T09:00:00Z", "origin": {"kind": "human"},
-         "message": {"content": "a" * 200000}}]
+         "message": {"content": "a" * 200000 + " " + "echo " * 20000}}]
 open(sys.argv[1], "w").write("\n".join(json.dumps(r) for r in recs) + "\n")
 PY
 out=$(timeout 20 "$TOOL" stats --root "$T/slow" 2>&1); rc=$?

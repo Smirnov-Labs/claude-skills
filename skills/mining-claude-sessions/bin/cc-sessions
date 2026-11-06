@@ -102,8 +102,9 @@ def mask_cookies(s):
     end of the line."""
     out, pos = [], 0
     for m in COOKIE.finditer(s):
-        if m.start() < pos or s[max(0, m.start() - 2):m.start()] == "--" or s.startswith("<redacted>", m.end()):
-            continue                                     # --cookie= is an option; a masked value stays as it is
+        if (m.start() < pos or s[max(0, m.start() - 2):m.start()] == "--"
+                or re.match(r"<redacted>(?:['\"]|\n|$)", s[m.end():])):
+            continue                                     # --cookie= is an option; a header masked whole stays
         line_start = s.rfind("\n", 0, m.start()) + 1
         quote = open_quote(s[line_start:m.start()])
         end = close_quote(s, m.end(), quote) if quote else -1
@@ -158,7 +159,8 @@ def load_mask_file(path):
 def mask_regex(line):
     """The regex layer for one line: it catches commands the shell pass cannot see as commands (in prose, comments,
     or text that does not parse), after the shell pass has done what it can."""
-    line = SUDO_PIPE.sub(lambda m: m.group(1) + " <redacted> " + m.group(3), line)
+    if SUDO.search(line):                              # else SUDO_PIPE would rescan from every echo
+        line = SUDO_PIPE.sub(lambda m: m.group(1) + " <redacted> " + m.group(3), line)
     line = HERE.sub(lambda m: m.group(1) + "<redacted>", line)
     line = SSHPASS.sub(lambda m: m.group(1) + "<redacted>", line)
     return HTTP_SPAN.sub(lambda m: m.group(1) + mask_opts(m.group(2), m.group(1)), line)
@@ -197,7 +199,9 @@ def mask_opts(args, prog):
 
 
 def mask_text(s):
-    """The key=value and token patterns alone, for one unquoted shell word."""
+    """The header, key=value and token patterns, for one shell word. Headers go first: a label pass would mask only
+    the first word of 'Authorization: Bearer x'."""
+    s = mask_cookies(s)
     s = URLCRED.sub(lambda m: m.group(1) + "<redacted>" + m.group(3), s)
     s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
     s = LABELLED.sub(lambda m: m.group(1) + m.group(2) + "<redacted>", s)
@@ -310,7 +314,7 @@ def mask_shell(s, depth=0):
                 inner = inner.replace(v, "<masked>")
         if depth < 3 and " " in text and SHELL_HINT.search(text):    # bash -c '...', ssh host '...', $(...)
             inner = re.sub(r"\$\(([^()]*)\)", lambda m: "$(" + (mask_shell(m.group(1), depth + 1) or m.group(1)) + ")",
-                           text) if text.startswith("$(") or "=$(" in text else (mask_shell(text, depth + 1) or text)
+                           inner) if inner.startswith("$(") or "=$(" in inner else (mask_shell(inner, depth + 1) or inner)
         if inner != text or src != text:               # nested, or a secret that shell escaping hid
             plain = mask_text(src)
             if inner == text and plain != src:          # the patterns see it in the source: keep the source's quoting
