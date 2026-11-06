@@ -5,7 +5,12 @@ description: Use when you want an independent second opinion from Codex on a pla
 
 # Codex review
 
-`codex-review` runs one read-only Codex review and prints a verdict. Hand-built `codex exec` lines kept failing in the same ways: stderr thrown away, so a crash read as an empty review; stale model pins; `--help` probes to rediscover flags; sleep loops to wait for the output.
+`codex-review` runs one read-only Codex review and prints a verdict. Hand-built `codex exec` lines kept failing in the same ways:
+
+- stderr went to `/dev/null`, so a crash read as an empty review;
+- the model pins went stale;
+- agents ran `--help` to find the flags again;
+- sleep loops waited for the output.
 
 ## Run it
 

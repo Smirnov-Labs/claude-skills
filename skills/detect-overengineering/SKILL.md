@@ -101,6 +101,8 @@ EOF
 codex-review prompt "$d/prompt.md" --out "$d"
 ```
 
+`codex-review` is on PATH where skillsync installed the skills. In a plugin install, run it from this skill's base directory as `../codex-review/bin/codex-review`.
+
 Run it in the background: on a long plan it takes several minutes. `codex-review` comes from the codex-review skill, which holds the model pin.
 
 Codex's findings are in `$d/review.md`. Exit 2 means there is no usable answer: read the log tail it prints, and say so in the report. A stale model pin falls back on its own, with a note.

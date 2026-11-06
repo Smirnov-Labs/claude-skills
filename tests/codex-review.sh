@@ -34,6 +34,13 @@ case $FAKE_MODE in
   empty)    : > "$outf" ;;
   unparsed) printf 'Looks fine to me overall.\n' > "$outf" ;;
   hang)     sleep 30 ;;
+  prose)    printf '## Verdict\nFINDINGS\n\nThe merge runs before the check, which loses work.\n' > "$outf" ;;
+  incomplete) printf '## Verdict\nINCOMPLETE\n' > "$outf" ;;
+  contraction) printf "I can't review because the files are unavailable.\n" > "$outf" ;;
+  curly)    printf 'I can\xe2\x80\x99t review this diff.\n' > "$outf" ;;
+  leftover) if [ -n "$model" ]; then printf '## Verdict\nCLEAN\n' > "$outf"; echo "The '$model' model is not supported when using Codex with a ChatGPT account." >&2; exit 1; fi ;;
+  notmodel) echo "error: sandbox mode 'x' is not supported here" >&2; exit 1 ;;
+  hangchild) bash -c 'trap "" TERM; sleep 60' & echo $! > "$FAKE_CHILD"; sleep 60 ;;
   *)        echo "fake codex: unknown FAKE_MODE=$FAKE_MODE" >&2; exit 9 ;;
 esac
 EOF
@@ -76,6 +83,23 @@ check "an unparsed review exits 1" '[ $rc -eq 1 ] && [[ $out == *"UNPARSED"* ]]'
 start=$(date +%s); FAKE_MODE=hang run plan plan.md --out "$T/o8" --timeout 2s; took=$(( $(date +%s) - start ))
 check "a hang times out and exits 2" '[ $rc -eq 2 ] && [[ $out == *"timed out"* ]] && [ $took -lt 15 ]'
 
+FAKE_MODE=prose run plan plan.md --out "$T/r1"
+check "FINDINGS with prose findings is UNPARSED (1), never CLEAN" '[ $rc -eq 1 ] && [[ $out == *"UNPARSED"* ]]'
+FAKE_MODE=incomplete run plan plan.md --out "$T/r2"
+check "an unknown verdict is UNPARSED (1)" '[ $rc -eq 1 ] && [[ $out == *"UNPARSED"* ]]'
+FAKE_MODE=contraction run plan plan.md --out "$T/r3"
+check "\"can't review\" exits 2 in review mode" '[ $rc -eq 2 ]'
+FAKE_MODE=contraction run prompt plan.md --out "$T/r4"
+check "\"can't review\" exits 2 in prompt mode" '[ $rc -eq 2 ]'
+FAKE_MODE=curly run plan plan.md --out "$T/r5"
+check "a curly-apostrophe refusal exits 2" '[ $rc -eq 2 ]'
+FAKE_MODE=leftover run plan plan.md --out "$T/r6"
+check "the retry cannot reuse the failed attempt's review" '[ $rc -eq 2 ] && [[ $out == *"wrote no review"* ]]'
+: > "$FAKE_LOG"; FAKE_MODE=notmodel run plan plan.md --out "$T/r7"
+check "a non-model \"not supported\" error does not retry" '[ $rc -eq 2 ] && [ "$(wc -l < "$FAKE_LOG")" -eq 1 ]'
+export FAKE_CHILD=$T/child.pid; FAKE_MODE=hangchild run plan plan.md --out "$T/r8" --timeout 2s
+check "a timeout also kills a child that ignores SIGTERM" '[ $rc -eq 2 ] && ! kill -0 "$(cat "$FAKE_CHILD")" 2>/dev/null'
+
 FAKE_MODE=crash run plan plan.md --dry-run --out "$T/o9"
 check "--dry-run never calls codex" '[ $rc -eq 0 ] && [ -s "$T/o9/prompt.md" ] && [ ! -e "$T/o9/review.md" ]'
 
@@ -102,6 +126,12 @@ FAKE_MODE=clean run diff --out "$T/o12"
 check "diff defaults to origin/main...HEAD" '[ $rc -eq 0 ] && [[ $out == *"origin/main...HEAD"* ]]'
 check "the diff prompt has the commit and the change" 'grep -q "feat: add a line" "$T/o12/prompt.md" && grep -q "+new line" "$T/o12/prompt.md"'
 check "inside a repo there is no --skip-git-repo-check" '! grep -q -- "--skip-git-repo-check" "$T/o12/codex.log"'
+mkdir -p "$WD/sub"; echo b > "$WD/sub/b.txt"; git -C "$WD" add -A; git -C "$WD" commit -qm "feat: sub file"
+git -C "$WD" config diff.relative true
+out=$(cd "$WD/sub" && FAKE_MODE=clean "$TOOL" diff --out results 2>&1); rc=$?
+check "diff.relative and a subdirectory do not narrow the diff" '[ $rc -eq 0 ] && grep -q "+new line" "$WD/sub/results/prompt.md"'
+check "a relative --out is the same dir for the script and codex" '[ -s "$WD/sub/results/review.md" ]'
+git -C "$WD" config --unset diff.relative
 echo "uncommitted" >> "$WD/a.txt"
 FAKE_MODE=clean run diff main --out "$T/o13"
 check "a single ref means REF..HEAD, never the working tree" '[ $rc -eq 0 ] && ! grep -q "uncommitted" "$T/o13/prompt.md"'

@@ -4,7 +4,7 @@ description: Get a second opinion on your current implementation plan by sending
 ---
 
 <SUBAGENT-STOP>
-If you were dispatched as a subagent to execute a specific delegated task, do NOT follow this skill — skip it and return to the task you were given.
+If you were dispatched as a subagent to execute a specific delegated task, do NOT follow this skill. Skip it and return to the task you were given.
 </SUBAGENT-STOP>
 
 # Codex Plan Review
@@ -42,6 +42,8 @@ Run the review with `codex-review`, from the codex-review skill, in the backgrou
 codex-review plan "$PLAN" --context CLAUDE.md
 ```
 
+`codex-review` is on PATH where skillsync installed the skills. In a plugin install, run it from this skill's base directory as `../codex-review/bin/codex-review`.
+
 Add `--focus "..."` for what to check hardest. A high-effort review of a long plan takes several minutes, and you are told when it exits. It prints the review path and a verdict line. Exit 1 means Critical or Major findings. Exit 2 means there is no usable review: read the log tail it prints.
 
 ### 4. Present the Review
@@ -57,7 +59,7 @@ After Codex returns its review:
 If the user wants to update the plan:
 
 1. Edit the plan file with the agreed changes
-2. Optionally re-run Codex for another pass (ask first — avoid infinite loops)
+2. Optionally run Codex again for another pass. Ask first, so the review does not loop.
 
 ## Model
 
