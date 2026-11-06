@@ -140,7 +140,7 @@ PIPE_RE = re.compile(
     + r'|\b(?:(?:ba|z|k|da)?sh|python[0-9.]*|node|perl|ruby|php)\s+-[ce]\s+["\']?\$\(\s*(?:curl|wget)\b'
     + r'|\b(?:curl|wget)[ \t][^\n&;|]{0,300}?(?:(?:https?|ftp)://|\$\{?\w)[^\n]{0,300}?(?:&&|;)[ \t]*'
       r'(?:(?:sudo|doas)[ \t]+(?:-\S+[ \t]+)*)?'
-      r'(?:(?:ba|z|k|da)?sh[ \t]+\S|chmod[ \t]+\+x\b|\./\S)'
+      r'(?:(?:[\w./-]*/)?(?:(?:ba|z|k|da)?sh|python[0-9.]*|node|perl|ruby|php)[ \t]+\S|chmod[ \t]+\+x\b|\./\S)'
     + r'|(?i:\[scriptblock\]::create\s*\([^\n]{0,120}?(?:\biwr\b|\birm\b|invoke-webrequest|invoke-restmethod'
       r'|downloadstring))'
     + r'|(?i:\b(?:iex|invoke-expression)\b[^\n]{0,60}?(?:\biwr\b|\birm\b|invoke-webrequest'
@@ -918,6 +918,13 @@ class Scan:
         elif low in ('.yarnrc.yml', '.yarnrc'):
             each(r'(?m)^[ \t]*(?:["\']?yarnPath["\']?[ \t]*:|["\']?yarn-path["\']?[ \t])', 'MEDIUM', 'dev-env',
                  'yarn runs this committed file for every yarn command in this folder')
+            each(r'(?m)^[ \t]*["\']?plugins["\']?[ \t]*:', 'HIGH', 'install-hook',
+                 'yarn loads these plugins before it installs anything: read each plugin file it names')
+        elif low in ('.pnpmfile.cjs', '.pnpmfile.mjs', 'pnpmfile.js', '.pnpmfile.js'):
+            add('HIGH', 'install-hook', rel, None, '', 'pnpm runs this file on pnpm install, even with --ignore-scripts')
+        elif low in ('config.toml', 'config') and at(rel, '.cargo/' + low):
+            each(r'(?m)^[ \t]*(?:build\.)?(?:rustc(?:-workspace)?-wrapper|rustc|rustdoc|linker|runner)[ \t]*=',
+                 'HIGH', 'install-hook', 'cargo runs the program this setting names when it builds or runs')
         elif ext in ('.csproj', '.vbproj', '.fsproj', '.props', '.targets'):
             each(r'<Exec\s', 'HIGH', 'install-hook', 'MSBuild runs this command when you build')
         elif low == 'tasks.json' and at(rel, '.vscode/tasks.json'):
