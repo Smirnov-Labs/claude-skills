@@ -78,6 +78,7 @@ This section grows as patterns and preferences are discovered during work on thi
 - **After a change to `codex-review`,** run `tests/codex-review.sh`. A fake `codex` on PATH plays each failure the real one has shown.
 - **After a change to `prland`,** run `tests/prland.sh`. Fake `gh` and `prbots` on PATH, real git repos and worktrees in a temp dir.
 - **After a change to `add-to-claude-link`,** run `tests/add-to-claude-link.sh`. It decodes each format in Python before it compares, so a stray `&amp;` or a `+` for a space fails it.
+- **After a change to `latest-version`,** run `tests/latest-version.sh`. A local fake server plays the GitHub API and a registry with a token challenge, and a fake `gh` plays `gh api -i`.
 - **Merges:** `prland <PR> --need sar` (the pr-land skill): squash, with a subject that ends in `(#N)`, then the branch and worktree go. Machines pick up main at their next `skillsync`.
 
 ---
@@ -127,6 +128,7 @@ After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds an
 | `pr` | `/pr`: commit, push, open or update the PR, after checking what the push will carry (user-invoked only) |
 | `pr-fix` | `/pr-fix`: loop on a PR — fix CI and review feedback, push, wait with `prbots`, repeat until clean (user-invoked only) |
 | `pr-land` | Merge a PR once `prbots` says CLEAN, confirm MERGED, then remove its own worktree and branch and sync main (`prland`) |
+| `finding-latest-versions` | `latest-version`: the newest GitHub release or container image tag, sorted as versions, and image digests |
 | `bd-to-br-migration` | Migrate docs from bd (beads) to br (beads_rust) |
 | `debugging-kubernetes-rollouts` | Debug failed Kubernetes rollouts and ArgoCD / GitOps sync problems |
 | `debugging-nodejs-apps` | Systematic debugging of Node.js startup, dependency, and runtime failures |
