@@ -80,6 +80,7 @@ This section grows as patterns and preferences are discovered during work on thi
 - **After a change to `cc-sessions`,** run `tests/cc-sessions.sh`. It builds synthetic transcripts and never reads your real ones.
 - **After a change to `add-to-claude-link`,** run `tests/add-to-claude-link.sh`. It decodes each format in Python before it compares, so a stray `&amp;` or a `+` for a space fails it.
 - **After a change to `latest-version`,** run `tests/latest-version.sh`. A local fake server plays the GitHub API and a registry with a token challenge, and a fake `gh` lends a token (`gh auth token`).
+- **After a change to `tp-scan`,** run `tests/tp-scan.sh`. It builds one synthetic repo per pattern in a temp dir, and canary files prove that the scan ran nothing.
 - **Merges:** `prland <PR> --need sar` (the pr-land skill): squash, with a subject that ends in `(#N)`, then the branch and worktree go. Machines pick up main at their next `skillsync`.
 
 ---
@@ -125,6 +126,7 @@ After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds an
 | `codex-plan-review` | Send the current plan to Codex through `codex-review` for an independent architectural review |
 | `detect-overengineering` | Audit a plan document for LLM-style overengineering — rubric pass + Codex adversarial pass + merged findings with proposed edits |
 | `git-recon` | 12-month git-history health check — churn, bus factor, bug hotspots, velocity, firefighting |
+| `evaluating-third-party-tools` | Is an outside repo or tool useful to us? Clone it without running it, scan it with `tp-scan`, check health and fit, give an Adopt, Trial or Skip verdict |
 | `mining-claude-sessions` | `cc-sessions`: find and resume a past session, sum one up, or count usage across sessions, with masked output |
 | `watching-pr-bot-reviews` | Wait for and read the PR bots (Codex, SAR, CI) with `prbots` instead of hand-written pollers |
 | `pr` | `/pr`: commit, push, open or update the PR, after checking what the push will carry (user-invoked only) |
