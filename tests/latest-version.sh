@@ -84,8 +84,9 @@ REG = {   # tag lists in lexical order, as registries send them
 BACKEND = ["1.0.0", "1.1.0", "2.0.0"]   # behind org/redir, two to a page
 BIG = sorted(["1.0.%d" % i for i in range(10000)] + ["2.0.0"])   # 2.0.0 sorts last
 PAGE = 5
-INDEX, PLATFORM = b'{"index":true}', b'{"platform":true}'
-NOHEAD = b'{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}'
+INDEX = b'{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}'
+PLATFORM = b'{"schemaVersion":2,"config":{},"layers":[]}'
+NOHEAD = b'{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{},"layers":[]}'
 NAME_UNKNOWN = {"errors": [{"code": "NAME_UNKNOWN", "message": "repository name not known to registry"}]}
 
 
@@ -222,6 +223,11 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, b"garbage", ctype="text/plain")
         if ref is not None:
             return self.manifest(repo, ref)
+        if repo == "org/badpage":   # a good first page, then a proxy's error with HTTP 200
+            if q.get("last"):
+                return self.send(200, {"error": "login required"})
+            return self.send(200, {"name": repo, "tags": ["1.0.0"]},
+                             {"Link": '</v2/org/badpage/tags/list?n=1&last=1.0.0>; rel="next"'})
         if repo == "org/endless":
             n = int(q.get("last", "0")) + 1
             return self.send(200, {"name": repo, "tags": [f"0.0.{n}"]},
@@ -262,6 +268,11 @@ class H(BaseHTTPRequestHandler):
             if self.command == "HEAD":
                 return self.send(405)
             return self.send(200, NOHEAD, ctype="application/vnd.oci.image.manifest.v1+json")
+        if repo == "org/htmlhead":   # a well-formed digest header on an HTML page
+            return self.send(200, b"<html>Sign in</html>", {"Docker-Content-Digest": "sha256:" + "a" * 64},
+                             ctype="text/html")
+        if repo == "org/thin":   # a manifest type with no manifest in it
+            return self.send(200, b'{"schemaVersion":2}', ctype="application/vnd.oci.image.manifest.v1+json")
         if repo == "org/signin":   # an SSO page with 200 instead of a manifest
             return self.send(200, b"<html>Sign in</html>", ctype="text/html")
         if repo == "org/baddigest":
@@ -451,14 +462,20 @@ check "the first host's token never goes to the second host" '! grep -q "host=lo
 
 # ---- digests
 : > "$LOG"; run "$I" --digest 1.10.0
-check "--digest asks for the index and prints its digest" '[ $rc -eq 0 ] && [ "$out" = "$(sha "{\"index\":true}")" ]'
+check "--digest asks for the index and prints its digest" '[ $rc -eq 0 ] && [ "$out" = "$(sha "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[]}")" ]'
 check "--digest uses HEAD, which does not count as a pull" '[ "$(logged "^HEAD")" -ge 1 ] && [ "$(grep -c "^GET.*manifests" "$LOG")" -eq 0 ]'
 run "$I" --digest 1.10.0 --json
 check "--digest --json names the media type" '[[ $out == *"application/vnd.oci.image.index.v1+json"* ]]'
 run "$R/org/nohead" --digest 1.0.0
-check "no HEAD: --digest hashes the GET body" '[ $rc -eq 0 ] && [ "$out" = "$(sha "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\"}")" ]'
+check "no HEAD: --digest hashes the GET body" '[ $rc -eq 0 ] && [ "$out" = "$(sha "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"config\":{},\"layers\":[]}")" ]'
 run "$R/org/signin" --digest 1.0.0
 check "a sign-in page with HTTP 200 is no digest (exit 2)" '[ $rc -eq 2 ] && [[ $err == *"not a manifest"* ]]'
+run "$R/org/htmlhead" --digest 1.0.0
+check "a digest header on an HTML page is no digest" '[ $rc -eq 2 ] && [[ $err == *"not a manifest"* ]]'
+run "$R/org/thin" --digest 1.0.0
+check "a manifest type without config and layers is no manifest" '[ $rc -eq 2 ] && [[ $err == *"not a manifest"* ]]'
+run "$R/org/badpage"
+check "a tag page that is not a tag list exits 2 with no answer" '[ $rc -eq 2 ] && [ -z "$out" ] && [[ $err == *"not a tag list"* ]]'
 run "$R/org/baddigest" --digest 1.0.0
 check "a malformed digest header is refused" '[ $rc -eq 2 ] && [[ $err == *"malformed digest"* ]]'
 run "$I" --digest nope

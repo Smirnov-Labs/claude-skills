@@ -516,6 +516,15 @@ def registry_error(resp):
         return ""
 
 
+def is_manifest(doc, ctype):
+    """True for the structure ctype promises: an index lists manifests, a manifest has a config and layers."""
+    if not isinstance(doc, dict) or doc.get("schemaVersion") != 2:
+        return False
+    if ctype.endswith(("index.v1+json", "manifest.list.v2+json")):
+        return isinstance(doc.get("manifests"), list)
+    return isinstance(doc.get("config"), dict) and isinstance(doc.get("layers"), list)
+
+
 class Registry:
     def __init__(self, host, path, name):
         self.scheme = os.environ.get("LATEST_VERSION_REGISTRY_SCHEME") or "https"
@@ -590,7 +599,11 @@ class Registry:
                 detail = registry_error(resp) or f"HTTP {resp.status}"
                 raise Fail(f"{self.name}: the registry refused the tag list ({detail})")
             data = load_json(resp, self.name)
-            tags = [str(t) for t in (data.get("tags") if isinstance(data, dict) else None) or []]
+            raw = data.get("tags", ...) if isinstance(data, dict) else ...
+            if raw is ... or not (raw is None or isinstance(raw, list) and all(isinstance(x, str) for x in raw)):
+                # a proxy's or a sign-in page's JSON is not a tag list: an empty page would hide the newest tags
+                raise Fail(f"{self.name}: the registry's reply is not a tag list: {resp.body[:120]!r}")
+            tags = list(raw or [])
             new = [t for t in tags if t not in known]
             if again and tags and not new:
                 raise Fail(f"{self.name}: the registry sent the same tags again for the next "
@@ -617,8 +630,10 @@ class Registry:
         url = f"{self.base}/v2/{self.path}/manifests/{urllib.parse.quote(tag, safe='')}"
         accept = {"Accept": MANIFEST_TYPES}
         resp = self.get("HEAD", url, accept)       # HEAD does not count as a pull
-        if resp.status == 200 and DIGEST.fullmatch(resp.header("docker-content-digest") or ""):
-            return resp.header("docker-content-digest"), resp.header("content-type")
+        head_type = (resp.header("content-type") or "").split(";")[0].strip().lower()
+        if (resp.status == 200 and head_type in MANIFEST_MEDIA
+                and DIGEST.fullmatch(resp.header("docker-content-digest") or "")):
+            return resp.header("docker-content-digest"), head_type
         if resp.status == 404:
             return None
         resp = self.get("GET", url, accept)        # no digest header, or an error to read
@@ -632,7 +647,7 @@ class Registry:
             doc = json.loads(resp.body)
         except ValueError:
             doc = None
-        if ctype not in MANIFEST_MEDIA or not isinstance(doc, dict) or doc.get("schemaVersion") != 2:
+        if ctype not in MANIFEST_MEDIA or not is_manifest(doc, ctype):
             # a sign-in page or an error page answered with 200: its hash would be a useless pin
             raise Fail(f"{self.name}: the registry answered {tag} with {ctype or 'no content type'}, not a manifest")
         header = resp.header("docker-content-digest")
