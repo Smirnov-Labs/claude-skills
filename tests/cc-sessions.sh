@@ -62,6 +62,22 @@ write(f"{root}/-work-PrivateClient-x/{C}.jsonl", [
         {"type": "tool_use", "id": "c3", "name": "Bash", "input": {"command": "if test -f foo; then git status; fi"}},
         {"type": "tool_use", "id": "c4", "name": "Bash", "input": {"command": long_cmd}}]}},
 ])
+D = "44444444-5555-6666-7777-888888888888"
+write(f"{root}/-work-demo-r2/{D}.jsonl", [
+    {"type": "ai-title", "aiTitle": "Round two"},
+    {"type": "user", "cwd": "/work/demo/quote'side", "timestamp": "2026-11-04T09:00:00Z", "origin": {"kind": "human"},
+     "message": {"content": "start"}},
+    {"type": "assistant", "timestamp": "2026-11-04T09:01:00Z", "message": {"content": [
+        {"type": "tool_use", "id": "d1", "name": "Bash", "input": {"command": "echo pathpw11 | /usr/bin/sudo -S true"}},
+        {"type": "tool_use", "id": "d2", "name": "Bash", "input": {"command": "echo \"rose|tulipkey\" | sudo -S true"}},
+        {"type": "tool_use", "id": "d3", "name": "Bash", "input": {"command": "password=\"correct horse battery staple\" ./run"}},
+        {"type": "tool_use", "id": "d4", "name": "Bash", "input": {"command": "curl -H 'Cookie: session=\"quotedck1\"; refresh=quotedck2' https://x"}},
+        {"type": "tool_use", "id": "d5", "name": "Bash", "input": {"command": "printf '%s\\n' 'rose; fragpw33 berry' | sudo -S true"}},
+        {"type": "tool_use", "id": "d6", "name": "Bash", "input": {"command": "psql -c 'SELECT 1; DROP TABLE example;'"}},
+        {"type": "tool_use", "id": "d7", "name": "Bash", "input": {"command": "sudo --user postgres psql; sudo -Hu postgres psql"}},
+        {"type": "tool_use", "id": "d8", "name": "Bash", "input": {"command": "timeout --signal TERM 10 git status; timeout -s TERM 10 git status"}},
+        {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
+])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
     {"type": "ai-title", "aiTitle": "Zorblax dashboard"},
     {"type": "user", "cwd": "/work/demo/other", "timestamp": "2026-11-02T09:00:00Z", "origin": {"kind": "human"},
@@ -69,7 +85,7 @@ write(f"{root}/-work-demo-other/{B}.jsonl", [
     {"type": "user", "timestamp": "2026-11-02T09:10:00Z", "origin": {"kind": "human"}, "message": {"content": "keep going"}},
 ])
 PY
-printf '# values to mask\nSECRETVALUE42\nPrivateClient\n' > "$T/mask"
+printf '# values to mask\nSECRETVALUE42\nPrivateClient\nprivate"client\nCaf\xc3\xa9\nquote'"'"'side\n' > "$T/mask"
 
 run find zorblax
 check "find ranks the session whose title matches first" '[ $rc -eq 0 ] && [[ "$(echo "$out" | head -1)" == *"Zorblax dashboard"* ]]'
@@ -94,13 +110,24 @@ run find needlecmd
 check "find matches past the first 500 characters of a command" '[ $rc -eq 0 ] && [[ $out == *"Quarterly sync"* ]]'
 run find needleprompt
 check "find matches past the first 3,000 characters of a prompt" '[ $rc -eq 0 ] && [[ $out == *"Quarterly sync"* ]]'
+run show 4444 --mask-file "$T/mask"
+check "a password inside quotes never shows up as a command" '[[ $out != *fragpw33* ]]'
+check "SQL inside quotes is not a command" '[[ $out != *"DROP"* ]]'
+check "wrapper long options and clusters: psql and git, not postgres or TERM" '[[ $out == *"psql 2"* ]] && [[ $out == *"git 1"* ]] && [[ $out != *postgres* ]] && [[ $out != *TERM* ]]'
+check "a masked literal in the directory stays masked in the resume command" '[[ $out != *"quote"*"side"* ]]'
+run find PrivateClient --mask-file "$T/mask"
+check "a failed search does not echo a masked word" '[[ $out != *rivate* ]]'
+out=$("$TOOL" stats --days sk-abcdefgh12345678 --root "$T/projects" 2>&1); rc=$?
+check "a startup error is masked" '[ $rc -ne 0 ] && [[ $out != *abcdefgh12345678* ]]'
+out=$("$TOOL" stats --root "$T/PrivateClient-missing" --mask-file "$T/mask" 2>&1); rc=$?
+check "a missing root is reported masked" '[ $rc -ne 0 ] && [[ $out != *PrivateClient* ]]'
 run show abc
 check "an unknown prefix is an error" '[ $rc -ne 0 ] && [[ $out == *"no session id starts with"* ]]'
 
 run stats --mask-file "$T/mask"
-check "stats counts sessions, subagents and prompts" '[[ $out == *"3 sessions, 1 subagent transcripts, 8 typed prompts"* ]]'
+check "stats counts sessions, subagents and prompts" '[[ $out == *"4 sessions, 1 subagent transcripts, 9 typed prompts"* ]]'
 check "stats never prints a sudo -S password from repeated prompts" '[[ $out != *orchidpetal* ]]'
-check "stats parses sudo -u and if/then: psql and git, not postgres" '[[ $out == *"psql"* ]] && [[ $out == *"git 1"* || $out == *"git 2"* ]] && [[ $out != *"postgres 1"* ]]'
+check "stats parses sudo -u and if/then: psql and git, not postgres" '[[ $out == *"psql "* ]] && [[ $out == *"git "* ]] && [[ $out != *"postgres "* ]]'
 check "a mask-file value is masked in every stats line" '[[ $out != *PrivateClient* ]]'
 check "stats lists repeated short prompts with session counts" '[[ $out == *"2   2  keep going"* ]]'
 run stats --json
@@ -113,6 +140,12 @@ check "export writes mode 600" '[ "$(stat -c %a "$T/ev.jsonl" 2>/dev/null || sta
 check "export masks the sudo -S password, the bearer token and the mask-file value" '! grep -q -E "hunter2pass|abcdef123456789|SECRETVALUE42" "$T/ev.jsonl"'
 check "export masks whole Cookie headers, sshpass -v -p and sudo -kS" '! grep -q -E "cookieone|cookietwo|sshpwd99|kspw" "$T/ev.jsonl"'
 check "export masks paths and directories too" '! grep -q PrivateClient "$T/ev.jsonl"'
+check "export masks sudo by path, quoted pipes, quoted passwords and quoted cookies" '! grep -q -E "pathpw11|tulipkey|horse battery|quotedck1|quotedck2" "$T/ev.jsonl"'
+check "export masks literals and cookies inside MCP inputs before JSON escaping" '! python3 -c "
+import json,sys
+raw=open(sys.argv[1]).read(); dec=json.dumps([json.loads(l) for l in raw.splitlines()], ensure_ascii=False)
+bad=[s for s in [\"mcpck2\", \"private\\\"client\", \"Caf\u00e9\", \"Caf\\\\u00e9\"] if s in raw or s in dec or s in json.dumps(json.loads(dec))]
+sys.exit(0 if bad else 1)" "$T/ev.jsonl"'
 run export "$T/ev.jsonl"
 check "export refuses an existing file" '[ $rc -ne 0 ] && [[ $out == *"already exists"* ]]'
 ln -s "$T/projects/-work-demo-proj/11111111-2222-3333-4444-555555555555.jsonl" "$T/link.jsonl"

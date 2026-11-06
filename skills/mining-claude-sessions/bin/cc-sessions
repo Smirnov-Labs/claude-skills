@@ -33,25 +33,32 @@ SKIP_TYPES = ('"type":"api-request', '"type":"attachment"', '"type":"file-histor
 # ---- masking -------------------------------------------------------------------------------------------
 PFX = re.compile(r"(sk-[A-Za-z0-9_\-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|xox[abprs]-[A-Za-z0-9\-]{8,}"
                  r"|AKIA[A-Z0-9]{8,}|glpat-[A-Za-z0-9_\-]{8,}|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-.]+)")
-KV = re.compile(r"(?i)((?:api[_-]?key|token|secret|passw(?:or)?d|pwd|authorization|bearer|cookie|client[_-]?secret)"
-                r"[\"']?\s*[:=]?\s*(?:bearer\s+|token\s+|basic\s+)?[\"']?)([^\s\"'&,;)]{6,})")
+SENSITIVE = r"(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|passw(?:or)?d|passwd|pwd|authorization|bearer|cookie|client[_-]?secret)"
+QUOTED_KV = re.compile(r"(?i)(" + SENSITIVE + r"[\"']?\s*[:=]\s*)(\"[^\"\n]*\"|'[^'\n]*')")
+KV = re.compile(r"(?i)(" + SENSITIVE + r"[\"']?\s*[:=]?\s*(?:bearer\s+|token\s+|basic\s+)?[\"']?)([^\s\"'&,;)]{6,})")
 LONG = re.compile(r"[A-Za-z0-9+_\-]{32,}={0,2}")
-SUDO_S = r"\bsudo\b[^|;&\n]*?\s(?:-[A-Za-z]*S[A-Za-z]*|--stdin)\b"          # -S, -kS, -Sv, --stdin
-SUDO_PIPE = re.compile(r"(\b(?:printf|echo)\b)([^|\n]*?)(\|\s*(?:command\s+)?" + SUDO_S + ")")
+SUDO_S = r"(?:\S*/)?sudo\b[^|;&\n]*?\s(?:-[A-Za-z]*S[A-Za-z]*|--stdin)\b"   # -S, -kS, --stdin, /usr/bin/sudo
+ARGS = r"((?:'[^'\n]*'|\"[^\"\n]*\"|[^|\n'\"])*?)"                           # quoted pipes stay inside the args
+SUDO_PIPE = re.compile(r"(\b(?:printf|echo)\b)" + ARGS + r"(\|\s*(?:command\s+)?" + SUDO_S + ")")
 SUDO = re.compile(SUDO_S)
 HERE = re.compile(r"(<<<\s*)('[^']*'|\"[^\"]*\"|\S+)")
 SSHPASS = re.compile(r"(\bsshpass\b[^|;&\n]*?\s-p\s*)('[^']*'|\"[^\"]*\"|[^\s'\"]+)")
-COOKIE = re.compile(r"(?i)\b((?:set-)?cookie\s*[:=]\s*)([^\n\"']+)")
+COOKIE = re.compile(r"(?i)\b((?:set-)?cookie\s*[:=]\s*)([^\n]+)")         # the whole header, to the end of the line
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 LITERALS = []
 
 
+SENSITIVE_KEY = re.compile(r"(?i)(password|passwd|secret|token|cookie|authorization|api[_-]?key)")
+
+
 def mask_obj(o):
+    """Mask every string in a structure before it is serialized (JSON escaping would hide literals)."""
     if isinstance(o, str):
         return mask(o)
     if isinstance(o, dict):
-        return {k: mask_obj(v) for k, v in o.items()}
-    if isinstance(o, list):
+        return {mask(str(k)): ("<redacted>" if SENSITIVE_KEY.search(str(k)) and isinstance(v, (str, int, float))
+                               else mask_obj(v)) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
         return [mask_obj(v) for v in o]
     return o
 
@@ -87,6 +94,7 @@ def mask(s):
         s = HERE.sub(lambda m: m.group(1) + "<redacted>", s)
     s = SSHPASS.sub(lambda m: m.group(1) + "<redacted>", s)
     s = COOKIE.sub(lambda m: m.group(1) + "<redacted>", s)
+    s = QUOTED_KV.sub(lambda m: m.group(1) + "<redacted>", s)
     s = PFX.sub("<redacted>", s)
     s = KV.sub(lambda m: m.group(1) + "<redacted>", s)
 
@@ -156,35 +164,79 @@ def prompt_text(o):
 
 WRAP = {"command", "sudo", "doas", "timeout", "env", "time", "nohup", "exec", "builtin", "nice", "ionice", "xargs",
         "stdbuf", "chronic", "unbuffer", "caffeinate", "systemd-run"}
-WRAP_ARG = {"sudo": "ugCDhprtUT", "doas": "uC", "nice": "n", "ionice": "cnp", "env": "uCS", "xargs": "InPdLsaE",
-            "timeout": "sk", "stdbuf": "ioe"}                    # options that take the next token
+WRAP_ARG = {   # per wrapper: short options that take a value, and long ones
+    "sudo": ("ugCDhprtUT", ("user", "group", "close-from", "chdir", "host", "prompt", "role", "type", "other-user",
+                            "command-timeout")),
+    "doas": ("uC", ()), "nice": ("n", ("adjustment",)), "ionice": ("cnp", ("class", "classdata", "pid")),
+    "env": ("uCS", ("unset", "chdir", "split-string")),
+    "xargs": ("InPdLsaE", ("max-args", "max-procs", "delimiter", "arg-file", "replace", "max-lines", "max-chars")),
+    "timeout": ("sk", ("signal", "kill-after")), "stdbuf": ("ioe", ("input", "output", "error")),
+}
 CONTROL = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "time", "coproc"}
 SHELL = {"fi", "done", "esac", "}", ")", "case", "for", "in", "select", "function", "export", "local", "set", "true",
          "false", "return", "break", "continue", "echo", "printf", "read", "wait", "exit", "trap", "shift", "source",
          ".", "cd", "[", "[[", "]]", "eval", "declare", "unset", "let", "alias"}
 
 
-def programs(cmd):
+OPS = {";", "&&", "||", "|", "&", "(", ")", "|&", ";;"}
+
+
+def segments(cmd):
+    """Commands split at shell operators, with quoting respected; [] when the quoting does not parse."""
     cmd = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?.*?\n.*?\n\1\b", " ", cmd, flags=re.S)   # drop heredoc bodies
+    lex = shlex.shlex(cmd.replace("\n", " ; "), posix=True, punctuation_chars=";&|()")
+    lex.whitespace_split = True
+    lex.commenters = "#"
+    try:
+        toks = list(lex)
+    except ValueError:
+        return []
+    out, cur = [], []
+    for tok in toks:
+        if tok in OPS or (tok and set(tok) <= set(";&|()")):
+            if cur:
+                out.append(cur)
+            cur = []
+        else:
+            cur.append(tok)
+    if cur:
+        out.append(cur)
+    return out
+
+
+def skip_options(wrapper, toks, i):
+    """Index of the first token after a wrapper's options (and timeout's DURATION)."""
+    shorts, longs = WRAP_ARG.get(wrapper, ("", ()))
+    while i < len(toks) and toks[i].startswith("-") and toks[i] != "-":
+        tok = toks[i]
+        if tok == "--":
+            i += 1
+            break
+        if tok.startswith("--"):
+            i += 1 if ("=" in tok or tok[2:] not in longs) else 2
+            continue
+        step = 1
+        for j, ch in enumerate(tok[1:], 1):
+            if ch in shorts:
+                step = 1 if j < len(tok) - 1 else 2          # -uroot carries its value; -Hu takes the next
+                break
+        i += step
+    if wrapper == "timeout" and i < len(toks) and re.fullmatch(r"\d+(\.\d+)?[smhd]?", toks[i]):
+        i += 1                                               # timeout [options] DURATION command
+    return i
+
+
+def programs(cmd):
     found = []
-    for seg in re.split(r"\s*(?:&&|\|\||;|\||\n|\$\(|`)\s*", cmd):
-        try:
-            toks = shlex.split(seg, comments=True)
-        except ValueError:
-            toks = seg.split()
-        i, wrapper = 0, None
+    for toks in segments(cmd):
+        i = 0
         while i < len(toks):
             tok = toks[i]
+            base = tok.rsplit("/", 1)[-1]
             if tok in CONTROL or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok):
                 i += 1
-            elif tok.rsplit("/", 1)[-1] in WRAP:
-                wrapper = tok.rsplit("/", 1)[-1]
-                i += 1
-                if wrapper == "timeout" and i < len(toks) and not toks[i].startswith("-"):
-                    i += 1                                              # timeout DURATION command
-            elif wrapper and tok.startswith("-"):
-                takes = WRAP_ARG.get(wrapper, "")
-                i += 2 if (len(tok) == 2 and tok[1] in takes) else 1    # -u postgres, -n 10
+            elif base in WRAP:
+                i = skip_options(base, toks, i + 1)
             else:
                 break
         if i < len(toks):
@@ -293,8 +345,8 @@ def one_line(text, n):
 
 def resume_line(s):
     if not s.cwd:
-        return "claude --resume %s   (run it in the session's directory)" % shlex.quote(s.sid)
-    return "cd -- %s && claude --resume %s" % (shlex.quote(s.cwd), shlex.quote(s.sid))
+        return "claude --resume %s   (run it in the session's directory)" % shlex.quote(mask(s.sid))
+    return "cd -- %s && claude --resume %s" % (shlex.quote(mask(s.cwd)), shlex.quote(mask(s.sid)))
 
 
 def selected(root, days, project, subagents=True):
@@ -335,7 +387,7 @@ def cmd_find(a):
         if not missing and score:
             hits.append((score, s.last or "", s, matched))
     if not hits:
-        out("no session matches all of: %s (try fewer or other words, or --days)" % " ".join(terms))
+        out("no session matches all of: %s (try fewer or other words, or --days)" % " ".join(a.words))
         return 1
     hits.sort(key=lambda h: (h[0], h[1]), reverse=True)
     for score, _, s, matched in hits[:a.limit]:
@@ -445,7 +497,7 @@ def cmd_stats(a):
         "repeated_short_prompts": [(t, n, len(short_s[t])) for t, n in short.most_common(a.top * 2) if n >= 2],
     }
     if a.json:
-        out(mask(json.dumps(data, indent=1)))
+        out(json.dumps(mask_obj(data), indent=1))
         return 0
     window = ("last %d days" % a.days) if a.days else "every transcript on disk"
     out("%d sessions, %d subagent transcripts, %d typed prompts, %d tool calls (%s%s)"
@@ -523,7 +575,7 @@ def cmd_export(a):
                             d.update(atype=inp.get("subagent_type"), desc=mask(inp.get("description", ""))[:200],
                                      prompt=mask(inp.get("prompt", ""))[:3000])
                         elif name and name.startswith("mcp__"):
-                            d.update(input=mask(json.dumps(inp))[:400])
+                            d.update(input=json.dumps(mask_obj(inp))[:400])
                         emit(**d)
     out("wrote %d events to %s (mode 600)" % (n, a.file))
     return 0
@@ -531,13 +583,23 @@ def cmd_export(a):
 
 class Parser(argparse.ArgumentParser):
     def error(self, message):
-        sys.exit("cc-sessions: %s (cc-sessions --help)" % message)
+        fail("%s (cc-sessions --help)" % message)
+
+
+def early_mask_file(argv):
+    for i, arg in enumerate(argv):
+        if arg == "--mask-file" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--mask-file="):
+            return arg.split("=", 1)[1]
+    return os.environ.get("CC_SESSIONS_MASK_FILE")
 
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
         print(__doc__.strip())
         return 0
+    load_mask_file(early_mask_file(sys.argv[1:]))       # before any error can echo an argument
     common = Parser(add_help=False)
     common.add_argument("--root")
     common.add_argument("--mask-file", default=os.environ.get("CC_SESSIONS_MASK_FILE"))
@@ -561,7 +623,6 @@ def main():
     a.root = root_dir(a.root)
     if not os.path.isdir(a.root):
         fail("no transcripts at %s (set --root or CLAUDE_CONFIG_DIR)" % a.root)
-    load_mask_file(a.mask_file)
     return {"find": cmd_find, "show": cmd_show, "stats": cmd_stats, "export": cmd_export}[a.verb](a)
 
 

@@ -29,7 +29,7 @@ description: Use when asked to find or resume a past Claude Code session ("find 
 
 Transcripts hold everything a session saw, secrets included. Every line `cc-sessions` prints or exports goes through a masker first. It masks API keys, tokens, auth headers, long random strings, passwords piped into `sudo -S`, and `sshpass -p` values. Pass your own literal values with `--mask-file FILE`, one per line, or set `CC_SESSIONS_MASK_FILE`. `export` writes its file with mode 600.
 
-The masker does not touch the transcripts themselves. Quote them through `cc-sessions`, never with `cat` or `grep`.
+Masking is best effort: patterns cannot catch every secret. It lowers exposure, it does not remove it, so treat the output as sensitive too. The masker does not touch the transcripts themselves. Quote them through `cc-sessions`, never with `cat` or `grep`.
 
 ## The transcript format
 
