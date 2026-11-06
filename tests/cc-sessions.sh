@@ -84,7 +84,7 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "e2", "name": "Bash", "input": {"command": "grep '|' notes.txt"}},
         {"type": "tool_use", "id": "e3", "name": "Bash", "input": {"command": "# Check repository\ngit status\npytest -q"}},
         {"type": "tool_use", "id": "e4", "name": "Bash", "input": {"command": "git log # inline note\nmake test"}},
-        {"type": "tool_use", "id": "f1", "name": "Bash", "input": {"command": "psql 'postgresql://alice:urlpw551@db.example/app'"}},
+        {"type": "tool_use", "id": "f1", "name": "Bash", "input": {"command": "psql 'postgresql://alice:urlpw551@db.example/app'"}},  # pragma: allowlist secret (a fake test credential)
         {"type": "tool_use", "id": "f2", "name": "Bash", "input": {"command": "curl -u alice:curlpw552 https://example.test"}},
         {"type": "tool_use", "id": "f3", "name": "Bash", "input": {"command": "LABEL='hello world' rustc --version"}},
         {"type": "tool_use", "id": "f4", "name": "Bash", "input": {"command": "curl --data='a|zzfake; yyfake' https://example.test"}},
