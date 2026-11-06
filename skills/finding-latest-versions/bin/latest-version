@@ -123,10 +123,18 @@ def _netloc(url):
     return urllib.parse.urlsplit(url).netloc.lower()
 
 
+def _secure(url):
+    """https, or plain http to this machine only (a local test server)."""
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost", "::1"))
+
+
 class _Redirect(urllib.request.HTTPRedirectHandler):
-    """Follow redirects, but never carry a token to another host."""
+    """Follow redirects, but never to plain http, and never carry a token to another host."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _secure(urllib.parse.urljoin(req.full_url, newurl)):
+            raise urllib.error.URLError(f"refusing a redirect to {newurl}: it is not https")
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new is not None and _netloc(newurl) != _netloc(req.full_url):
             new.remove_header("Authorization")
@@ -153,6 +161,8 @@ def _header_map(pairs):
 
 
 def fetch(method, url, headers=None):
+    if not _secure(url):                 # a Link header or a token realm can name plain http too
+        raise Fail(f"refusing {url}: it is not https")
     req = urllib.request.Request(url, method=method,
                                  headers={"User-Agent": UA, **(headers or {})})
     try:

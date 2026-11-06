@@ -200,6 +200,11 @@ class H(BaseHTTPRequestHandler):
         if repo == "org/moved":   # a token here, then off to another host
             other = host.replace("127.0.0.1", "localhost")
             return self.send(307, b"", {"Location": f"http://{other}/v2/org/img/tags/list"})
+        if repo == "org/downgrade":   # off to plain http on a real host: the token must not follow
+            return self.send(307, b"", {"Location": "http://registry.example.invalid/v2/org/img/tags/list"})
+        if repo == "org/plainpage":   # the next page over plain http
+            return self.send(200, {"name": repo, "tags": ["1.0.0"]},
+                             {"Link": '<http://registry.example.invalid/v2/org/img/tags/list?last=1.0.0>; rel="next"'})
         if repo == "org/gone":
             return self.send(404, NAME_UNKNOWN)
         if repo == "org/badjson":
@@ -442,6 +447,10 @@ run user/app:latest
 check "user/app with a tag is a Docker Hub image, not a GitHub repo" '[ $rc -eq 0 ] && [ "$out" = 0.2.0 ]'
 : > "$LOG"; run "$R/org/moved"
 check "a redirect to another host gets its own token" '[ $rc -eq 0 ] && [ "$out" = v1.10.1 ]'
+run "$R/org/downgrade"
+check "a redirect to plain http on a real host is refused" '[ $rc -eq 2 ] && [[ $err == *"not https"* ]]'
+run "$R/org/plainpage"
+check "a next page over plain http is refused" '[ $rc -eq 2 ] && [[ $err == *"not https"* ]]'
 check "the first host's token never goes to the second host" '! grep -q "host=localhost.*auth=Bearer tok-127" "$LOG" && grep -q "host=localhost.*auth=Bearer tok-localhost" "$LOG"'
 
 # ---- digests
