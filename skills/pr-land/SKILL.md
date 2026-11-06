@@ -16,7 +16,7 @@ description: Use when asked to merge or land a pull request ("merge it", "land i
 
 ## Run it
 
-Run it from any checkout of the repo: the main one or the PR's worktree. `prland` is on PATH where skillsync installed this skill; otherwise run `bin/prland` from this skill's base directory. It calls `prbots` from the watching-pr-bot-reviews skill.
+Run it from any checkout of the repo: the main one or the PR's worktree. `prland` is on PATH where skillsync installed this skill. Otherwise call it by its full path, `<this skill's base directory>/bin/prland`, and stay in the checkout: it finds the repo and the worktrees from there. It calls `prbots` from the watching-pr-bot-reviews skill.
 
 | Case | Command |
 |---|---|
@@ -25,20 +25,22 @@ Run it from any checkout of the repo: the main one or the PR's worktree. `prland
 | A repo with no review bots | `prland 123 --need ci` |
 | See the plan first | `prland 123 --dry-run` |
 | Keep the worktree | `prland 123 --keep-worktree` |
+| A worktree holds only ignored files you can lose | `prland 123 --allow-ignored` |
 
-`prland --help` lists the rest (`-R`, `--method`, `--subject`, `--no-sync`).
+A PR URL works too, and names its own repo. `prland --help` lists the rest (`-R`, `--method`, `--subject`, `--no-sync`).
 
 ## Read the output
 
 It prints one line per step:
 
 ```
-gate     CLEAN @85c6e8f (prbots --need sar)
+gate     CLEAN @85c6e8f (--need sar)
 merge    squash · codex-review: one command for a read-only Codex review (#20)
 merged   4af28c7a2c
+remote   deleted codex-review (was 85c6e8f)
 worktree removed /tmp/wt-codex-review
 branch   deleted codex-review (was 85c6e8f1a2)
-sync     ~/src/claude-skills is at 4af28c7 (main)
+sync     ~/src/claude-skills is at 4af28c7 (origin/main)
 ```
 
 | Exit | Meaning |
@@ -52,7 +54,10 @@ Report the merge SHA, plus anything it left in place and why.
 
 ## What it will not do
 
-- Merge without a CLEAN verdict, merge a draft, or merge a head that moved after the check (`--match-head-commit`).
-- Remove a worktree with `--force`, or one with uncommitted or untracked files, or one with commits past the PR head.
-- Touch any branch or worktree except the PR's own. It matches nothing by pattern.
-- Switch branches in the main checkout, or sync it while it has tracked changes.
+- Merge without a CLEAN verdict for this repo, this PR and its current head SHA. It reads `prbots --json`, so text in a check name cannot fake the verdict. A misspelled `--need` is an error, not an empty gate.
+- Merge a draft, or a head that moved after the check (`--match-head-commit`).
+- Delete the remote branch if someone pushed to it after the merge. The delete carries a lease on the PR head.
+- Remove a worktree with `--force`, or one with changed tracked files, untracked files, commits past the PR head, or ignored files other than build and cache output (`.env` and notes stay). It reads these with `git ls-files`, so `status.showUntrackedFiles` cannot hide them.
+- Delete a local branch that moved: the delete is an atomic `update-ref` on the PR head.
+- Prune other worktrees, or touch any branch except the PR's own. A fork PR's branches are left alone.
+- Switch branches in the main checkout, sync it while it has tracked changes, or follow its upstream: it fast-forwards to `origin/<base>`.

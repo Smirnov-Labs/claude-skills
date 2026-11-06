@@ -14,7 +14,8 @@ The base branch is the argument, if the user gave one. Otherwise it is the repo'
 ## 1. Check where you are
 
 1. Run `git branch --show-current`. If you are on the base branch, stop. Create a branch first, or a worktree if other sessions share this checkout.
-2. Run `git status` and `git diff`. Know every change before you stage it.
+2. Run `git status`, `git diff` and `git diff --cached --stat`. Know every change before you stage it.
+3. If the index already holds changes you did not make, stop and ask the user. A commit would take them along, and unstaging them can lose another session's work.
 
 ## 2. Commit
 
@@ -26,8 +27,8 @@ The base branch is the argument, if the user gave one. Otherwise it is the repo'
 
 ```bash
 git fetch origin "$BASE"
-git log --oneline "origin/$BASE..HEAD"
-git diff --name-only "origin/$BASE..HEAD"
+git log --oneline "origin/$BASE..HEAD"        # the commits the push carries
+git diff --name-only "origin/$BASE...HEAD"     # the files the PR changes (three dots: since the branch left the base)
 ```
 
 Only your commits and your files may appear. Anything else means a wrong base: fix that before you push.
@@ -45,8 +46,10 @@ If the repo is public, scan the added lines before you push. Look for secrets an
 3. Create it: `gh pr create --base "$BASE" --title "..." --body-file FILE`. The body has Summary, Changes and Testing sections, and ends with your session's attribution line.
 4. Keep the title and body plain: what changed, why, and how you tested it.
 
-## 6. Then
+## 6. Report
 
-1. Wait for the reviewers: `prbots wait <PR> --trigger`, in the background (the watching-pr-bot-reviews skill).
-2. Fix their findings with /pr-fix.
-3. Merge with /pr-land when the PR is clean.
+Give the user the PR URL and a line on what it holds, then stop. Do more only if the user asked for it:
+
+- wait for the reviewers: `prbots wait <PR> --trigger`, in the background (the watching-pr-bot-reviews skill);
+- fix their findings: /pr-fix;
+- merge: /pr-land.
