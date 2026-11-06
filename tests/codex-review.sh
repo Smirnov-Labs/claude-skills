@@ -123,6 +123,11 @@ export FAKE_CHILD=$T/child2.pid; rm -f "$FAKE_CHILD"
 for i in $(seq 1 50); do [ -s "$FAKE_CHILD" ] && break; sleep 0.1; done
 kill -TERM "$wpid"; wait "$wpid"; rc=$?; out=$(cat "$T/s5.out")
 check "SIGTERM to the wrapper stops the Codex run and its children" '[ $rc -eq 130 ] && ! kill -0 "$(cat "$FAKE_CHILD")" 2>/dev/null'
+rm -f "$FAKE_CHILD"   # a background job of this non-interactive shell starts with SIGINT ignored
+( cd "$WD" && FAKE_MODE=hangchild exec "$TOOL" plan plan.md --out "$T/s6" --timeout 60 ) > "$T/s6.out" 2>&1 & wpid=$!
+for i in $(seq 1 50); do [ -s "$FAKE_CHILD" ] && break; sleep 0.1; done
+kill -INT "$wpid"; wait "$wpid"; rc=$?; out=$(cat "$T/s6.out")
+check "SIGINT to a background wrapper still cancels it" '[ $rc -eq 130 ] && ! kill -0 "$(cat "$FAKE_CHILD")" 2>/dev/null'
 mkdir -p "$T/keep"; echo old-review > "$T/keep/review.md"; echo old-log > "$T/keep/codex.log"
 FAKE_MODE=crash run plan plan.md --dry-run --out "$T/keep"
 check "a dry run keeps an earlier review and log" 'grep -q old-review "$T/keep/review.md" && grep -q old-log "$T/keep/codex.log"'

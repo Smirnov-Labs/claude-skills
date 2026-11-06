@@ -201,7 +201,8 @@ def codex(model, effort, prompt, review, log, cwd, timeout):
 
         def cancelled(signum, frame):
             raise KeyboardInterrupt
-        old = {s: signal.signal(s, cancelled) for s in (signal.SIGTERM, signal.SIGHUP)}
+        # SIGINT too: a background job in a non-interactive shell starts with SIGINT ignored
+        old = {s: signal.signal(s, cancelled) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
         try:
             return p.wait(timeout=timeout)
         except KeyboardInterrupt:
