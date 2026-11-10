@@ -1,6 +1,6 @@
 ---
 name: de-slopping
-description: Use before you finalize a written deliverable (a PR or commit message, design doc, README, runbook, report, or release note), or when asked to de-slop, tighten, plain-English, or cut hedges and filler from text. Also before you claim a writing deliverable is done.
+description: Use before you finalize or call done a PR or commit message, design doc, README, runbook, report or release note, or when asked to de-slop, tighten or plain-English text.
 argument-hint: <text or file path; or "audit" to report findings only>
 ---
 

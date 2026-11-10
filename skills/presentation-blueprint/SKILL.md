@@ -1,6 +1,6 @@
 ---
 name: presentation-blueprint
-description: Use when the user needs to create a presentation, pitch deck, slide deck, or visual summary about a project, codebase, website, or topic. Triggers on requests like 'build a deck', 'create a presentation', 'make slides about', or 'pitch deck for'.
+description: "Use when the user wants a presentation, pitch deck, slide deck or visual summary of a project, codebase, website or topic: \"build a deck\", \"make slides about\", \"pitch deck for\"."
 ---
 
 <SUBAGENT-STOP>

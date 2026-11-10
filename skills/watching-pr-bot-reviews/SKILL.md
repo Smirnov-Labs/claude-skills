@@ -1,6 +1,6 @@
 ---
 name: watching-pr-bot-reviews
-description: Use when waiting for, polling, reading, or reporting the automated reviewers on a GitHub PR — Codex (chatgpt-codex-connector) and the Architecture Review / SAR action (github-actions[bot]), plus CI — after opening a PR, after pushing to one, before merging or declaring a PR done, or when asked "what did the bots say". Also use the moment you are about to write a sleep/until loop or a wait-*.sh / poll_*.sh script around `gh api` or `gh pr view`, and when orchestrating subagents that open PRs. Provides `prbots wait` (blocks until the bots have reported on the PR's HEAD commit; run it in the background) and `prbots` (one-shot digest + CLEAN/FIX/BLOCK/PENDING verdict).
+description: "Use when waiting for or reading a GitHub PR's bots (Codex, the Architecture Review or SAR, CI) with prbots: after a push, before merging, when asked \"what did the bots say\", or before writing a sleep loop around `gh api` or `gh pr view`."
 ---
 
 # Watching PR bot reviews

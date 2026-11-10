@@ -1,6 +1,6 @@
 ---
 name: codex-plan-review
-description: Get a second opinion on your current implementation plan by sending it to Codex for independent review. Use after brainstorming, after writing a plan, or when you want to iterate on a plan before execution. Triggers on 'get a second opinion', 'review plan with codex', 'codex review', or 'iterate on plan'.
+description: "Use when a written implementation plan needs an independent Codex review before execution: \"get a second opinion\", \"review plan with codex\", \"iterate on plan\"."
 ---
 
 <SUBAGENT-STOP>
