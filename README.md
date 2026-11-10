@@ -83,7 +83,7 @@ The `finding-latest-versions` skill needs Python 3. It calls GitHub through `gh`
 | **Skills** | `skills/` + `bin/skillsync` | Skills installed with skillsync, or as plugins through `.claude-plugin/marketplace.json` |
 | **Architecture notes** | `ARCHITECTURE.md` | How skillsync installs the skills, its safety rules, and the reasons behind the design |
 | **Memory Bank** | `.claude/memory-bank/` | Structured documentation templates that give Claude full project context across sessions |
-| **Custom Slash Commands** | `.claude/commands/` | `/plan`, `/pr`, `/memory`, `/loop-review` -- workflows for working inside this repo |
+| **Custom Slash Commands** | `.claude/commands/` | `/plan`, `/memory`, `/loop-review` -- workflows for working inside this repo |
 | **Architect-Gate** | `.github/claude/` | Automated architecture review that runs on every PR via CI |
 
 ## Table of Contents
@@ -125,11 +125,11 @@ Claude Code's memory resets between sessions. The Memory Bank solves this:
 ## What's Included
 
 ```
+CLAUDE.md                        # Main configuration & project intelligence
+
 .claude/
-├── claude.md                    # Main configuration & project intelligence
 ├── commands/
 │   ├── plan.md                  # /plan — structured feature planning
-│   ├── pr.md                    # /pr — pull request workflow
 │   ├── memory.md                # /memory — memory bank management
 │   └── loop-review.md           # /loop-review — iterative plan refinement
 └── memory-bank/
@@ -194,7 +194,7 @@ bin/
    - Anti-pattern detection and severity scoring
    - Posts a System Architecture Review (SAR) comment
 
-5. **Configuration** (`.claude/claude.md`)
+5. **Configuration** (`CLAUDE.md`)
    - Automatic memory loading via `alwaysApply: true`
    - Project intelligence journal
    - Instructions for Claude on how to use the system
@@ -203,9 +203,9 @@ bin/
 
 ### Automatic Context Loading
 
-The `.claude/claude.md` file has `alwaysApply: true` configured, which means:
+The `CLAUDE.md` file has `alwaysApply: true` configured, which means:
 
-1. **Every Session Start**: Claude automatically reads the instructions in `claude.md`
+1. **Every Session Start**: Claude automatically reads the instructions in `CLAUDE.md`
 2. **Memory Bank Loading**: Instructions tell Claude to read all memory bank files in order
 3. **Immediate Context**: Claude has full project understanding without you explaining anything
 
@@ -234,7 +234,7 @@ Claude will:
 1. Review **ALL** memory bank files (mandatory)
 2. Update files that need changes
 3. Focus on `activeContext.md` and `progress.md`
-4. Document new patterns in `claude.md`
+4. Document new patterns in `CLAUDE.md`
 
 ## Usage Guide
 
@@ -398,7 +398,7 @@ Create additional files in `.claude/memory-bank/` for complex areas:
     └── e2e-strategy.md
 ```
 
-Reference them in `claude.md` for automatic loading.
+Reference them in `CLAUDE.md` for automatic loading.
 
 ### Custom Slash Commands
 
@@ -425,7 +425,7 @@ Use with: `/review`
 
 ### Project Intelligence Growth
 
-The `.claude/claude.md` file grows smarter over time. Add sections like:
+The `CLAUDE.md` file grows smarter over time. Add sections like:
 
 ```markdown
 ## Project-Specific Patterns
@@ -467,7 +467,7 @@ For team projects:
 **Problem**: Claude asks about basic project info despite memory bank
 
 **Solutions**:
-1. Verify `.claude/claude.md` has `alwaysApply: true`
+1. Verify `CLAUDE.md` has `alwaysApply: true`
 2. Check that memory bank files are filled out (not just templates)
 3. Try explicitly saying "Read the memory bank first"
 4. Restart Claude Code session
