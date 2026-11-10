@@ -49,6 +49,7 @@ This section grows as patterns and preferences are discovered during work on thi
 - **After a change to `add-to-claude-link`,** run `tests/add-to-claude-link.sh`. It decodes each format in Python before it compares, so a stray `&amp;` or a `+` for a space fails it.
 - **After a change to `latest-version`,** run `tests/latest-version.sh`. A local fake server plays the GitHub API and a registry with a token challenge, and a fake `gh` lends a token (`gh auth token`).
 - **After a change to `tp-scan`,** run `tests/tp-scan.sh`. It builds one synthetic repo per pattern in a temp dir, and canary files prove that the scan ran nothing.
+- **After a change to `nonstop`,** run `tests/nonstop.sh`. It runs the Stop hook and the turn-on and turn-off commands from SKILL.md with a temporary HOME and two fake sessions, in bash and, if it is installed, zsh.
 - **Merges:** `prland <PR> --need sar` (the pr-land skill): squash, with a subject that ends in `(#N)`, then the branch and worktree go. Machines pick up main at their next `skillsync`.
 
 ---
@@ -65,7 +66,7 @@ How skillsync works, and why it is built that way: `ARCHITECTURE.md`.
   - `SKILL.md` -- YAML frontmatter (`name` matching the directory, and a `description` saying when to use it; new skills start it with "Use when") and the skill prompt
   - supporting reference files
   - `bin/` (optional) -- executables the skill calls. skillsync links them onto PATH, so names must be unique across the repo
-  - `UPSTREAM` -- only on vendored third-party skills (source, commit, license). Update them by re-copying from upstream, not by editing
+  - `UPSTREAM` -- only on vendored third-party skills (source, commit, license). Update them by re-copying from upstream, not by editing. A fork such as `nonstop` also lists its local changes in `UPSTREAM`, and an update keeps them
 - **`bin/skillsync`** -- symlinks every skill from every skills repo cloned under `~/.local/share/skillsync/` into `~/.claude/skills/`, and every `bin/` executable into `~/.local/bin/`. It must never name a specific repository (that is what keeps private repos private) and must stay compatible with bash 3.2. After changing it, run `tests/skillsync.sh` (sandboxed; it never touches your real directories).
 - **`.claude-plugin/marketplace.json`** -- some of the same skills as Claude Code plugins, for people who install with `/plugin`. The maintainer's machines use skillsync instead; listing a new skill here is optional.
 
@@ -103,7 +104,7 @@ After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds an
 | `de-slopping` | Cut hedges and filler from written deliverables; bundles a Simplified Technical English linter (`ste_lint.py`) and an optional `slop_guard` Stop hook |
 | `minto-pyramid` | Restructure a write-up answer-first (Minto Pyramid) |
 | `humanizer` | Remove signs of AI-generated writing (vendored, see `UPSTREAM`) |
-| `nonstop` | Autonomous work mode driven by a Stop hook (vendored, see `UPSTREAM` for the hook line) |
+| `nonstop` | Autonomous work mode driven by a Stop hook, one flag per session (forked: `UPSTREAM` lists the local changes and the hook line) |
 
 ### Adding a New Skill
 
