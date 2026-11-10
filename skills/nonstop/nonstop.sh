@@ -17,8 +17,9 @@ NONSTOP_MAX="${NONSTOP_MAX:-5}"  # max nudges before auto-deactivation; 0 = unli
 input=$(cat)
 
 # --- Extract session_id and stop_hook_active, shell-quoted so that eval runs no code ---
+# -I: the hook runs in the session's directory, and a json.py or shlex.py there must not load.
 # shellcheck disable=SC2154  # variables assigned via eval
-eval "$(echo "$input" | python3 -c "
+eval "$(echo "$input" | python3 -I -c "
 import sys, json, shlex
 d = json.load(sys.stdin)
 print('session_id=' + shlex.quote(str(d.get('session_id', ''))))

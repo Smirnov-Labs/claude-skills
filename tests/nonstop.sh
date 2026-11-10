@@ -29,8 +29,9 @@ for line in json.load(sys.stdin)["reason"].splitlines():
         break
 EOF
 
-# stop ID [ACTIVE]: one Stop event for session ID, the JSON that Claude Code sends.
-stop() { out=$(printf '{"session_id":"%s","stop_hook_active":%s}' "$1" "${2:-false}" | HOME=$T/home NONSTOP_MAX=$MAX bash "$HOOK" 2>/dev/null); rc=$?; }
+# stop ID [ACTIVE]: one Stop event for session ID, the JSON that Claude Code sends,
+# run in directory $CWD (default: here), as Claude Code runs the hook in the session's directory.
+stop() { out=$(cd "${CWD:-.}" && printf '{"session_id":"%s","stop_hook_active":%s}' "$1" "${2:-false}" | HOME=$T/home NONSTOP_MAX=$MAX bash "$HOOK" 2>/dev/null); rc=$?; }
 blocked() { [ "$rc" -eq 0 ] && printf '%s' "$out" | python3 -I "$T/isblock.py" 2>/dev/null; }
 allowed() { [ "$rc" -eq 0 ] && [ -z "$out" ]; }
 
@@ -83,17 +84,25 @@ reset; skill 1 session-a; MAX=2
 stop session-a; b1=$out; stop session-a; b2=$out; stop session-a; MAX=5
 check "after NONSTOP_MAX nudges the session may stop and its files are gone" 'allowed && [[ $b1 == *block* && $b2 == *block* ]] && [ -z "$(ls -A "$S")" ]'
 
-reset; skill 1 session-a; MAX=2
-stop session-a; stop session-a; cmd=$(printf '%s' "$out" | python3 -I "$T/nudgecmd.py" 2>/dev/null)
-HOME=$T/home bash -c "$cmd" >/dev/null 2>&1; cmdrc=$?
-check "the turn-off command in the nudge removes the flag and the count" '[ -n "$cmd" ] && [ "$cmdrc" -eq 0 ] && [ -z "$(ls -A "$S")" ]'
+reset; skill 1 session-a; skill 1 session-b; MAX=2
+stop session-b; stop session-a; stop session-a; cmd=$(printf '%s' "$out" | python3 -I "$T/nudgecmd.py" 2>/dev/null)
+HOME=$T/home bash -c "$cmd" >/dev/null 2>&1; cmdrc=$?; bcount=$(cat "$S/nonstop-session-b.count" 2>/dev/null)
+check "the turn-off command in the nudge removes the flag and count of its session" '[ -n "$cmd" ] && [ "$cmdrc" -eq 0 ] && [ ! -e "$S/nonstop-session-a.active" ] && [ ! -e "$S/nonstop-session-a.count" ]'
+check "the turn-off command in the nudge leaves the flag and count of the other session" '[ -e "$S/nonstop-session-b.active" ] && [ "$bcount" = 1 ]'
 skill 1 session-a; stop session-a; b1=$out; stop session-a; MAX=5
 check "turning nonstop on again after that gives the full budget of nudges" '[[ $b1 == *block* ]] && blocked'
 
-reset; skill 1 session-a; MAX=2
-stop session-a; stop session-a; rm -f "$S/nonstop-session-a.active"
-skill 1 session-a; stop session-a; MAX=5
+reset; skill 1 session-a; skill 1 session-b; MAX=2
+stop session-b; stop session-a; stop session-a; rm -f "$S/nonstop-session-a.active"
+skill 1 session-a; bcount=$(cat "$S/nonstop-session-b.count" 2>/dev/null); stop session-a; MAX=5
 check "turning nonstop on resets the nudge count of the session" 'blocked'
+check "turning nonstop on leaves the flag and count of the other session" '[ -e "$S/nonstop-session-b.active" ] && [ "$bcount" = 1 ]'
+
+# A json.py or shlex.py in the session's directory must not load when the hook runs there.
+reset; mkdir -p "$T/repo"; skill 1 session-a
+for m in json shlex; do printf 'open(%s, "w").write("ran")\n' "'$T/canary-$m'" > "$T/repo/$m.py"; done
+CWD=$T/repo stop session-a
+check "a json.py or shlex.py in the session's directory does not run, and the hook still works" 'blocked && [ ! -e "$T/canary-json" ] && [ ! -e "$T/canary-shlex" ]'
 
 reset; stop "\$(touch $T/pwned)"
 check "a session ID with shell syntax runs nothing and is ignored" 'allowed && [ ! -e "$T/pwned" ]'

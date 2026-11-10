@@ -8,7 +8,8 @@ Changed here, in SKILL.md and nonstop.sh:
   nonstop on resets the nudge count of the session, and each turn-off command
   removes the count with the flag.
 - The hook shell-quotes what it reads from its JSON input before eval, and ignores a
-  session ID that has characters other than letters, digits, - and _.
+  session ID that has characters other than letters, digits, - and _. It runs
+  python3 with -I, so a json.py or shlex.py in the session's directory does not load.
 - SKILL.md has a <SUBAGENT-STOP> block, so a subagent does not turn nonstop mode on.
 To update: review upstream's diff since that commit, apply it to these files, keep the
 changes above, run tests/nonstop.sh, and update this note.
