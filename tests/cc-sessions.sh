@@ -155,6 +155,8 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "o4", "name": "Bash", "input": {"command": "curl --data-urlencode password=rose\\&dupw855 https://example.test"}},
         {"type": "tool_use", "id": "o5", "name": "Bash", "input": {"command": "GITHUB_TOKEN=ghpw859 gh api /user # check"}},
         {"type": "tool_use", "id": "o6", "name": "Bash", "input": {"command": "echo try curl -F 'password=rose&dupw860' --form 'token=a;b&dupw861' https://example.test"}},
+        {"type": "tool_use", "id": "o7", "name": "Bash", "input": {"command": "echo try curl -F'password=rose&dupw862' --data-urlencode=password=rose\\&dupw863 https://example.test"}},
+        {"type": "tool_use", "id": "o8", "name": "Bash", "input": {"command": "curl --data-raw='username=keepraw&db_password=rose,dupw864' https://example.test"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -268,6 +270,8 @@ check "a --data-urlencode or -F value keeps nothing after &, quoted or not" '! g
 check "a masked --data-urlencode or -F value keeps the other values and the URL" 'grep -q -F "q=keep&query" "$T/ev.jsonl" && grep -q keepfile.txt "$T/ev.jsonl" && grep -q keepdu.example "$T/ev.jsonl"'
 check "a --data-urlencode password in prose that does not parse is masked whole" '! grep -q dupw854 "$T/ev.jsonl"'
 check "a -F or --form password where curl is not the program is masked whole" '! grep -q -E "dupw860|dupw861" "$T/ev.jsonl"'
+check "an attached -F or --data-urlencode= value is masked whole, an escaped & too" '! grep -q -E "dupw862|dupw863" "$T/ev.jsonl"'
+check "an attached --data-raw= body still masks its password field and keeps the others" '! grep -q dupw864 "$T/ev.jsonl" && grep -q -F "username=keepraw" "$T/ev.jsonl"'
 check ".env lines with an inline comment keep nothing after & ; or |, CRLF and tab too" '! grep -q -E "envpw856|envpw857|envpw858" "$T/ev.jsonl"'
 check ".env comments, other lines and values stay" 'grep -q -F "DB_HOST=localhost # local" "$T/ev.jsonl" && grep -q -F "<redacted> # prod" "$T/ev.jsonl" && grep -q keepother "$T/ev.jsonl"'
 check "an assignment before a command keeps the command and its comment" '! grep -q ghpw859 "$T/ev.jsonl" && grep -q -F "gh api /user # check" "$T/ev.jsonl"'

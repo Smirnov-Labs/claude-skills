@@ -77,6 +77,7 @@ CRED_OPTS = {   # program: ((short options that take a secret, long ones), every
 }
 # curl options that take name=content (and -F): the content stays whole, & and ; included, not split into fields
 LITERAL_LONG = ("--data-urlencode", "--url-query", "--form", "--form-string")
+LITERAL_WORD = re.compile(r"^(?:--(?:data-urlencode|url-query|form|form-string)=|-[A-Za-z]*F)")   # value attached
 
 
 def literal_field(value):
@@ -376,7 +377,13 @@ def mask_shell(s, depth=0):
         if depth < 3 and " " in text and SHELL_HINT.search(text):    # bash -c '...', ssh host '...', $(...)
             inner = re.sub(r"\$\(([^()]*)\)", lambda m: "$(" + (mask_shell(m.group(1), depth + 1) or m.group(1)) + ")",
                            inner) if inner.startswith("$(") or "=$(" in inner else (mask_shell(inner, depth + 1) or inner)
-        if re.match(r"^[\w.][\w.-]*=", text) and tok[2] not in assign_at:   # name=value&...: a form body; -F... is not
+        lit = LITERAL_WORD.match(text) if tok[2] not in assign_at else None
+        masked = literal_field(text[lit.end():]) if lit else None
+        if masked:                                     # -F..., --data-urlencode=...: whatever the program
+            masked = lit.group(0) + masked
+            edits.append((tok[2], tok[3], masked if src == text and "<" not in src else shlex.quote(masked)))
+            continue
+        if re.match(r"^[\w.-]+=", text) and tok[2] not in assign_at:   # name=value&...: a form body or a field
             fields = text.split("&")
             masked = "&".join(f.split("=", 1)[0] + "=<redacted>" if "=" in f and SECRET_NAME.search(f.split("=", 1)[0])
                               else f for f in fields)
