@@ -1,6 +1,15 @@
-Vendored from https://github.com/andylizf/nonstop at 9511b6f (2026-04-03). MIT, see LICENSE.
-Files taken unmodified: SKILL.md, nonstop.sh, LICENSE, README.md.
-To update: review upstream's diff since that commit, copy the same files over, and update this note.
+Forked from https://github.com/andylizf/nonstop at 9511b6f (2026-04-03). MIT, see LICENSE.
+Taken unmodified: LICENSE, README.md.
+Changed here, in SKILL.md and nonstop.sh:
+- Each session turns nonstop mode on and off with its own flag file,
+  nonstop-$CLAUDE_CODE_SESSION_ID.active. Upstream used shared nonstop.activate and
+  nonstop.deactivate files, and the next session to stop took them, so one session
+  could take another session's activation. The hook ignores those files.
+- The hook shell-quotes what it reads from its JSON input before eval, and ignores a
+  session ID that has characters other than letters, digits, - and _.
+- SKILL.md has a <SUBAGENT-STOP> block, so a subagent does not turn nonstop mode on.
+To update: review upstream's diff since that commit, apply it to these files, keep the
+changes above, run tests/nonstop.sh, and update this note.
 
 nonstop.sh is a Stop hook. Register it in ~/.claude/settings.json under hooks.Stop as:
   f="$HOME/.claude/skills/nonstop/nonstop.sh"; [ ! -f "$f" ] || bash "$f"

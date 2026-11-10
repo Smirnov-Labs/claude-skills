@@ -3,6 +3,10 @@ name: nonstop
 description: Autonomous work mode that lets Claude work continuously while the user is away. Activates pre-flight risk assessment, dangerous-ops approval, and a blocker decision framework. Use "/nonstop" to activate, "/nonstop off" to deactivate. Use this skill whenever the user says things like "go nonstop", "keep working", "don't stop", "I'm going AFK", "work while I sleep", "finish this without me", or wants Claude to work autonomously without interruption.
 ---
 
+<SUBAGENT-STOP>
+If you were dispatched as a subagent to execute a specific delegated task, do NOT follow this skill: skip it and return to the task you were given. Only the main session can turn nonstop mode on, because only it can get the user's confirmation.
+</SUBAGENT-STOP>
+
 # Nonstop Mode
 
 A session-scoped autonomous work mode. When activated, Claude works continuously without stopping to ask the user, handling blockers intelligently.
@@ -80,10 +84,10 @@ Present the summary and ask the user to confirm. **Do NOT activate until the use
 Once the user confirms, activate:
 
 ```bash
-mkdir -p ~/.claude/hooks/state && touch ~/.claude/hooks/state/nonstop.activate
+mkdir -p ~/.claude/hooks/state && touch ~/.claude/hooks/state/nonstop-"${CLAUDE_CODE_SESSION_ID:?is not set}".active
 ```
 
-This signals the stop hook to create a session-scoped flag on your next turn end. The hook knows your session ID and will handle the rest.
+This turns nonstop mode on for this session only. Claude Code puts the session's ID in `CLAUDE_CODE_SESSION_ID`, and the stop hook looks only for the flag file of the session that is stopping. If the command fails because `CLAUDE_CODE_SESSION_ID` is not set, tell the user that this Claude Code version cannot turn nonstop mode on, and stop there. Do not touch a shared file such as `nonstop.activate` instead: the next session to stop would take it.
 
 Say: "Nonstop mode ON. Go rest — I've got this."
 
@@ -121,10 +125,10 @@ When you encounter something that would normally make you stop and ask the user,
 
 ## Deactivation — `/nonstop off`
 
-1. Signal deactivation:
+1. Turn nonstop mode off for this session:
 
    ```bash
-   touch ~/.claude/hooks/state/nonstop.deactivate
+   rm -f ~/.claude/hooks/state/nonstop-"${CLAUDE_CODE_SESSION_ID:?is not set}".active ~/.claude/hooks/state/nonstop-"$CLAUDE_CODE_SESSION_ID".count
    ```
 
 2. Present a summary from the task list:
@@ -139,7 +143,7 @@ Nonstop mode auto-deactivates after NONSTOP_MAX nudges (default 5, env var `NONS
 
 ## Technical Details
 
-- **Activation handshake**: Claude touches `nonstop.activate` → stop hook creates session-scoped `nonstop-<session_id>.active` (hook knows the session ID from its JSON input, Claude doesn't need to)
-- **Deactivation handshake**: Claude touches `nonstop.deactivate` → stop hook removes the session-scoped flag
+- **Session flag**: `~/.claude/hooks/state/nonstop-<session_id>.active`. The skill creates and removes it with `CLAUDE_CODE_SESSION_ID`, and the stop hook reads `session_id` from its JSON input, so each session sees only its own flag.
+- **No shared files**: upstream turned nonstop mode on and off through shared `nonstop.activate` and `nonstop.deactivate` files, and whichever session stopped next took them. This fork does not use them, and the hook ignores them.
 - `stop_hook_active` flag prevents infinite loops (allows stop on 2nd attempt per turn)
 - Nudge counter tracks blocks per session; auto-cleans on deactivation

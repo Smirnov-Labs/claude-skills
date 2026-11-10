@@ -52,7 +52,7 @@ skillsync must run on bash 3.2. Under cron's minimal `PATH` on macOS, `env bash`
 - `<SUBAGENT-STOP>` comes right after the frontmatter on workflow skills that take over a session.
 - `disable-model-invocation: true` is on skills that run only when the user invokes them, such as `pr-fix`.
 - `bin/` holds commands that the skill calls, such as `prbots`. The names must be unique across all sources.
-- `UPSTREAM` is only on vendored skills (`humanizer`, `nonstop`). It records the source, the commit and the license. To update a vendored skill, copy it from upstream again.
+- `UPSTREAM` is only on vendored skills (`humanizer`, `nonstop`). It records the source, the commit and the license. To update a vendored skill, copy it from upstream again. `nonstop` is a fork: its `UPSTREAM` also lists the local changes, and an update must keep them.
 
 ## Shared patterns
 

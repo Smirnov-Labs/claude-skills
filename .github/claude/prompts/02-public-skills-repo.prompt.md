@@ -24,4 +24,4 @@ This repository is **public**. It holds Claude Code skills (`skills/<name>/SKILL
 
 ## 3. Vendored skills
 
-A skill with an `UPSTREAM` file is a third-party copy. It must keep the upstream `LICENSE`, and changes should be a fresh copy from upstream with the commit updated in `UPSTREAM`, not local edits.
+A skill with an `UPSTREAM` file is a third-party copy. It must keep the upstream `LICENSE`, and changes should be a fresh copy from upstream with the commit updated in `UPSTREAM`, not local edits. A fork, such as `nonstop`, is the exception: its `UPSTREAM` lists each local change. Flag a local edit to a fork that its `UPSTREAM` does not list.
