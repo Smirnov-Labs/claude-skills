@@ -1,6 +1,6 @@
 ---
 name: codex-review
-description: Use when you want an independent second opinion from Codex on a plan, a design spec or a code change, at a major checkpoint or before merging a non-trivial PR, when asked for a "codex review" or "second opinion", or when you are about to write a `codex exec` command or poll for Codex output by hand.
+description: Use when you want an independent Codex review of a plan, spec or code change at a major checkpoint or before merging, when asked for a "codex review" or "second opinion", or before writing `codex exec` by hand.
 ---
 
 # Codex review

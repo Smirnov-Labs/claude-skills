@@ -1,6 +1,6 @@
 ---
 name: debugging-nodejs-apps
-description: Use this skill when debugging Node.js applications, fixing service startup issues, resolving npm/dependency errors, troubleshooting runtime failures, investigating connection problems, or when stuck on seemingly simple Node.js issues. This includes analyzing error messages, testing services systematically, checking configuration, and breaking out of debugging local minimums with fresh systematic approaches.
+description: Use when a Node.js app won't start, hits npm or dependency errors, fails at runtime or can't connect, or when a simple-looking Node.js bug has survived several fixes.
 ---
 
 # Node.js Application Debugging Expert

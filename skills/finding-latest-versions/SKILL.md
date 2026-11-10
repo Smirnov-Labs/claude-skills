@@ -1,6 +1,6 @@
 ---
 name: finding-latest-versions
-description: Use when you need the newest release of a GitHub repo or the newest tag of a container image (Docker Hub, ghcr.io, quay.io, registry.k8s.io or any OCI registry) before you bump or pin a version, or the digest of an image tag. Also use when you are about to run gh release list, call releases/latest or do a registry token handshake by hand.
+description: Use when you need the newest release of a GitHub repo or the newest tag or digest of a container image (Docker Hub, ghcr.io, quay.io, any OCI registry) before a bump or pin, instead of gh release list by hand.
 ---
 
 # Finding latest versions

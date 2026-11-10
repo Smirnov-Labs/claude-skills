@@ -1,12 +1,6 @@
 ---
 name: minto-pyramid
-description: >-
-  Use when tightening, shortening, cleaning up, restructuring, or de-waffling a
-  draft — email, memo, status update, PR description, proposal, or announcement —
-  especially when it opens with context instead of the conclusion, buries the
-  recommendation or ask at the end, reads as a chronological recap, rambles, or
-  needs to be exec-ready or compressed into a short summary. Also when the writer
-  asks what point they're actually making, or whether they've buried the lede.
+description: Use when tightening or restructuring a draft (email, memo, status update, PR description, proposal) that opens with context, buries the ask, recaps in order or rambles, or when asked whether the lede is buried.
 ---
 
 # Minto Pyramid

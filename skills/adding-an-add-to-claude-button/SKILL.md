@@ -1,6 +1,6 @@
 ---
 name: adding-an-add-to-claude-button
-description: Use when you add an "Add to Claude" or "Connect to Claude" button or link for a remote MCP server to a README, landing page, docs page or web app, or when such a link opens an empty dialog, loses the server URL or points at //mcp.
+description: Use when adding an "Add to Claude" or "Connect to Claude" button or link for a remote MCP server, or when such a link opens an empty dialog, loses the server URL or points at //mcp.
 ---
 
 # Add to Claude button

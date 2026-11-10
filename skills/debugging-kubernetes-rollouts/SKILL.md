@@ -1,6 +1,6 @@
 ---
 name: debugging-kubernetes-rollouts
-description: Use this skill when debugging Kubernetes deployments, troubleshooting failed rollouts, investigating ArgoCD sync issues, fixing GitOps deployment problems, analyzing pod failures, resolving image pull errors, or diagnosing service connectivity issues. This includes working with kubectl, ArgoCD CLI, GitOps repositories, and the kubernetes MCP server to systematically investigate and fix deployment issues.
+description: "Use when a Kubernetes rollout or ArgoCD/GitOps sync fails: pods crashlooping or pending, image pull errors, a deployment stuck progressing, or a service that won't connect."
 ---
 
 # Kubernetes Rollout Debugging Expert
