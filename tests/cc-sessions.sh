@@ -157,7 +157,7 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "o6", "name": "Bash", "input": {"command": "echo try curl -F 'password=rose&dupw860' --form 'token=a;b&dupw861' https://example.test"}},
         {"type": "tool_use", "id": "o7", "name": "Bash", "input": {"command": "echo try curl -F'password=rose&dupw862' --data-urlencode=password=rose\\&dupw863 https://example.test"}},
         {"type": "tool_use", "id": "o8", "name": "Bash", "input": {"command": "curl --data-raw='username=keepraw&db_password=rose,dupw864' https://example.test"}},
-        {"type": "tool_use", "id": "o9", "name": "Bash", "input": {"command": "SECRET_KEY='rose #envpw870' # prod\nDB_PASSWORD_PROD=\"rose #envpw871\"\nAPI_TOKEN_DEV='a #envpw872' ./keeprun # note\nSECRET_KEY=rose\\ #envpw873 # c"}},
+        {"type": "tool_use", "id": "o9", "name": "Bash", "input": {"command": "SECRET_KEY='rose #envpw870' # prod\nDB_PASSWORD_PROD=\"rose #envpw871\"\nAPI_TOKEN_DEV='a #envpw872' ./keeprun # note\nSECRET_KEY=rose\\ #envpw873 # c"}},  # pragma: allowlist secret (fake test values)
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
