@@ -7,47 +7,15 @@ alwaysApply: true
 
 This file contains project-specific intelligence and configuration for Claude Code sessions.
 
-## Memory Bank System
+## Memory Bank
 
-This project uses a Memory Bank system to maintain context across sessions. All memory files are stored in `.claude/memory-bank/` and should be read at the start of every conversation.
-
-### Core Memory Files (Read these in order):
-1. **memory-rules.md** - System documentation
-2. **projectbrief.md** - Foundation document
-3. **productContext.md** - Product vision
-4. **systemPatterns.md** - Architecture patterns
-5. **techContext.md** - Technical setup
-6. **activeContext.md** - Current work focus
-7. **progress.md** - Status tracking
+`.claude/memory-bank/` is the starter template's Memory Bank (see the README). In claude-skills its files are blank templates, so do not read them: this file and `ARCHITECTURE.md` hold this repo's context. In a project made from the template, fill them in. Then read them at the start of each session, in this order: `projectbrief.md`, `productContext.md`, `systemPatterns.md`, `techContext.md`, `activeContext.md`, `progress.md`.
 
 ## Elegance Demand
 
 For non-trivial changes, pause and ask yourself: is there a more elegant solution? If your plan feels hacky, step back and rebuild it properly. Elegant code is simple, clear, and does not fight the architecture.
 
 If you encounter pre-existing issues in code you're touching, be a good citizen and clean them up too. Leave the codebase better than you found it.
-
-## Instructions for Claude
-
-### On Every Session Start:
-1. **Read all core memory bank files** in the order listed above
-2. Verify understanding of current context
-3. Check activeContext.md for immediate priorities
-4. Review progress.md to understand what's complete and what's pending
-
-### When User Says "update memory bank":
-1. **Review ALL memory bank files** (mandatory - don't skip any)
-2. Update files that need changes based on recent work
-3. Pay special attention to activeContext.md and progress.md
-4. Document any new patterns discovered
-5. Update project intelligence in this file if needed
-
-### Planning Mode (via /plan command):
-1. Read Memory Bank (automatic)
-2. Verify context completeness
-3. Ask 4-6 clarifying questions based on findings
-4. Draft comprehensive plan
-5. Get user approval
-6. Implement systematically
 
 ## Project Intelligence
 
@@ -84,13 +52,6 @@ This section grows as patterns and preferences are discovered during work on thi
 - **Merges:** `prland <PR> --need sar` (the pr-land skill): squash, with a subject that ends in `(#N)`, then the branch and worktree go. Machines pick up main at their next `skillsync`.
 
 ---
-
-## Notes
-
-- Memory Bank files are in `.claude/memory-bank/`
-- Templates are provided - fill them out based on actual project
-- Update frequently to maintain accuracy
-- The Memory Bank is the primary context system for this project
 
 ## Skills
 
@@ -166,7 +127,7 @@ This project has an automated "Senior Architect in CI" that reviews every PR for
 
 ### What It Does
 - Runs on every PR automatically
-- Reviews changes against Memory Bank and CLAUDE.md
+- Reviews changes against CLAUDE.md
 - Checks for 10+ categories of anti-patterns
 - Enforces Project-specific architectural invariants
 - Posts System Architecture Review (SAR) as PR comment
