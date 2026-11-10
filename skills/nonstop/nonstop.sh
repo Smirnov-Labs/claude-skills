@@ -16,21 +16,20 @@ NONSTOP_MAX="${NONSTOP_MAX:-5}"  # max nudges before auto-deactivation; 0 = unli
 # --- Read hook input from stdin ---
 input=$(cat)
 
-# --- Extract session_id and stop_hook_active, shell-quoted so that eval runs no code ---
-# -I: the hook runs in the session's directory, and a json.py or shlex.py there must not load.
-# shellcheck disable=SC2154  # variables assigned via eval
-eval "$(echo "$input" | python3 -I -c "
-import sys, json, shlex
+# --- Read session_id and stop_hook_active from the JSON input ---
+# Python checks the session ID before the shell sees it: letters, digits, - and _ only,
+# because the ID goes into a file name. The shell reads the result without eval.
+# -I -S: the hook runs in the session's directory and environment, so Python must not
+# import modules from there or run startup code (.pth, sitecustomize) from a virtualenv.
+fields=$(printf '%s' "$input" | python3 -I -S -c "
+import json, re, sys
 d = json.load(sys.stdin)
-print('session_id=' + shlex.quote(str(d.get('session_id', ''))))
-print('stop_hook_active=' + shlex.quote(str(d.get('stop_hook_active', False)).lower()))
-" 2>/dev/null)"
-
-# --- The session ID goes into a file name: allow only letters, digits, - and _ ---
-# shellcheck disable=SC2154  # session_id is assigned by the eval above
-case "$session_id" in
-  '' | *[!A-Za-z0-9_-]*) exit 0 ;;
-esac
+sid = d.get('session_id')
+if not isinstance(sid, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', sid):
+    sys.exit(1)
+print(sid, 'true' if str(d.get('stop_hook_active', False)).lower() == 'true' else 'false')
+" 2>/dev/null) || exit 0
+read -r session_id stop_hook_active <<< "$fields"
 
 active_file="$STATE_DIR/nonstop-${session_id}.active"
 counter_file="$STATE_DIR/nonstop-${session_id}.count"
@@ -39,7 +38,6 @@ counter_file="$STATE_DIR/nonstop-${session_id}.count"
 [ -f "$active_file" ] || exit 0
 
 # --- If already nudged once this turn, allow stop (prevent infinite loop) ---
-# shellcheck disable=SC2154
 [ "$stop_hook_active" = "true" ] && exit 0
 
 # --- Counter: track nudges, bail after NONSTOP_MAX ---

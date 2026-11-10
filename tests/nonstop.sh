@@ -98,17 +98,34 @@ skill 1 session-a; bcount=$(cat "$S/nonstop-session-b.count" 2>/dev/null); stop 
 check "turning nonstop on resets the nudge count of the session" 'blocked'
 check "turning nonstop on leaves the flag and count of the other session" '[ -e "$S/nonstop-session-b.active" ] && [ "$bcount" = 1 ]'
 
-# A json.py or shlex.py in the session's directory must not load when the hook runs there.
+# A json.py or re.py in the session's directory must not load when the hook runs there.
 reset; mkdir -p "$T/repo"; skill 1 session-a
-for m in json shlex; do printf 'open(%s, "w").write("ran")\n' "'$T/canary-$m'" > "$T/repo/$m.py"; done
+for m in json re; do printf 'open(%s, "w").write("ran")\n' "'$T/canary-$m'" > "$T/repo/$m.py"; done
 CWD=$T/repo stop session-a
-check "a json.py or shlex.py in the session's directory does not run, and the hook still works" 'blocked && [ ! -e "$T/canary-json" ] && [ ! -e "$T/canary-shlex" ]'
+check "a json.py or re.py in the session's directory does not run, and the hook still works" 'blocked && [ ! -e "$T/canary-json" ] && [ ! -e "$T/canary-re" ]'
+
+# Startup code of a virtualenv on PATH (.pth files, sitecustomize) must not run either.
+if python3 -m venv --without-pip "$T/venv" >/dev/null 2>&1; then
+  sp=$("$T/venv/bin/python3" -c 'import site; print(site.getsitepackages()[0])')
+  mkdir -p "$T/proj"
+  printf 'open(%s, "w").write("ran")\n' "'$T/canary-site'" > "$T/proj/sitecustomize.py"
+  printf '%s\n' "$T/proj" > "$sp/proj.pth"
+  printf 'import os; open(%s, "w").write("ran")\n' "'$T/canary-pth'" > "$sp/run.pth"
+  reset; skill 1 session-a; oldpath=$PATH; PATH=$T/venv/bin:$PATH
+  stop session-b; bout=$out; brc=$rc; stop session-a; PATH=$oldpath
+  check "startup code of a virtualenv on PATH does not run, and the hook still works" '[ "$brc" -eq 0 ] && [ -z "$bout" ] && blocked && [ ! -e "$T/canary-site" ] && [ ! -e "$T/canary-pth" ]'
+else
+  echo "skip virtualenv check: python3 -m venv is not available"
+fi
 
 reset; stop "\$(touch $T/pwned)"
 check "a session ID with shell syntax runs nothing and is ignored" 'allowed && [ ! -e "$T/pwned" ]'
 
 reset; touch "$S/nonstop-bad.id.active"; stop bad.id
 check "a session ID with a character outside A-Z a-z 0-9 _ - is ignored, even with a flag" 'allowed && [ ! -e "$S/nonstop-bad.id.count" ]'
+
+reset; skill 1 session-a; stop session-a; stop 'session-a\u0000'
+check "a session ID with a NUL byte is ignored and does not reach the session it resembles" 'allowed && [ "$(cat "$S/nonstop-session-a.count")" = 1 ]'
 
 if command -v zsh >/dev/null 2>&1; then
   twosessions zsh
