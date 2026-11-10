@@ -75,6 +75,12 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
      "message": {"content": "DB_PASSWORD=rose&envpw841\nAPI_TOKEN=a;envpw842"}},
     {"type": "user", "timestamp": "2026-11-04T09:00:30Z", "origin": {"kind": "human"},
      "message": {"content": "it's failing on {\\\"password\\\":\\\"promptpw782\\\"} and {\"password\":\"firstpart\\\"secondpw814\"} and {\"password\":\"first\\\\secondpw815\"}\nAuthorization: ApiKey hdrpw817"}},
+    {"type": "user", "timestamp": "2026-11-04T09:00:40Z", "origin": {"kind": "human"},
+     "message": {"content": "DB_HOST=localhost # local\nDB_PASSWORD=rose&envpw856 # prod\nAPI_TOKEN=a;envpw857\t# staging"}},
+    {"type": "user", "timestamp": "2026-11-04T09:00:41Z", "origin": {"kind": "human"},
+     "message": {"content": "export API_TOKEN=a|envpw858 # rotate\r\nOTHER=keepother\r\n"}},
+    {"type": "user", "timestamp": "2026-11-04T09:00:42Z", "origin": {"kind": "human"},
+     "message": {"content": "it's failing: curl --data-urlencode 'password=rose&dupw854' https://example.test"}},
     {"type": "assistant", "timestamp": "2026-11-04T09:01:00Z", "message": {"content": [
         {"type": "tool_use", "id": "d1", "name": "Bash", "input": {"command": "echo pathpw11 | /usr/bin/sudo -S true"}},
         {"type": "tool_use", "id": "d2", "name": "Bash", "input": {"command": "echo \"rose|tulipkey\" | sudo -S true"}},
@@ -143,6 +149,15 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "n4", "name": "Bash", "input": {"command": "curl https://example.test/?password=qpw837;ruby -v"}},
         {"type": "tool_use", "id": "n5", "name": "Bash", "input": {"command": "cat <<EOF\nDB_PASSWORD=rosepetal\nEOF\ncurl -u bob:afterpw838 https://keepafter.example"}},
         {"type": "tool_use", "id": "n6", "name": "Bash", "input": {"command": "curl --data-urlencode 'password=rose#fpw839' --data-urlencode 'password=correct horse fpw840' https://example.test"}},
+        {"type": "tool_use", "id": "o1", "name": "Bash", "input": {"command": "curl --data-urlencode 'password=rose&dupw851' https://keepdu.example"}},
+        {"type": "tool_use", "id": "o2", "name": "Bash", "input": {"command": "curl -G --data-urlencode \"access_token=a;b&dupw852\" --data-urlencode 'q=keep&query' https://example.test"}},
+        {"type": "tool_use", "id": "o3", "name": "Bash", "input": {"command": "curl -F 'password=rose&dupw853' -F 'upload=@keepfile.txt' https://example.test"}},
+        {"type": "tool_use", "id": "o4", "name": "Bash", "input": {"command": "curl --data-urlencode password=rose\\&dupw855 https://example.test"}},
+        {"type": "tool_use", "id": "o5", "name": "Bash", "input": {"command": "GITHUB_TOKEN=ghpw859 gh api /user # check"}},
+        {"type": "tool_use", "id": "o6", "name": "Bash", "input": {"command": "echo try curl -F 'password=rose&dupw860' --form 'token=a;b&dupw861' https://example.test"}},
+        {"type": "tool_use", "id": "o7", "name": "Bash", "input": {"command": "echo try curl -F'password=rose&dupw862' --data-urlencode=password=rose\\&dupw863 https://example.test"}},
+        {"type": "tool_use", "id": "o8", "name": "Bash", "input": {"command": "curl --data-raw='username=keepraw&db_password=rose,dupw864' https://example.test"}},
+        {"type": "tool_use", "id": "o9", "name": "Bash", "input": {"command": "SECRET_KEY='rose #envpw870' # prod\nDB_PASSWORD_PROD=\"rose #envpw871\"\nAPI_TOKEN_DEV='a #envpw872' ./keeprun # note\nSECRET_KEY=rose\\ #envpw873 # c"}},  # pragma: allowlist secret (fake test values)
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -200,7 +215,7 @@ run show abc
 check "an unknown prefix is an error" '[ $rc -ne 0 ] && [[ $out == *"no session id starts with"* ]]'
 
 run stats --mask-file "$T/mask"
-check "stats counts sessions, subagents and prompts" '[[ $out == *"4 sessions, 1 subagent transcripts, 13 typed prompts"* ]]'
+check "stats counts sessions, subagents and prompts" '[[ $out == *"4 sessions, 1 subagent transcripts, 16 typed prompts"* ]]'
 check "stats never prints a sudo -S password from repeated prompts" '[[ $out != *orchidpetal* ]]'
 check "stats parses sudo -u and if/then: psql and git, not postgres" '[[ $out == *"psql "* ]] && [[ $out == *"git "* ]] && [[ $out != *"postgres "* ]]'
 check "a mask-file value is masked in every stats line" '[[ $out != *PrivateClient* ]]'
@@ -252,6 +267,16 @@ check "a COOKIE= assignment keeps the commands after it" '! grep -q asgnpw833 "$
 check "a command after a heredoc stays whole and masked" '! grep -q afterpw838 "$T/ev.jsonl" && grep -q -F "curl -u <redacted> https://keepafter.example" "$T/ev.jsonl"'
 check "a --data-urlencode password keeps nothing after # or a space" '! grep -q -E "fpw839|fpw840" "$T/ev.jsonl"'
 check "a pasted .env line keeps nothing after & or ;" '! grep -q -E "envpw841|envpw842" "$T/ev.jsonl"'
+check "a --data-urlencode or -F value keeps nothing after &, quoted or not" '! grep -q -E "dupw851|dupw852|dupw853|dupw855" "$T/ev.jsonl"'
+check "a masked --data-urlencode or -F value keeps the other values and the URL" 'grep -q -F "q=keep&query" "$T/ev.jsonl" && grep -q keepfile.txt "$T/ev.jsonl" && grep -q keepdu.example "$T/ev.jsonl"'
+check "a --data-urlencode password in prose that does not parse is masked whole" '! grep -q dupw854 "$T/ev.jsonl"'
+check "a -F or --form password where curl is not the program is masked whole" '! grep -q -E "dupw860|dupw861" "$T/ev.jsonl"'
+check "an attached -F or --data-urlencode= value is masked whole, an escaped & too" '! grep -q -E "dupw862|dupw863" "$T/ev.jsonl"'
+check "an attached --data-raw= body still masks its password field and keeps the others" '! grep -q dupw864 "$T/ev.jsonl" && grep -q -F "username=keepraw" "$T/ev.jsonl"'
+check ".env lines with an inline comment keep nothing after & ; or |, CRLF and tab too" '! grep -q -E "envpw856|envpw857|envpw858" "$T/ev.jsonl"'
+check ".env comments, other lines and values stay" 'grep -q -F "DB_HOST=localhost # local" "$T/ev.jsonl" && grep -q -F "DB_PASSWORD=<redacted> # prod" "$T/ev.jsonl" && grep -q keepother "$T/ev.jsonl"'
+check "an assignment before a command keeps the command and its comment" '! grep -q ghpw859 "$T/ev.jsonl" && grep -q -F "gh api /user # check" "$T/ev.jsonl"'
+check "a # inside a quoted or escaped value is data, not a comment" '! grep -q -E "envpw870|envpw871|envpw872|envpw873" "$T/ev.jsonl" && grep -q -F "./keeprun # note" "$T/ev.jsonl"'
 check "a heredoc body is data: a .env password keeps nothing after & or ;" '! grep -q -E "hdocpw835|hdocpw836" "$T/ev.jsonl" && grep -q keepplain "$T/ev.jsonl"'
 check "a password-first form keeps its other fields" 'grep -q -F "username=keepuser&action=login" "$T/ev.jsonl"'
 check "a query password stops at a shell operator" '! grep -q qpw837 "$T/ev.jsonl" && grep -q -F ";ruby -v" "$T/ev.jsonl"'
