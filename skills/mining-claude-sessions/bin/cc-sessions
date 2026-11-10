@@ -61,9 +61,11 @@ HEREDOC = re.compile(r"(?P<head><<-?[ \t]*(['\"]?)(?P<d>\w+)\2[^\n]*\n)(?P<body>
                      re.S)
 # DB_PASSWORD=rose&petal in a .env body or an env dump: the whole rest of the line is the value
 ENVLINE = re.compile(r"(?m)^([ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*)(?!<redacted>|<masked>)(\S.*)$")
-# the same line alone, or with a comment after a space or tab (CRLF too): the value is one word, & ; | included
-ENVDATA = re.compile(r"(?m)^([ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=)(?!<redacted>|<masked>)(\S+)"
-                     r"(?=(?:[ \t]+#[^\n]*)?[ \t\r]*$)")
+# the same line alone (CRLF too), or with a comment after a space or tab: the value is one word, & ; | included.
+# Only a value with no quote or backslash takes the comment form: in 'rose #petal' or rose\ #petal the # is data,
+# and the shell pass masks those whole.
+ENVDATA = re.compile(r"(?m)^([ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=)(?!<redacted>|<masked>)"
+                     r"([^\s'\"\\]+(?=[ \t]+#[^\n]*$)|\S+(?=[ \t\r]*$))")
 SECRET_NAME = re.compile(r"(?i)(?:" + SENSITIVE + r")(?:_|$)")    # GITHUB_TOKEN, PGPASSWORD; not TOKENIZERS_
 SECRET_HEADER = re.compile(r"(?i)^\s*((?:set-)?cookie|(?:proxy-)?authorization)\s*:")
 CRED_OPTS = {   # program: ((short options that take a secret, long ones), every short option that takes a value)

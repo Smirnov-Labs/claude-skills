@@ -157,6 +157,7 @@ write(f"{root}/-work-demo-r2/{D}.jsonl", [
         {"type": "tool_use", "id": "o6", "name": "Bash", "input": {"command": "echo try curl -F 'password=rose&dupw860' --form 'token=a;b&dupw861' https://example.test"}},
         {"type": "tool_use", "id": "o7", "name": "Bash", "input": {"command": "echo try curl -F'password=rose&dupw862' --data-urlencode=password=rose\\&dupw863 https://example.test"}},
         {"type": "tool_use", "id": "o8", "name": "Bash", "input": {"command": "curl --data-raw='username=keepraw&db_password=rose,dupw864' https://example.test"}},
+        {"type": "tool_use", "id": "o9", "name": "Bash", "input": {"command": "SECRET_KEY='rose #envpw870' # prod\nDB_PASSWORD_PROD=\"rose #envpw871\"\nAPI_TOKEN_DEV='a #envpw872' ./keeprun # note\nSECRET_KEY=rose\\ #envpw873 # c"}},
         {"type": "tool_use", "id": "d9", "name": "mcp__x__y", "input": {"Cookie": "session=mcpck1; refresh=mcpck2", "q": "private\"client Caf\u00e9"}}]}},
 ])
 write(f"{root}/-work-demo-other/{B}.jsonl", [
@@ -273,8 +274,9 @@ check "a -F or --form password where curl is not the program is masked whole" '!
 check "an attached -F or --data-urlencode= value is masked whole, an escaped & too" '! grep -q -E "dupw862|dupw863" "$T/ev.jsonl"'
 check "an attached --data-raw= body still masks its password field and keeps the others" '! grep -q dupw864 "$T/ev.jsonl" && grep -q -F "username=keepraw" "$T/ev.jsonl"'
 check ".env lines with an inline comment keep nothing after & ; or |, CRLF and tab too" '! grep -q -E "envpw856|envpw857|envpw858" "$T/ev.jsonl"'
-check ".env comments, other lines and values stay" 'grep -q -F "DB_HOST=localhost # local" "$T/ev.jsonl" && grep -q -F "<redacted> # prod" "$T/ev.jsonl" && grep -q keepother "$T/ev.jsonl"'
+check ".env comments, other lines and values stay" 'grep -q -F "DB_HOST=localhost # local" "$T/ev.jsonl" && grep -q -F "DB_PASSWORD=<redacted> # prod" "$T/ev.jsonl" && grep -q keepother "$T/ev.jsonl"'
 check "an assignment before a command keeps the command and its comment" '! grep -q ghpw859 "$T/ev.jsonl" && grep -q -F "gh api /user # check" "$T/ev.jsonl"'
+check "a # inside a quoted or escaped value is data, not a comment" '! grep -q -E "envpw870|envpw871|envpw872|envpw873" "$T/ev.jsonl" && grep -q -F "./keeprun # note" "$T/ev.jsonl"'
 check "a heredoc body is data: a .env password keeps nothing after & or ;" '! grep -q -E "hdocpw835|hdocpw836" "$T/ev.jsonl" && grep -q keepplain "$T/ev.jsonl"'
 check "a password-first form keeps its other fields" 'grep -q -F "username=keepuser&action=login" "$T/ev.jsonl"'
 check "a query password stops at a shell operator" '! grep -q qpw837 "$T/ev.jsonl" && grep -q -F ";ruby -v" "$T/ev.jsonl"'
