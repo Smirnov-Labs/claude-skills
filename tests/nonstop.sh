@@ -20,6 +20,14 @@ import json, sys
 d = json.load(sys.stdin)
 sys.exit(0 if d.get("decision") == "block" and d.get("reason") else 1)
 EOF
+# nudgecmd.py: the turn-off command that the nudge tells the model to run.
+cat > "$T/nudgecmd.py" <<'EOF'
+import json, sys
+for line in json.load(sys.stdin)["reason"].splitlines():
+    if "Deactivate nonstop:" in line:
+        print(line.split("Deactivate nonstop:", 1)[1].strip())
+        break
+EOF
 
 # stop ID [ACTIVE]: one Stop event for session ID, the JSON that Claude Code sends.
 stop() { out=$(printf '{"session_id":"%s","stop_hook_active":%s}' "$1" "${2:-false}" | HOME=$T/home NONSTOP_MAX=$MAX bash "$HOOK" 2>/dev/null); rc=$?; }
@@ -52,9 +60,18 @@ check "a shared nonstop.activate file turns on no session" 'allowed'
 reset; skill 1 session-a; skill 1 session-b; touch "$S/nonstop.deactivate"; stop session-b
 check "a shared nonstop.deactivate file turns off no session" 'blocked'
 
-reset; skill 1 session-a; skill 1 session-b; skill 2 session-a
-stop session-a; check "turning nonstop off ends it for that session and removes its files" 'allowed && [ ! -e "$S/nonstop-session-a.active" ] && [ ! -e "$S/nonstop-session-a.count" ]'
-stop session-b; check "turning nonstop off in one session leaves another on" 'blocked'
+# twosessions SHELL: both sessions turn nonstop on and get one nudge, then A turns it off.
+twosessions() {
+  reset; skill 1 session-a "$1"; skill 1 session-b "$1"
+  stop session-a; check "($1) the turn-on command blocks its own session" 'blocked'
+  stop session-b
+  skill 2 session-a "$1"; offrc=$rc; bcount=$(cat "$S/nonstop-session-b.count" 2>/dev/null)
+  check "($1) the turn-off command removes the flag and count of its own session" '[ "$offrc" -eq 0 ] && [ ! -e "$S/nonstop-session-a.active" ] && [ ! -e "$S/nonstop-session-a.count" ]'
+  check "($1) the turn-off command leaves the flag and count of the other session" '[ -e "$S/nonstop-session-b.active" ] && [ "$bcount" = 1 ]'
+  stop session-a; check "($1) the session that turned it off may stop" 'allowed'
+  stop session-b; check "($1) the other session is still blocked" 'blocked'
+}
+twosessions bash
 
 reset; HOME=$T/home env -u CLAUDE_CODE_SESSION_ID bash -c "$(block 1)" >/dev/null 2>&1; rc=$?; out=""
 check "without CLAUDE_CODE_SESSION_ID the turn-on block fails and writes nothing" '[ "$rc" -ne 0 ] && [ -z "$(ls -A "$S")" ]'
@@ -66,12 +83,26 @@ reset; skill 1 session-a; MAX=2
 stop session-a; b1=$out; stop session-a; b2=$out; stop session-a; MAX=5
 check "after NONSTOP_MAX nudges the session may stop and its files are gone" 'allowed && [[ $b1 == *block* && $b2 == *block* ]] && [ -z "$(ls -A "$S")" ]'
 
+reset; skill 1 session-a; MAX=2
+stop session-a; stop session-a; cmd=$(printf '%s' "$out" | python3 -I "$T/nudgecmd.py" 2>/dev/null)
+HOME=$T/home bash -c "$cmd" >/dev/null 2>&1; cmdrc=$?
+check "the turn-off command in the nudge removes the flag and the count" '[ -n "$cmd" ] && [ "$cmdrc" -eq 0 ] && [ -z "$(ls -A "$S")" ]'
+skill 1 session-a; stop session-a; b1=$out; stop session-a; MAX=5
+check "turning nonstop on again after that gives the full budget of nudges" '[[ $b1 == *block* ]] && blocked'
+
+reset; skill 1 session-a; MAX=2
+stop session-a; stop session-a; rm -f "$S/nonstop-session-a.active"
+skill 1 session-a; stop session-a; MAX=5
+check "turning nonstop on resets the nudge count of the session" 'blocked'
+
 reset; stop "\$(touch $T/pwned)"
 check "a session ID with shell syntax runs nothing and is ignored" 'allowed && [ ! -e "$T/pwned" ]'
 
+reset; touch "$S/nonstop-bad.id.active"; stop bad.id
+check "a session ID with a character outside A-Z a-z 0-9 _ - is ignored, even with a flag" 'allowed && [ ! -e "$S/nonstop-bad.id.count" ]'
+
 if command -v zsh >/dev/null 2>&1; then
-  reset; skill 1 session-a zsh; stop session-a; check "the turn-on block works in zsh" 'blocked'
-  skill 2 session-a zsh; stop session-a; check "the turn-off block works in zsh" 'allowed'
+  twosessions zsh
 else
   echo "skip zsh checks: zsh is not installed"
 fi

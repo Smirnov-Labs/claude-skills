@@ -84,10 +84,10 @@ Present the summary and ask the user to confirm. **Do NOT activate until the use
 Once the user confirms, activate:
 
 ```bash
-mkdir -p ~/.claude/hooks/state && touch ~/.claude/hooks/state/nonstop-"${CLAUDE_CODE_SESSION_ID:?is not set}".active
+mkdir -p ~/.claude/hooks/state && rm -f ~/.claude/hooks/state/nonstop-"${CLAUDE_CODE_SESSION_ID:?is not set}".count && touch ~/.claude/hooks/state/nonstop-"$CLAUDE_CODE_SESSION_ID".active
 ```
 
-This turns nonstop mode on for this session only. Claude Code puts the session's ID in `CLAUDE_CODE_SESSION_ID`, and the stop hook looks only for the flag file of the session that is stopping. If the command fails because `CLAUDE_CODE_SESSION_ID` is not set, tell the user that this Claude Code version cannot turn nonstop mode on, and stop there. Do not touch a shared file such as `nonstop.activate` instead: the next session to stop would take it.
+This turns nonstop mode on for this session only, with a full budget of nudges. Claude Code puts the session's ID in `CLAUDE_CODE_SESSION_ID`, and the stop hook looks only for the flag file of the session that is stopping. If the command fails because `CLAUDE_CODE_SESSION_ID` is not set, tell the user that this Claude Code version cannot turn nonstop mode on, and stop there. Do not touch a shared file such as `nonstop.activate` instead: the next session to stop would take it.
 
 Say: "Nonstop mode ON. Go rest — I've got this."
 

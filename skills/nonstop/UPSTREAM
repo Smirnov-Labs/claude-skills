@@ -4,7 +4,9 @@ Changed here, in SKILL.md and nonstop.sh:
 - Each session turns nonstop mode on and off with its own flag file,
   nonstop-$CLAUDE_CODE_SESSION_ID.active. Upstream used shared nonstop.activate and
   nonstop.deactivate files, and the next session to stop took them, so one session
-  could take another session's activation. The hook ignores those files.
+  could take another session's activation. The hook ignores those files. Turning
+  nonstop on resets the nudge count of the session, and each turn-off command
+  removes the count with the flag.
 - The hook shell-quotes what it reads from its JSON input before eval, and ignores a
   session ID that has characters other than letters, digits, - and _.
 - SKILL.md has a <SUBAGENT-STOP> block, so a subagent does not turn nonstop mode on.
