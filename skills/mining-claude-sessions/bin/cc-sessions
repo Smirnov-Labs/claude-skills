@@ -75,19 +75,16 @@ CRED_OPTS = {   # program: ((short options that take a secret, long ones), every
     "xh": (("a", ("auth", "bearer")), "aAops"),
     "sshpass": (("p", ()), "pfdP"),
 }
-# curl options that take name=content and keep the content whole: & and ; are data there, not field separators.
-# True marks a -F field, where content that starts with @ or < names a file.
-LITERAL_LONG = {"--data-urlencode": False, "--url-query": False, "--form": True, "--form-string": False}
+# curl options that take name=content (and -F): the content stays whole, & and ; included, not split into fields
+LITERAL_LONG = ("--data-urlencode", "--url-query", "--form", "--form-string")
 
 
-def literal_field(value, form=False):
+def literal_field(value):
     """VALUE with the content of a sensitive name=content masked whole, or None when there is nothing to mask. As in
-    curl, an @ before the first = makes it name@file. In a -F form field, content that starts with @ or < is a file."""
+    curl, an @ before the first = makes it name@file. Content an earlier pass masked in part (<redacted>&rest) is
+    masked whole; a -F file name (name=@file) is masked too, which costs nothing."""
     m = re.match(r"([^=@]*)=", value)
-    if not m or not SECRET_NAME.search(m.group(1)):
-        return None
-    content = value[m.end():]
-    if content in ("", "<redacted>") or (form and content[:1] in ("@", "<")):
+    if not m or not SECRET_NAME.search(m.group(1)) or value[m.end():] in ("", "<redacted>", "<masked>", "<long>"):
         return None
     return value[:m.end()] + "<redacted>"
 
@@ -201,10 +198,10 @@ def mask_opts(args, prog):
         out.append(args[pos:m.start()] + text)
         pos = m.end()
 
-    def literal(m, keep, form):                          # a raw word: one pair of outer quotes stays around the mask
+    def literal(m, keep):                                # a raw word: one pair of outer quotes stays around the mask
         raw = m.group(0)[len(keep):]
         q = raw[0] if len(raw) > 1 and raw[0] in "'\"" and raw[-1] == raw[0] else ""
-        masked = literal_field(raw[1:-1] if q else raw, form)
+        masked = literal_field(raw[1:-1] if q else raw)
         if masked:
             put(m, keep + q + masked + q)
     while j < len(words):
@@ -217,10 +214,10 @@ def mask_opts(args, prog):
             j += 1
         elif prog == "curl" and w in LITERAL_LONG:
             if j + 1 < len(words):
-                literal(words[j + 1], "", LITERAL_LONG[w])
+                literal(words[j + 1], "")
             j += 1
         elif prog == "curl" and w.split("=", 1)[0] in LITERAL_LONG and "=" in w:
-            literal(words[j], w.split("=", 1)[0] + "=", LITERAL_LONG[w.split("=", 1)[0]])
+            literal(words[j], w.split("=", 1)[0] + "=")
         elif re.match(r"-[A-Za-z0-9]", w):
             for k, ch in enumerate(w[1:], 1):
                 if ch in vals:
@@ -229,9 +226,9 @@ def mask_opts(args, prog):
                     elif ch in shorts and j + 1 < len(words):
                         put(words[j + 1], "<redacted>")
                     elif prog == "curl" and ch == "F" and w[k + 1:]:
-                        literal(words[j], w[:k + 1], True)
+                        literal(words[j], w[:k + 1])
                     elif prog == "curl" and ch == "F" and j + 1 < len(words):
-                        literal(words[j + 1], "", True)
+                        literal(words[j + 1], "")
                     j += 0 if w[k + 1:] else 1           # the value is the next word
                     break
         j += 1
@@ -318,8 +315,8 @@ def mask_shell(s, depth=0):
                 edits.append((tok[2], tok[3], keep + shlex.quote(hdr.group(1) + ": <redacted>")))
             return bool(hdr)
 
-        def literal(tok, keep, form):                    # curl's name=content: added first, so this edit wins
-            masked = literal_field(tok[0][len(keep):], form)
+        def literal(tok, keep):                          # curl's name=content: added first, so this edit wins
+            masked = literal_field(tok[0][len(keep):])
             if masked:
                 src = s[tok[2]:tok[3]]
                 edits.append((tok[2], tok[3], keep + masked if src == tok[0] and "<" not in src
@@ -333,10 +330,10 @@ def mask_shell(s, depth=0):
                 header(tok, w.split("=", 1)[1], w.split("=", 1)[0] + "=")
             elif prog == "curl" and w in LITERAL_LONG:
                 if j + 1 < len(cmd):
-                    literal(cmd[j + 1], "", LITERAL_LONG[w])
+                    literal(cmd[j + 1], "")
                 j += 1
             elif prog == "curl" and w.split("=", 1)[0] in LITERAL_LONG and "=" in w:
-                literal(tok, w.split("=", 1)[0] + "=", LITERAL_LONG[w.split("=", 1)[0]])
+                literal(tok, w.split("=", 1)[0] + "=")
             elif w.startswith("--") and "=" in w and w[2:w.index("=")] in creds[1]:
                 edits.append((tok[2], tok[3], w[:w.index("=") + 1] + "<redacted>"))
             elif w.startswith("--") and w[2:] in creds[1]:
@@ -352,14 +349,14 @@ def mask_shell(s, depth=0):
                         if ch in creds[0]:
                             edits.append((tok[2], tok[3], w[:k + 1] + "<redacted>"))
                         elif prog == "curl" and ch == "F":
-                            literal(tok, w[:k + 1], True)
+                            literal(tok, w[:k + 1])
                         else:
                             header(tok, rest, w[:k + 1])
                     elif j + 1 < len(cmd):
                         if ch in creds[0]:
                             edits.append((cmd[j + 1][2], cmd[j + 1][3], "<redacted>"))
                         elif prog == "curl" and ch == "F":
-                            literal(cmd[j + 1], "", True)
+                            literal(cmd[j + 1], "")
                         else:
                             header(cmd[j + 1], words[j + 1])
                         j += 1                           # the next word is this option's value
@@ -379,7 +376,7 @@ def mask_shell(s, depth=0):
         if depth < 3 and " " in text and SHELL_HINT.search(text):    # bash -c '...', ssh host '...', $(...)
             inner = re.sub(r"\$\(([^()]*)\)", lambda m: "$(" + (mask_shell(m.group(1), depth + 1) or m.group(1)) + ")",
                            inner) if inner.startswith("$(") or "=$(" in inner else (mask_shell(inner, depth + 1) or inner)
-        if re.match(r"^[\w.-]+=", text) and tok[2] not in assign_at:   # name=value&...: a form body or a field
+        if re.match(r"^[\w.][\w.-]*=", text) and tok[2] not in assign_at:   # name=value&...: a form body; -F... is not
             fields = text.split("&")
             masked = "&".join(f.split("=", 1)[0] + "=<redacted>" if "=" in f and SECRET_NAME.search(f.split("=", 1)[0])
                               else f for f in fields)
