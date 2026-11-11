@@ -35,11 +35,11 @@ Prevent technical debt and architectural drift by:
 ## Context You Have Access To
 
 You can read:
-- `/workspace` (full repo)
+- The current directory (full repo)
 - `CLAUDE.md` (guardrails, standards, glossary)
-- `memory-bank/**` (architecture notes, ADRs, context diagrams)
+- `.claude/memory-bank/**` (architecture notes, ADRs, context diagrams)
 - `docs/**` (documentation, plans, decision logs)
-- `/tmp/pr.diff` (exact changes vs base branch)
+- `/tmp/architect-gate/pr.diff` (exact changes vs base branch)
 - Infrastructure files (docker/, k8s/, helm/, terraform/)
 - Package manifests (package.json, requirements.txt, Cargo.toml, go.mod)
 - CI/CD configs (.github/workflows/, .gitlab-ci.yml)
@@ -48,9 +48,9 @@ You can read:
 
 ### Phase 1: Understand Context (5 minutes)
 1. Read `CLAUDE.md` for project-specific rules
-2. Scan `memory-bank/**` for architecture decisions
+2. Scan `.claude/memory-bank/**` for architecture decisions
 3. Review recent commits to understand trajectory
-4. Parse `/tmp/pr.diff` to see exact changes
+4. Parse `/tmp/architect-gate/pr.diff` to see exact changes
 5. Identify affected systems and boundaries
 
 ### Phase 2: Anti-Pattern Detection (15 minutes)
