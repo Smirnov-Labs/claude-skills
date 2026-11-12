@@ -188,7 +188,12 @@ jobs:
 
       - name: Run Claude Architect-Gate
         id: claude
-        uses: anthropics/claude-code-base-action@980cb83cd01e2a1478e9eb6d5e89ec6665f3fd60  # Pin to specific SHA for stability
+        # The 2026-11-04 mirror sync, which bundles Claude Code 2.1.318. Sonnet 5.5 needs
+        # Claude Code 2.1.284 or later. The previous pin (980cb83) bundled 2.0.35. That
+        # version often started on claude-sonnet-4-5-20250929 instead of the model set below,
+        # and it sent its background calls to claude-haiku-4-5. To check a run, read
+        # `init.model` and `claude_code_version` in the uploaded execution-log.json.
+        uses: anthropics/claude-code-base-action@5f469a015cc80475b794d9db18ae1e07750e8e45
         with:
           prompt_file: ${{ steps.prompts.outputs.prompt_path }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -196,19 +201,20 @@ jobs:
             {
               "model": "claude-sonnet-5-5"
             }
-          # Without explicit --allowed-tools the action runs Claude with no
-          # tools, so it cannot Read the diff file or run `git diff` to see
-          # what changed — and falls back to "you haven't provided a PR diff".
-          # Mirror chronicle/claude-k8s: Read for files, Grep/Glob for search,
-          # Bash(git*) for diff retrieval.
-          claude_args: "--allowed-tools Read --allowed-tools Grep --allowed-tools Glob --allowed-tools 'Bash(git*)'"
+          # --tools keeps only these built-in tools, so the reviewer cannot start subagents
+          # or workflows. The --allowed-tools rules let Bash run git diff, log, show and
+          # blame without asking.
+          # --add-dir makes /tmp/architect-gate a working directory, so Read can open the
+          # diff. Claude Code asks permission to read outside its working directories, and
+          # a headless run has no one to grant it.
+          claude_args: "--tools Read,Grep,Glob,Bash --add-dir /tmp/architect-gate --allowed-tools Read --allowed-tools Grep --allowed-tools Glob --allowed-tools 'Bash(git diff:*)' --allowed-tools 'Bash(git log:*)' --allowed-tools 'Bash(git show:*)' --allowed-tools 'Bash(git blame:*)'"
           show_full_output: true
         continue-on-error: true  # Allow retry on failure
 
       - name: Retry Claude Architect-Gate (if first attempt failed)
         id: claude_retry
         if: steps.claude.outcome == 'failure'
-        uses: anthropics/claude-code-base-action@980cb83cd01e2a1478e9eb6d5e89ec6665f3fd60
+        uses: anthropics/claude-code-base-action@5f469a015cc80475b794d9db18ae1e07750e8e45
         with:
           prompt_file: ${{ steps.prompts.outputs.prompt_path }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -216,7 +222,7 @@ jobs:
             {
               "model": "claude-sonnet-5-5"
             }
-          claude_args: "--allowed-tools Read --allowed-tools Grep --allowed-tools Glob --allowed-tools 'Bash(git*)'"
+          claude_args: "--tools Read,Grep,Glob,Bash --add-dir /tmp/architect-gate --allowed-tools Read --allowed-tools Grep --allowed-tools Glob --allowed-tools 'Bash(git diff:*)' --allowed-tools 'Bash(git log:*)' --allowed-tools 'Bash(git show:*)' --allowed-tools 'Bash(git blame:*)'"
           show_full_output: true
 
       - name: Save System Architecture Review (SAR)
