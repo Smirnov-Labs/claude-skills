@@ -7,10 +7,12 @@
 #
 # SIGNALS (verified on live PRs, 2026-10)
 #   Codex  One summary comment, edited in place, embeds
-#            <!-- codex-review-state:v1 {"code_review":{"commit_sha":…,"status":"running"|"completed",
+#            <!-- codex-review-state:v1 {"code_review":{"commit_sha":…,"status":"running"|"completed"|"failed",
 #                  "has_any_findings":…,"has_unresolved_findings":…}} -->
 #          Done for HEAD <=> commit_sha == HEAD && status == completed. (Grepping the
 #          summary for "Completed" also matches the review of the PREVIOUS commit.)
+#          "failed" (2026-11: over its usage limit, which a separate comment says) reviewed
+#          nothing, whatever the finding flags say; only an "@codex review" comment retries it.
 #          Findings are review comments tagged codex-code-review-finding with a P0–P3
 #          badge; a clean run posts a receipt comment + a 👍 reaction instead.
 #          Runs on PR opened / ready-for-review / an "@codex review" comment; a push
@@ -41,7 +43,8 @@ USAGE
   current repo.
 
 STATUS (default) — one compact digest, then a verdict line:
-  codex  ✓ clean @sha | ✗ N findings @sha (+ one line each) | … running | ⧗ HEAD not reviewed
+  codex  ✓ clean @sha | ✗ N findings @sha (+ one line each) | ✗ review failed @sha
+         | … running | ⧗ HEAD not reviewed
   sar    ✓/⚠/✗ <verdict> · severity n/4 · blockers b · time [· STALE (before HEAD)]
   ci     ✓ N passed | ✗ failing: a, b | … k/N pending
   verdict CLEAN | FIX (P2, SAR advisory) | BLOCK (P0/P1, SAR blockers or severity>=3,
@@ -56,6 +59,8 @@ WAIT — block until every needed bot has reported on HEAD, then print the diges
                  "@architect-run" once per HEAD, only if no review of HEAD is running
                  or already requested. Without it, wait exits 2 as soon as it is clear
                  a review will never start, instead of sitting out the timeout.
+                 A failed Codex review of HEAD (over its usage limit, say) counts as not
+                 reviewed; if Codex fails again after a request, wait exits 2 at once.
   --sha SHA      first wait for the PR head to reach SHA (default: your local HEAD when
                  this checkout is the PR branch and HEAD is pushed — so a wait started
                  right after `git push` never reads the previous head's review)
@@ -65,7 +70,7 @@ WAIT — block until every needed bot has reported on HEAD, then print the diges
 
 OUTPUT  --full adds the finding bodies and the full SAR; --json emits the machine payload.
 EXIT    status: 0 digest printed.  wait: 0 CLEAN · 1 FIX/BLOCK · 2 still PENDING (timed
-        out, review never triggered, or PR closed).  3 usage / API error.
+        out, review never triggered or failed again, or PR closed).  3 usage / API error.
 EOF
 }
 
@@ -175,12 +180,16 @@ def failed: . as $s | ["FAILURE","ERROR","TIMED_OUT","CANCELLED","ACTION_REQUIRE
 | [$p.reviews.nodes[] | select(.author.login == $codex)] as $crev
 | ([$cx[] | select(.body | test("codex-review-receipt")) | {at: .createdAt, sha: (.body | capture("Reviewed commit:\\*\\* `(?<s>[0-9a-f]+)`").s)}] | last) as $rcpt
 | (if $st != null and $st.status != null then
-     {status: $st.status, sha: $st.commit_sha, has_findings: $st.has_any_findings, unresolved: $st.has_unresolved_findings}
+     {status: $st.status, sha: $st.commit_sha}
+     # a failed review (over the usage limit, say) reviewed nothing: its finding flags mean nothing
+     + (if $st.status == "failed" then {has_findings: null, unresolved: null}
+        else {has_findings: $st.has_any_findings, unresolved: $st.has_unresolved_findings} end)
    elif ($crev | length) > 0 or $rcpt != null then
      ([($crev[] | {at: .submittedAt, sha: .commit.oid, has_findings: true}), ($rcpt // empty | . + {has_findings: false})]
       | sort_by(.at) | last) + {status: "completed"}
    else {status: "none", sha: null, has_findings: null} end) as $c0
 | ($c0.sha != null and ($head | startswith($c0.sha))) as $c_on_head
+| ($c_on_head and $c0.status == "failed") as $c_failed
 # findings = Codex review threads. "current" = on the reviewed commit; handled = resolved or
 # answered by someone else; an older thread whose code has since changed (outdated) is moot.
 | [$p.reviewThreads.nodes[] | . as $t | $t.comments.nodes[0] as $f
@@ -195,7 +204,15 @@ def failed: . as $s | ["FAILURE","ERROR","TIMED_OUT","CANCELLED","ACTION_REQUIRE
    | .open = ((.resolved or .replied | not) and (.current or (.outdated | not)))
    | select(.current or .open)] as $findings
 | ([$cs[] | select(.author.login != $codex and .createdAt > $head_at
-     and (.body | test("@(codex|chatgpt-codex-connector)\\b[^\\n]*review"; "i")))] | length > 0) as $c_req
+     and (.body | test("@(codex|chatgpt-codex-connector)\\b[^\\n]*review"; "i"))) | .createdAt] | max) as $c_req_at
+# a failed review of HEAD failed in the second its Code Review row shows. Only a row without a time
+# falls back to Codex's usage-limit comment, which can land after a quick retry. A request in or
+# after that second is a retry not yet answered.
+| ([$cx[] | select(.createdAt > $head_at and (.body | test("codex usage limit"; "i"))) | .createdAt] | max) as $c_limit_at
+| (if $c_failed then
+     ([$cx[] | .body | capture("\\*\\*Code Review\\*\\* \\|[^|]*datetime=\"(?<t>\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d)").t + "Z"] | last)
+     // $c_limit_at
+   else null end) as $c_fail_at
 
 # ---- SAR: newest Architecture Review comment
 | ([$cs[] | select(.author.login == $sar and (.body | test("^\\s*## [^\\n]{0,12}Architecture Review")))] | last) as $s
@@ -223,7 +240,9 @@ def failed: . as $s | ["FAILURE","ERROR","TIMED_OUT","CANCELLED","ACTION_REQUIRE
 | {repo: $repo, number: $p.number, url: $p.url, state: $p.state, draft: $p.isDraft, branch: $p.headRefName,
    head: $head, head_at: $head_at, opened_at: $auto_at, pushed_after_open: $pushed_after_open, need: $need,
    codex: ($c0 + {on_head: $c_on_head, done: ($c_on_head and $c0.status == "completed"), trigger: $trig,
-                  requested_since_head: $c_req, findings: $findings}),
+                  requested_since_head: ($c_req_at != null), failed_at: $c_fail_at,
+                  usage_limit: ($c_failed and $c_limit_at != null),
+                  retry_requested: ($c_failed and $c_req_at != null and $c_req_at >= $c_fail_at), findings: $findings}),
    sar: ($sar_o + {requested_since_head: $s_req}),
    ci: $ci_o}
 | . as $o
@@ -235,15 +254,24 @@ def failed: . as $s | ["FAILURE","ERROR","TIMED_OUT","CANCELLED","ACTION_REQUIRE
    (if ($o.ci.failing | length) > 0 then "CI failing: \($o.ci.failing | join(", "))" else empty end)] as $block
 | [(if $o.codex.done then $o.codex.findings[] | select(.open and (.sev == "P2" or .sev == "P?")) | "codex \(.sev) \(.path):\(.line)" else empty end),
    (if $o.sar.fresh and $o.sar.class == "advisory" then "SAR advisory" else empty end)] as $fix
-# bots that will only ever report on HEAD if someone asks, and how long to give them first (s)
+| "has not started on HEAD \($head[0:7]) and will not without a trigger" as $idle
+| "review failed on HEAD \($head[0:7])\(if $o.codex.usage_limit then " (usage limit)" else "" end)" as $c_why
+# bots that will only ever report on HEAD if someone asks, how long to give them first (s), and why.
+# A failed review of HEAD gets no grace: Codex will not try it again by itself.
 | [(if needs("codex") and ($o.codex.done | not) and $o.codex.status != "running" and ($o.codex.requested_since_head | not)
-     then {bot: "codex", body: "@codex review", grace: (if $pushed_after_open then 75 else 420 end)} else empty end),
+     then {bot: "codex", body: "@codex review", grace: (if $c_failed then 0 elif $pushed_after_open then 75 else 420 end),
+           why: (if $c_failed then $c_why else $idle end)} else empty end),
    (if needs("sar") and ($o.sar.fresh | not) and ($o.sar.requested_since_head | not)
-     then {bot: "sar", body: "@architect-run", grace: (if $pushed_after_open then 0 else 900 end)} else empty end)] as $cand
-| . + {waiting: $waiting, blocking: $block, fixes: $fix, trigger_candidates: $cand,
+     then {bot: "sar", body: "@architect-run", grace: (if $pushed_after_open then 0 else 900 end), why: $idle} else empty end)] as $cand
+# bots whose review of HEAD failed after a request too: waiting longer will not help
+| [(if needs("codex") and $c_failed and $o.codex.requested_since_head and ($o.codex.retry_requested | not)
+     then "codex \($c_why) after \"@codex review\"; retry later: comment \"@codex review\" again" else empty end)] as $stalled
+| . + {waiting: $waiting, blocking: $block, fixes: $fix, trigger_candidates: $cand, stalled: $stalled,
        verdict: (if ($waiting | length) > 0 then "PENDING" elif ($block | length) > 0 then "BLOCK"
                  elif ($fix | length) > 0 then "FIX" else "CLEAN" end),
-       progress: ([(if needs("codex") then "codex " + (if $o.codex.done then "done" elif $o.codex.status == "running" then "running@\($o.codex.sha[0:7])" else "not started on HEAD" end) else empty end),
+       progress: ([(if needs("codex") then "codex " + (if $o.codex.done then "done" elif $o.codex.status == "running" then "running@\($o.codex.sha[0:7])"
+                    elif $c_failed then "failed on HEAD\(if $o.codex.retry_requested then ", retry requested" else "" end)"
+                    else "not started on HEAD" end) else empty end),
                    (if needs("sar") then "sar " + (if $o.sar.fresh then "done" elif $o.sar.present then "stale" else "none yet" end) else empty end),
                    (if needs("ci") then "ci " + (if $o.ci.done then "done" else "\($o.ci.pending | length) pending" end) else empty end)] | join(" · "))}
 JQ
@@ -256,7 +284,8 @@ def s7: if . == null then "?" else .[0:7] end;
 (.codex as $c
  | if $c.status == "none" then "codex  · no Codex activity on this PR"
    elif $c.status == "running" then "codex  … running @\($c.sha | s7)\(if $c.on_head then " (HEAD)" else " — not HEAD" end)"
-   elif ($c.on_head | not) then "codex  ⧗ HEAD not reviewed — last review @\($c.sha | s7) was \(if $c.has_findings then "findings" else "clean" end)"
+   elif ($c.on_head | not) then "codex  ⧗ HEAD not reviewed — last review @\($c.sha | s7) \(if $c.status == "failed" then "failed" elif $c.has_findings then "was findings" else "was clean" end)"
+   elif $c.status == "failed" then "codex  ✗ review failed @\($c.sha | s7)\(if $c.usage_limit then " (usage limit)" else "" end) · \(if $c.retry_requested then "retry requested" else "comment \"@codex review\" to retry" end)"
    elif ([$c.findings[] | select(.current)] | length) > 0 then
      ([$c.findings[] | select(.current)]) as $cur
      | "codex  \(if any($cur[]; .open) then "✗" else "✓" end) \($cur | length) finding(s) @\($c.sha | s7) (\($cur | group_by(.sev) | map("\(.[0].sev)×\(length)") | join(" ")))\(if $c.trigger then " · \($c.trigger)" else "" end)"
@@ -346,7 +375,7 @@ while :; do
   elif [[ $verdict != PENDING ]]; then
     render; exit_for "$verdict"
   else
-    while IFS=$'\t' read -r bot body grace; do
+    while IFS=$'\t' read -r bot body grace why; do
       [[ -n $bot ]] && ((now - seen_at >= grace)) || continue
       if ((TRIGGER)); then
         [[ $triggered == *" $bot@$head "* ]] && continue
@@ -355,10 +384,12 @@ while :; do
         triggered+="$bot@$head "
       else
         render
-        printf 'x %s has not started on HEAD %s and will not without a trigger; re-run with --trigger (or comment "%s")\n' "$bot" "${head:0:7}" "$body" >&2
+        printf 'x %s %s; re-run with --trigger (or comment "%s")\n' "$bot" "$why" "$body" >&2
         exit 2
       fi
-    done < <(field '.trigger_candidates[] | [.bot, .body, .grace] | @tsv')
+    done < <(field '.trigger_candidates[] | [.bot, .body, .grace, .why] | @tsv')
+    stalled=$(field '.stalled[0] // empty')
+    [[ -z $stalled ]] || { render; printf 'x %s\n' "$stalled" >&2; exit 2; }
   fi
   if ((now - start >= TIMEOUT)); then
     render; printf 'x timed out after %ss: %s\n' "$TIMEOUT" "$line" >&2; exit 2

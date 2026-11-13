@@ -33,7 +33,9 @@ never on push. `--trigger` posts those comments once per HEAD, only when no revi
 is running or already requested. Without it, `wait` exits 2 within ~75s once it is clear no
 review will start, instead of sitting out the timeout. If your checkout is the pushed PR
 branch, `wait` first waits for GitHub to show that SHA, so a wait started right after
-`git push` never reads the previous commit's review.
+`git push` never reads the previous commit's review. A failed Codex review of HEAD (over its
+usage limit, say) counts as not reviewed; if it failed after an `@codex review`, `wait` exits 2
+at once, and you retry by hand later.
 
 ## Reading the result
 
@@ -73,7 +75,7 @@ Don't paste a polling recipe into subagent prompts. On 2026-10-16 one did
 ## Signals (if you must reason by hand — prbots already does this)
 
 - **Codex**: one summary comment, edited in place, embeds
-  `<!-- codex-review-state:v1 {"code_review":{"commit_sha":…,"status":"running"|"completed","has_any_findings":…,"has_unresolved_findings":…}} -->`.
+  `<!-- codex-review-state:v1 {"code_review":{"commit_sha":…,"status":"running"|"completed"|"failed","has_any_findings":…,"has_unresolved_findings":…}} -->`.
   Done for HEAD ⇔ `commit_sha == HEAD && status == completed`. Findings = review threads tagged
   `codex-code-review-finding` with a `P0`–`P3` badge; a clean run posts a "Didn't find any
   major issues" receipt + 👍.

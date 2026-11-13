@@ -45,6 +45,7 @@ This section grows as patterns and preferences are discovered during work on thi
 - **After a change to `bin/skillsync`,** run `tests/skillsync.sh`. On macOS, also run it under `/bin/bash` (3.2).
 - **After a change to `codex-review`,** run `tests/codex-review.sh`. A fake `codex` on PATH plays each failure the real one has shown.
 - **After a change to `prland`,** run `tests/prland.sh`. Fake `gh` and `prbots` on PATH, real git repos and worktrees in a temp dir.
+- **After a change to `prbots`,** run `tests/prbots.sh`. A fake `gh` on PATH serves snapshots of one PR's Codex comments, and prland runs through it.
 - **After a change to `cc-sessions`,** run `tests/cc-sessions.sh`. It builds synthetic transcripts and never reads your real ones.
 - **After a change to `add-to-claude-link`,** run `tests/add-to-claude-link.sh`. It decodes each format in Python before it compares, so a stray `&amp;` or a `+` for a space fails it.
 - **After a change to `latest-version`,** run `tests/latest-version.sh`. A local fake server plays the GitHub API and a registry with a token challenge, and a fake `gh` lends a token (`gh auth token`).
