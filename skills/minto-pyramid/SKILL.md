@@ -62,7 +62,9 @@ Apply in order. Each is a self-contained pass over the draft.
 - **Lead with the ask.** Even topical buckets ("what's working / what's not /
   recommendation") strand the decision at the bottom — put it first.
 - **Exactly three reasons.** Two feels thin; four means one isn't load-bearing or
-  two overlap. Audit and merge until three load-bearing reasons remain.
+  two overlap. Audit and merge until three load-bearing reasons remain. Never
+  invent a reason or a fact to reach three: if the draft only supports two,
+  keep two and tell the writer the third is missing.
 - **Evidence earns its place.** Credit, backstory, and process detail usually
   fail the "so what?" test for a decision-maker. Cut them, or demote to one line.
 - **Preserve voice.** Compress and reorder; don't rewrite the person into a
@@ -77,9 +79,10 @@ Apply in order. Each is a self-contained pass over the draft.
 > Hey all — quick update on the onboarding wizard. We rolled it out to half of
 > signups two weeks ago. Activation is up ~4% but that's within noise.
 > Time-to-first-project dropped 9→6 min. Support's seeing ~20 extra mobile
-> tickets/week and step 2 has 30% drop-off. The pricing redesign is specced and
-> might move conversion more. I'm mostly thinking we pause the wizard and move to
-> pricing.
+> tickets/week and step 2 has 30% drop-off. Getting mobile and step 2 right would
+> take ~3 more weeks of eng. The pricing redesign is specced and might move
+> conversion more. I'm mostly thinking we pause the wizard and move to pricing
+> next cycle, curious what people think.
 
 **After** (answer first):
 

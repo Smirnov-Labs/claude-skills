@@ -55,7 +55,7 @@ Use one method or the other on a machine, not both, or each skill loads twice.
 | **adding-an-add-to-claude-button** | Builds the claude.ai link that opens the Add custom connector dialog with a remote MCP server's name and URL filled in, and the README badge, HTML button or React component around it, with `add-to-claude-link` | "add an Add to Claude button", "Connect to Claude link" |
 | **de-slopping** | Tightens a written deliverable (PR or commit message, design doc, README, runbook, report, release note): cuts hedges and filler, and checks Simplified Technical English rules with the bundled `ste_lint.py`. Includes an optional `slop_guard` Stop hook | "de-slop this", "tighten this", before finalizing a write-up |
 | **minto-pyramid** | Restructures a write-up answer-first with the Minto Pyramid: the conclusion, then grouped supporting points | "restructure this", "de-waffle", "lead with the answer" |
-| **humanizer** | Removes signs of AI-generated writing (vendored from [blader/humanizer](https://github.com/blader/humanizer)) | "humanize this text" |
+| **humanizer** | Removes signs of AI-generated writing (forked from [blader/humanizer](https://github.com/blader/humanizer); its `UPSTREAM` file lists the local changes) | "humanize this text" |
 | **nonstop** | Autonomous work mode driven by a Stop hook (vendored from [andylizf/nonstop](https://github.com/andylizf/nonstop); its `UPSTREAM` file has the hook line) | "/nonstop", "keep working while I'm away" |
 
 ### Prerequisites
