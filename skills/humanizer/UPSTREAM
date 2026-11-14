@@ -1,3 +1,9 @@
-Vendored from https://github.com/blader/humanizer at 523374d (2026-07-21). MIT, see LICENSE.
-Files taken unmodified: SKILL.md, LICENSE, README.md.
-To update: review upstream's diff since that commit, copy the same files over, and update this note.
+Forked from https://github.com/blader/humanizer at 523374d (2026-07-21). MIT, see LICENSE.
+Taken unmodified: LICENSE, README.md.
+Changed here, in SKILL.md:
+- Nine before/after examples (§7, 8, 10, 12, 16, 18, 20, 28, 30) gave the "After" a
+  fact that the "Before" does not have, which breaks the skill's own rule 3 (Never
+  invent facts). §7, 8, 10, 12, 16 and 18 drop the invented detail from the "After".
+  §20, 28 and 30 make the fact the point of the example, so the "Before" now states it.
+To update: review upstream's diff since that commit, apply it to SKILL.md, keep the
+change above, and update this note.
