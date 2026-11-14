@@ -76,8 +76,10 @@ The linter counts words and matches patterns. It flags:
   `will`, `must`. They commit.
 - Filler `-ing` such as `making it easy to`: a soft flag.
 
-The linter matches exact forms. It flags `commence` but not `commencing`, and
-`comprehensive` but not `comprehensively`. I catch those variants by judgment.
+The linter flags base forms as `hard`. Derived forms get a `soft` flag:
+blocklist adverbs (`comprehensively`) and swap-verb inflections (`commencing`).
+The lists above are a sample. `rules.json` holds the full lists. I catch other
+variants by judgment.
 
 ## Rules I apply (judgment)
 
