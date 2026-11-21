@@ -28,15 +28,19 @@ cat > "$T/bin/git" <<'EOF'
 #!/usr/bin/env python3
 # Fake git: logs its arguments to $FAKE/git.log, then runs the real git.
 # FAKE_GIT_REMOVE_FAIL=1 makes `worktree remove` print "fatal: refused" and exit 128 instead.
+# FAKE_GIT_REMOVE_NOOP=1 makes `worktree remove` exit 0 and remove nothing.
 import os
 import sys
 
 args = sys.argv[1:]
 with open(os.path.join(os.environ["FAKE"], "git.log"), "a") as log:
     log.write(" ".join(args) + "\n")
-if os.environ.get("FAKE_GIT_REMOVE_FAIL") and any(a == "worktree" and b == "remove" for a, b in zip(args, args[1:])):
+removing = any(a == "worktree" and b == "remove" for a, b in zip(args, args[1:]))
+if removing and os.environ.get("FAKE_GIT_REMOVE_FAIL"):
     print("fatal: refused", file=sys.stderr)
     sys.exit(128)
+if removing and os.environ.get("FAKE_GIT_REMOVE_NOOP"):
+    sys.exit(0)
 os.execv(os.environ["REAL_GIT"], [os.environ["REAL_GIT"]] + args)
 EOF
 
@@ -93,9 +97,13 @@ cat > "$T/bin/orca" <<'EOF'
 # Fake Orca CLI: logs its arguments to $FAKE/orca.log and answers from files in $FAKE. Any --force, and any command it
 # does not know, exits 9. FAKE_ORCA_FAIL=1: every call says Orca is not running. FAKE_ORCA_RM_FAIL=1: `worktree rm`
 # refuses. FAKE_ORCA_DELETES_BRANCH=1: `worktree rm` also deletes the worktree's branch. FAKE_PS2_TOUCH=FILE: from its
-# second call on, `worktree ps` creates FILE before it answers.
+# second call on, `worktree ps` creates FILE before it answers. FAKE_PS2_PY=CODE: from its second call on, it runs
+# the Python statements CODE too, before it answers. They see os, json, subprocess, sys and fake (the $FAKE directory).
+# FAKE_ORCA_RM_NOOP=1: `worktree rm` says it removed the worktree and removes nothing. FAKE_ORCA_RM_DIRONLY=1: it
+# deletes the directory, leaves git's entry for it, and says it removed the worktree.
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -126,6 +134,8 @@ if args[:2] == ["worktree", "ps"]:
         count.write("x\n")
     if len(open(os.path.join(fake, "ps.count")).read().splitlines()) >= 2 and os.environ.get("FAKE_PS2_TOUCH"):
         open(os.environ["FAKE_PS2_TOUCH"], "a").close()
+    if len(open(os.path.join(fake, "ps.count")).read().splitlines()) >= 2 and os.environ.get("FAKE_PS2_PY"):
+        exec(os.environ["FAKE_PS2_PY"])
     sys.stdout.write(open(os.path.join(fake, "ps.json")).read())
     sys.exit(0)
 if args[:2] == ["worktree", "rm"] and "--worktree" in args[:-1] and args[args.index("--worktree") + 1].startswith("id:R1::"):
@@ -134,6 +144,11 @@ if args[:2] == ["worktree", "rm"] and "--worktree" in args[:-1] and args[args.in
     listing = git("-C", wt, "worktree", "list", "--porcelain").stdout.splitlines()
     if os.environ.get("FAKE_ORCA_RM_FAIL") or not listing:
         reply(refused, 1)
+    if os.environ.get("FAKE_ORCA_RM_NOOP"):
+        reply({"ok": True, "result": {"removed": True}})
+    if os.environ.get("FAKE_ORCA_RM_DIRONLY"):
+        shutil.rmtree(wt)
+        reply({"ok": True, "result": {"removed": True}})
     main = listing[0][len("worktree "):]
     branch = git("-C", wt, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
     if git("-C", main, "worktree", "remove", wt).returncode != 0:
@@ -390,6 +405,7 @@ check "apply removes a hidden worktree with git, without --force" '[ $rc -eq 0 ]
 check "apply deletes the branch at the PR head and prints its SHA" '! git -C "$M" rev-parse -q --verify refs/heads/feat/h >/dev/null && [[ $out == *"deleted branch feat/h (was ${H:0:10})"* ]]'
 check "apply leaves the remote branch alone" '[ -n "$(git -C "$M" ls-remote origin refs/heads/feat/h)" ]'
 check "apply never prunes" '! grep -q "worktree prune" "$FAKE/git.log"'
+check "apply deletes the branch only if it is still at the PR head" 'grep -q "update-ref -d refs/heads/feat/h $H" "$FAKE/git.log"'
 check "the last line counts removals" '[ "$(last)" = "wtclean: 1 removed, 0 kept (0 merged), 0 errors" ]'
 setup; mkwt wt-o feat/o; pr feat/o MERGED; orca_row "$W"; run --apply
 check "apply removes an Orca worktree through Orca, by id" '[ ! -d "$W" ] && grep -q -- "worktree rm --worktree id:R1::$W --json" "$FAKE/orca.log"'
@@ -400,10 +416,25 @@ pr feat/behind MERGED; git -C "$W" reset -q --hard "$OLD"; age "$W"; run --apply
 check "a worktree behind the PR head goes, and its branch stays" '[ ! -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat/behind >/dev/null && [[ $out == *"kept branch feat/behind: it is at ${OLD:0:7}, not the PR head"* ]]'
 setup; mkwt wt-late feat/late; pr feat/late MERGED; orca_row "$W"; FAKE_PS2_TOUCH="$W/late.txt" run --apply
 check "a file that appears after the first checks keeps the worktree" '[ -d "$W" ] && [ -e "$W/late.txt" ] && [[ $out == *"wt-late  feat/late: local files"* ]]'
+setup; mkwt wt-ag feat/ag; pr feat/ag MERGED; orca_row "$W"
+FAKE_PS2_PY='d = json.load(open(fake + "/ps.json")); d["result"]["worktrees"][0]["agents"] = [{"state": "working"}]; json.dump(d, open(fake + "/ps.json", "w"))' run --apply
+check "an agent that appears after the scan keeps it" '[ -d "$W" ] && [[ $out == *"wt-ag  feat/ag: in use: 1 agents in Orca (merged #1)"* ]] && ! grep -q "worktree rm" "$FAKE/orca.log"'
+setup; mkwt wt-24 feat/24; pr feat/24 MERGED; orca_row "$W"
+FAKE_PS2_PY="os.utime('$(git -C "$W" rev-parse --path-format=absolute --git-path index)')" run --apply
+check "a worktree touched after the scan keeps it" '[ -d "$W" ] && [[ $out == *"wt-24  feat/24: touched in the last 24 hours (merged #1)"* ]]'
+setup; mkwt wt-sm feat/sm; pr feat/sm MERGED; orca_row "$W"
+FAKE_PS2_PY="os.makedirs('$(git -C "$W" rev-parse --path-format=absolute --git-path modules)')" run --apply
+check "a submodule that appears after the scan keeps it" '[ -d "$W" ] && [[ $out == *"wt-sm  feat/sm: initialized submodules (merged #1)"* ]]'
 setup; mkwt wt-ref feat/ref; pr feat/ref MERGED; orca_row "$W"; FAKE_ORCA_RM_FAIL=1 run --apply
 check "an Orca failure during removal stops the run with an error" '[ $rc -eq 2 ] && [ -d "$W" ] && [[ $out == *"error"*"refused"* ]]'
+setup; mkwt wt-noop feat/noop; pr feat/noop MERGED; orca_row "$W"; FAKE_ORCA_RM_NOOP=1 run --apply
+check "Orca says removed but the directory stays: an error" '[ $rc -eq 2 ] && [ -d "$W" ] && [[ $out == *"error"*"still there"* ]]'
+setup; mkwt wt-dir feat/dir; pr feat/dir MERGED; orca_row "$W"; FAKE_ORCA_RM_DIRONLY=1 run --apply
+check "Orca deletes the directory but git still lists it: an error" '[ $rc -eq 2 ] && [ ! -d "$W" ] && [[ $out == *"error"*"still there"* ]]'
 setup; mkwt wt-gr feat/gr; pr feat/gr MERGED; FAKE_GIT_REMOVE_FAIL=1 run --apply
 check "a git refusal keeps the worktree, not an error" '[ $rc -eq 0 ] && [ -d "$W" ] && [[ $out == *"wt-gr  feat/gr: git refused the removal: fatal: refused"* ]]'
+setup; mkwt wt-gn feat/gn; pr feat/gn MERGED; FAKE_GIT_REMOVE_NOOP=1 run --apply
+check "git exits 0 but the directory stays: kept, not removed" '[ $rc -eq 0 ] && [ -d "$W" ] && [[ $out == *"wt-gn  feat/gn: git refused the removal: still present (merged #1)"* ]]'
 setup; mkwt wt-s1 feat/s; pr feat/s MERGED; git -C "$M" worktree add -q -f "$T/r/wt-s2" feat/s; run --apply
 check "a branch another worktree has checked out is kept" '[ ! -d "$T/r/wt-s1" ] && git -C "$M" rev-parse -q --verify refs/heads/feat/s >/dev/null && [[ $out == *"kept branch feat/s: another worktree has it checked out"* ]]'
 setup; mkwt wt-c feat/c; pr feat/c MERGED; run --check
