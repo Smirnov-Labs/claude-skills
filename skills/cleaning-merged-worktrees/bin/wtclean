@@ -23,10 +23,14 @@ A linked worktree goes only when all six conditions hold:
 An initialized submodule also keeps a worktree: git will not remove one without --force. Orca listing the worktree
 twice keeps it too, and so does a child workspace that Orca does not list.
 Every other worktree stays, with its reason. A problem with one worktree is a reason to keep it, not an error.
+--apply checks conditions 4 to 6 again just before each removal, and a worktree that fails that check stays. It removes
+a worktree that Orca lists with Orca's worktree rm, and any other with git worktree remove. A worktree that git refuses
+to remove stays too.
 Errors are failures of gh, the Orca CLI or wtclean itself, and the run stops at the first one. Orca's worktree list is
-an error when it looks cut off or is for another host. It is also an error when a row has no usable field. No removal
-uses --force. wtclean never runs git worktree prune and never deletes a remote branch. It deletes the local branch
-only when the branch is at the pull request head.
+an error when it looks cut off or is for another host. It is also an error when a row has no usable field. So is a
+failure of Orca's worktree rm, which can mean that Orca is down. Earlier removals stay done, and the report lists them.
+No removal uses --force. wtclean never runs git worktree prune and never deletes a remote branch. It deletes the local
+branch only when the branch is at the pull request head. The report says what became of the branch.
 
 Report:
   skip  <path>: not a git repository     an Orca repository that is missing or bare; not an error
@@ -72,8 +76,12 @@ class Parser(argparse.ArgumentParser):
         raise UsageError(message)
 
 
+QUIET = False       # --check sets it. say() then prints nothing, and main() prints the one line of counts itself.
+
+
 def say(text):
-    print(text, flush=True)
+    if not QUIET:
+        print(text, flush=True)
 
 
 def report_line(tag, text):
@@ -457,9 +465,59 @@ def classify(main, wt, repo_slug, rows):
     return None, pr
 
 
-def scan(main, rows, tally):
-    """Classify the linked worktrees of one repository and print its part of the report. Whatever was found
-    before an error is still printed, and counted in tally."""
+def branch_note(main, branch, pr_head):
+    """What became of the local branch of a worktree that was just removed, as the end of its report line. The branch
+    goes only when it is at the pull request head. update-ref gets that old value, so it fails if the branch moved."""
+    ref = "refs/heads/" + branch
+    tip = git(main, "rev-parse", "--verify", "--quiet", ref).stdout.strip()
+    if not tip:
+        return "branch %s was already deleted" % branch              # Orca's own merged-only rule can do that
+    if any(w.get("branch") == ref for w in worktrees(main)):         # the removed worktree is no longer listed
+        return "kept branch %s: another worktree has it checked out" % branch
+    if tip != pr_head:
+        return "kept branch %s: it is at %s, not the PR head %s" % (branch, tip[:7], pr_head[:7])
+    r = git(main, "update-ref", "-d", ref, pr_head)
+    if r.returncode != 0:
+        return "kept branch %s: %s" % (branch, " ".join(r.stderr.split())[:200])
+    return "deleted branch %s (was %s)" % (branch, pr_head[:10])
+
+
+def remove(main, wt, pr, cli):
+    """Remove a worktree that classify() let go, after one more look at conditions 4 to 6, then deal with its branch.
+    Returns (True, "#<pull request>; <what became of the branch>"), or (False, why it stays). Orca removes a worktree
+    that it lists, and git removes any other. Neither gets --force, and a refusal by git keeps the worktree. A failure
+    of the Orca CLI is a ToolError, so it stops the run: Orca may be down."""
+    path, branch = wt["worktree"], branch_of(wt)
+    number, pr_head = pr["number"], pr["headRefOid"]     # read now, so a bad record fails before anything is removed
+    rows = orca_rows(cli)                                # a new read: an agent may have started since the scan
+    use = busy(path, rows)
+    if use:
+        return False, use
+    local = local_data(path)
+    if local:
+        return False, "local files: " + local
+    if has_submodules(path):
+        return False, "initialized submodules"
+    if time.time() - last_touched(path) < DAY:
+        return False, "touched in the last 24 hours"
+    found = rows["by_path"].get(os.path.realpath(path), [])     # busy() has kept a path that Orca lists twice
+    if found:
+        orca(cli, "worktree", "rm", "--worktree", "id:" + found[0]["worktreeId"])
+    else:
+        r = git(main, "worktree", "remove", path)
+        if r.returncode != 0:
+            why = (r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[0]
+            return False, "git refused the removal: " + why[:200]
+    if os.path.lexists(path) or any(w["worktree"] == path for w in worktrees(main)):
+        if found:
+            raise ToolError("Orca said it removed %s, but git still lists it or the directory is still there" % path)
+        return False, "git refused the removal: still present"
+    return True, "#%s; %s" % (number, branch_note(main, branch, pr_head))
+
+
+def scan(main, rows, tally, cli, apply):
+    """Classify the linked worktrees of one repository, remove the ones that may go when apply is set, and print its
+    part of the report. Whatever was found or removed before an error is still printed, and counted in tally."""
     repo_slug = slug(git(main, "config", "--get", "remote.origin.url").stdout)
     say("repo %s (%s)" % (main, repo_slug or "no GitHub remote"))
     go, kept = [], []
@@ -467,6 +525,13 @@ def scan(main, rows, tally):
         for wt in worktrees(main)[1:]:
             label = "%s  %s" % (wt["worktree"], branch_of(wt) or "(detached)")
             reason, pr = classify(main, wt, repo_slug, rows)
+            if reason is None and apply:
+                removed, text = remove(main, wt, pr, cli)
+                if removed:
+                    go.append(report_line("removed", "%s  %s" % (label, text)))
+                    tally["go"] += 1
+                    continue
+                reason = text                                  # the second look, or git, said no: kept, like any other
             if reason is None:
                 go.append(report_line("would remove", label + ("  #%s" % pr["number"] if pr else "")))
                 tally["go"] += 1
@@ -499,21 +564,23 @@ def add_local_bin():
 
 
 def main():
+    global QUIET
     if any(a in ("-h", "--help") for a in sys.argv[1:]):
         print(__doc__.strip())
         return 0
     add_local_bin()
     tally = {"go": 0, "kept": 0, "merged": 0, "errors": 0}
-    where, code, check = "wtclean", 0, False
+    where, code, apply, check = "wtclean", 0, False, False
     try:
         a = parse_args()
-        check = a.check
+        apply, check = a.apply, a.check
+        QUIET = check
         cli = orca_cli()
         tops = repos(cli, a.repo)                 # first, so a usage error wins over a problem with Orca's list
         rows = orca_rows(cli)                     # one read per run, before the first repository is scanned
         for top in tops:
             where = top
-            scan(top, rows, tally)
+            scan(top, rows, tally, cli, apply)
     except UsageError as e:
         print("wtclean: usage error: %s" % e, file=sys.stderr)
         return 3
@@ -521,10 +588,14 @@ def main():
         tally["errors"] += 1
         text = str(e) if isinstance(e, ToolError) else "%s: %s" % (type(e).__name__, e)
         say(report_line("error", "%s: %s" % (where, " ".join(text.split()))))
-        # --check exits 0 when a tool fails, so the precheck still starts the run, and the run reports the error
-        code = 0 if check else 2
-    say("wtclean: %d to remove, %d kept (%d merged), %d errors"
-        % (tally["go"], tally["kept"], tally["merged"], tally["errors"]))
+        code = 2
+    if check:
+        # one line and nothing else. It exits 0 when a tool fails, so the precheck still starts the run, and the run
+        # reports the error. It exits 1 only when there is nothing to do.
+        print("wtclean: %d can go, %d errors" % (tally["go"], tally["errors"]), flush=True)
+        return 0 if tally["go"] or tally["errors"] else 1
+    say("wtclean: %d %s, %d kept (%d merged), %d errors"
+        % (tally["go"], "removed" if apply else "to remove", tally["kept"], tally["merged"], tally["errors"]))
     return code
 
 

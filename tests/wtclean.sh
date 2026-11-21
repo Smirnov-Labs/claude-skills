@@ -385,6 +385,33 @@ setup; mkwt wt-m feat/m; pr feat/m MERGED; orca_row "$W"; orca_ps_patch 'd["resu
 check "an Orca row with a null agents field is an error" '[ $rc -eq 2 ] && [[ $out == *"agents"* ]]'
 setup; mkwt wt-m feat/m; pr feat/m MERGED; orca_ps_patch 'd["ok"] = False; d["error"] = {"message": "worktree ps failed"}'; run
 check "a failed Orca worktree list is an error" '[ $rc -eq 2 ] && [[ $out == *"worktree ps failed"* ]]'
+setup; mkwt wt-h feat/h; pr feat/h MERGED; run --apply
+check "apply removes a hidden worktree with git, without --force" '[ $rc -eq 0 ] && [ ! -d "$W" ] && grep -q "worktree remove $W" "$FAKE/git.log" && ! grep -q -- "--force" "$FAKE/git.log"'
+check "apply deletes the branch at the PR head and prints its SHA" '! git -C "$M" rev-parse -q --verify refs/heads/feat/h >/dev/null && [[ $out == *"deleted branch feat/h (was ${H:0:10})"* ]]'
+check "apply leaves the remote branch alone" '[ -n "$(git -C "$M" ls-remote origin refs/heads/feat/h)" ]'
+check "apply never prunes" '! grep -q "worktree prune" "$FAKE/git.log"'
+check "the last line counts removals" '[ "$(last)" = "wtclean: 1 removed, 0 kept (0 merged), 0 errors" ]'
+setup; mkwt wt-o feat/o; pr feat/o MERGED; orca_row "$W"; run --apply
+check "apply removes an Orca worktree through Orca, by id" '[ ! -d "$W" ] && grep -q -- "worktree rm --worktree id:R1::$W --json" "$FAKE/orca.log"'
+setup; mkwt wt-ob feat/ob; pr feat/ob MERGED; orca_row "$W"; FAKE_ORCA_DELETES_BRANCH=1 run --apply
+check "a branch Orca already deleted is reported, not an error" '[ $rc -eq 0 ] && [[ $out == *"branch feat/ob was already deleted"* ]]'
+setup; mkwt wt-behind feat/behind; OLD=$H; echo y >> "$W/a.txt"; git -C "$W" commit -qam more; git -C "$W" push -q
+pr feat/behind MERGED; git -C "$W" reset -q --hard "$OLD"; age "$W"; run --apply
+check "a worktree behind the PR head goes, and its branch stays" '[ ! -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat/behind >/dev/null && [[ $out == *"kept branch feat/behind: it is at ${OLD:0:7}, not the PR head"* ]]'
+setup; mkwt wt-late feat/late; pr feat/late MERGED; orca_row "$W"; FAKE_PS2_TOUCH="$W/late.txt" run --apply
+check "a file that appears after the first checks keeps the worktree" '[ -d "$W" ] && [ -e "$W/late.txt" ] && [[ $out == *"wt-late  feat/late: local files"* ]]'
+setup; mkwt wt-ref feat/ref; pr feat/ref MERGED; orca_row "$W"; FAKE_ORCA_RM_FAIL=1 run --apply
+check "an Orca failure during removal stops the run with an error" '[ $rc -eq 2 ] && [ -d "$W" ] && [[ $out == *"error"*"refused"* ]]'
+setup; mkwt wt-gr feat/gr; pr feat/gr MERGED; FAKE_GIT_REMOVE_FAIL=1 run --apply
+check "a git refusal keeps the worktree, not an error" '[ $rc -eq 0 ] && [ -d "$W" ] && [[ $out == *"wt-gr  feat/gr: git refused the removal: fatal: refused"* ]]'
+setup; mkwt wt-s1 feat/s; pr feat/s MERGED; git -C "$M" worktree add -q -f "$T/r/wt-s2" feat/s; run --apply
+check "a branch another worktree has checked out is kept" '[ ! -d "$T/r/wt-s1" ] && git -C "$M" rev-parse -q --verify refs/heads/feat/s >/dev/null && [[ $out == *"kept branch feat/s: another worktree has it checked out"* ]]'
+setup; mkwt wt-c feat/c; pr feat/c MERGED; run --check
+check "--check with something to remove: exit 0, one line, no change" '[ $rc -eq 0 ] && [ "$out" = "wtclean: 1 can go, 0 errors" ] && [ -d "$W" ]'
+setup; mkwt wt-c feat/c; run --check
+check "--check with nothing to do: exit 1" '[ $rc -eq 1 ] && [ "$out" = "wtclean: 0 can go, 0 errors" ]'
+setup; mkwt wt-c feat/c; pr feat/c MERGED; FAKE_GH_FAIL=1 run --check
+check "--check after a tool error: exit 0" '[ $rc -eq 0 ] && [ "$out" = "wtclean: 0 can go, 1 errors" ]'
 
 echo "$pass passed, $fail failed"
 rm -rf "$T"
