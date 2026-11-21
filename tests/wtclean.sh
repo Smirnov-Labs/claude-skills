@@ -287,6 +287,36 @@ setup; mkwt wt-a feat/a; ORCA_USER_DATA_PATH=$T/orca-data run_bare
 check "ORCA_USER_DATA_PATH without a CLI is an error too" '[ $rc -eq 2 ]'
 setup; FAKE_ORCA_FAIL=1 run --check
 check "--check after an Orca failure returns 0, not 2" '[ $rc -eq 0 ] && [[ "$(last)" == *", 1 errors" ]]'
+setup; mkwt wt-m feat/m; pr feat/m MERGED; run
+check "a merged PR at HEAD: would remove, with its number" '[[ $out == *"would remove  $T/r/wt-m  feat/m  #1"* ]]'
+setup; mkwt wt-none feat/none; run
+check "no PR keeps it" '[[ $out == *"wt-none  feat/none: no merged pull request"* ]]'
+setup; mkwt wt-closed feat/closed; pr feat/closed CLOSED; run
+check "a PR closed without merging keeps it" '[[ $out == *"wt-closed  feat/closed: no merged pull request"* ]]'
+setup; mkwt wt-open feat/open; pr feat/open MERGED; pr feat/open OPEN; run
+check "an open PR keeps it even after an earlier merge" '[[ $out == *"wt-open  feat/open: open pull request #2"* ]]'
+setup; mkwt wt-fork feat/fork; pr feat/fork MERGED "" true; run
+check "a merged PR from a fork does not count" '[[ $out == *"wt-fork  feat/fork: no merged pull request"* ]]'
+setup; mkwt wt-ahead feat/ahead; pr feat/ahead MERGED; echo x >> "$W/a.txt"; git -C "$W" commit -qam local; age "$W"; run
+check "a local commit past the PR head keeps it" '[[ $out == *"wt-ahead  feat/ahead: commits not in the pull request (merged #1)"* ]]'
+check "a merged worktree kept for any reason counts as merged" '[ "$(last)" = "wtclean: 0 to remove, 1 kept (1 merged), 0 errors" ]'
+setup; mkwt wt-behind feat/behind; OLD=$H; echo y >> "$W/a.txt"; git -C "$W" commit -qam more; git -C "$W" push -q
+pr feat/behind MERGED; git -C "$W" reset -q --hard "$OLD"; age "$W"; run
+check "HEAD behind a PR head that is present locally would go" '[[ $out == *"would remove  $T/r/wt-behind"* ]]'
+setup; mkwt wt-rem feat/rem; git clone -q https://github.com/o/r.git "$T/r/helper"; git -C "$T/r/helper" checkout -q feat/rem
+echo z >> "$T/r/helper/a.txt"; git -C "$T/r/helper" commit -qam remote; git -C "$T/r/helper" push -q origin feat/rem
+pr feat/rem MERGED "$(git -C "$T/r/helper" rev-parse HEAD)"; run
+check "HEAD behind a PR head that is only on GitHub would go, through the compare API" '[[ $out == *"would remove  $T/r/wt-rem"* ]] && grep -q "api repos/o/r/compare/" "$FAKE/gh.log"'
+setup; mkwt wt-loc feat/loc; git clone -q https://github.com/o/r.git "$T/r/helper"; git -C "$T/r/helper" checkout -q feat/loc
+echo z >> "$T/r/helper/a.txt"; git -C "$T/r/helper" commit -qam remote; git -C "$T/r/helper" push -q origin feat/loc
+pr feat/loc MERGED "$(git -C "$T/r/helper" rev-parse HEAD)"; echo l > "$W/b.txt"; git -C "$W" add b.txt; git -C "$W" commit -qm local; age "$W"; run
+check "a local-only commit, with a PR head only on GitHub, keeps it" '[[ $out == *"wt-loc  feat/loc: commits not in the pull request"* ]]'
+setup; mkwt wt-reuse feat/reuse; pr feat/reuse MERGED; pr feat/reuse CLOSED "$(git -C "$M" rev-parse origin/main)"; run
+check "a branch reused by a later closed PR still matches its merged PR" '[[ $out == *"would remove  $T/r/wt-reuse  feat/reuse  #1"* ]]'
+setup; mkwt wt-m feat/m; pr feat/m MERGED; FAKE_GH_FAIL=1 run
+check "a gh failure is an error: exit 2" '[ $rc -eq 2 ] && [[ $out == *"error"* ]] && [[ "$(last)" == *", 1 errors" ]]'
+setup; mkwt wt-m feat/m; pr feat/m MERGED; FAKE_GH_GARBAGE=1 run
+check "gh output that is not JSON is an error, not a traceback" '[ $rc -eq 2 ] && [[ $out != *"Traceback"* ]]'
 
 echo "$pass passed, $fail failed"
 rm -rf "$T"

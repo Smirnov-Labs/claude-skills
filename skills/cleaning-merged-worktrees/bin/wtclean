@@ -189,9 +189,58 @@ def branch_of(wt):
     return ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
 
 
+def gh_answer(r, what):
+    """The JSON that a finished gh run printed. A failed run, or output that is not JSON, is a ToolError."""
+    if r.returncode == 0:
+        try:
+            return json.loads(r.stdout)
+        except ValueError:
+            pass
+    detail = " ".join((r.stderr or r.stdout).split())[:200]
+    raise ToolError("%s gave an unexpected answer (exit %d)%s" % (what, r.returncode, ": " + detail if detail else ""))
+
+
+def contains(main, repo_slug, head, pr_head):
+    """True when head is a pull request's head commit pr_head, or an ancestor of it. Git answers when it has
+    pr_head. If not, GitHub's compare API does: HTTP 404 means GitHub has never seen head, so it is not in the PR."""
+    if head == pr_head:
+        return True
+    if git(main, "cat-file", "-e", pr_head + "^{commit}").returncode == 0:
+        return git(main, "merge-base", "--is-ancestor", head, pr_head).returncode == 0
+    r = run(["gh", "api", "repos/%s/compare/%s...%s" % (repo_slug, head, pr_head)], cwd="/")
+    if r.returncode != 0 and "HTTP 404" in r.stderr:
+        return False
+    answer = gh_answer(r, "gh api compare %s...%s" % (head[:10], pr_head[:10]))
+    return isinstance(answer, dict) and answer.get("behind_by") == 0     # no commit of head is missing from pr_head
+
+
+def merged_pr(main, repo_slug, branch, head):
+    """Check the branch's pull requests into this repository (not from forks) against the worktree's HEAD.
+    Returns (None, pr) when a merged one holds head and none is open. Otherwise (reason, pr): pr is the newest
+    merged one if head is in none of them, else None."""
+    r = run(["gh", "pr", "list", "-R", repo_slug, "--head", branch, "--state", "all", "--limit", "100", "--json",
+             "number,state,headRefOid,isCrossRepository,url,mergedAt"], cwd="/")
+    prs = gh_answer(r, "gh pr list for %s" % branch)
+    if not isinstance(prs, list) or not all(isinstance(p, dict) for p in prs):
+        raise ToolError("gh pr list for %s did not give a list of pull requests" % branch)
+    prs = [p for p in prs if not p.get("isCrossRepository")]
+    for p in prs:
+        if p.get("state") == "OPEN":
+            return "open pull request #%s" % p["number"], None
+    merged = sorted((p for p in prs if p.get("state") == "MERGED"), key=lambda p: p.get("mergedAt") or "",
+                    reverse=True)
+    if not merged:
+        return "no merged pull request", None
+    for p in merged:
+        if contains(main, repo_slug, head, p["headRefOid"]):
+            return None, p
+    return "commits not in the pull request", merged[0]
+
+
 def classify(main, wt, repo_slug, rows):
-    """Decide one linked worktree: (None, pr) lets it go, (reason, pr) keeps it. pr is the matched merged pull
-    request once the PR check has run, else None. The checks run in order, and the first failure keeps it."""
+    """Decide one linked worktree: (None, pr) lets it go, (reason, pr) keeps it. pr is the branch's merged pull
+    request once the PR check has found one (the newest, when HEAD is in none), else None. The checks run in
+    order, and the first failure keeps it."""
     path, branch = wt["worktree"], branch_of(wt)
     if wt.get("prunable") or not os.path.isdir(path):
         return "directory missing", None
@@ -199,11 +248,15 @@ def classify(main, wt, repo_slug, rows):
         return "detached or locked", None
     if os.path.basename(path).startswith("agent-") or (branch or "").startswith("worktree-agent-"):
         return "agent worktree (agent-* or worktree-agent-*)", None
-    if git(path, "rev-parse", "HEAD").returncode != 0:
+    rev = git(path, "rev-parse", "HEAD")
+    if rev.returncode != 0:
         return "git cannot read it", None
     if not repo_slug:
         return "no GitHub remote", None
-    return None, None
+    reason, pr = merged_pr(main, repo_slug, branch, rev.stdout.strip())
+    if reason:
+        return reason, pr
+    return None, pr
 
 
 def scan(main, rows, tally):
