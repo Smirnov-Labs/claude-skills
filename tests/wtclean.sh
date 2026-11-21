@@ -29,12 +29,18 @@ cat > "$T/bin/git" <<'EOF'
 # Fake git: logs its arguments to $FAKE/git.log, then runs the real git.
 # FAKE_GIT_REMOVE_FAIL=1 makes `worktree remove` print "fatal: refused" and exit 128 instead.
 # FAKE_GIT_REMOVE_NOOP=1 makes `worktree remove` exit 0 and remove nothing.
+# FAKE_GIT_TERM=TEXT: a call whose arguments, joined by spaces, end with TEXT sends SIGTERM to its caller (wtclean) and
+# exits 143 without running git, as a time limit that stops the run would.
 import os
+import signal
 import sys
 
 args = sys.argv[1:]
 with open(os.path.join(os.environ["FAKE"], "git.log"), "a") as log:
     log.write(" ".join(args) + "\n")
+if os.environ.get("FAKE_GIT_TERM") and " ".join(args).endswith(os.environ["FAKE_GIT_TERM"]):
+    os.kill(os.getppid(), signal.SIGTERM)
+    sys.exit(143)
 removing = any(a == "worktree" and b == "remove" for a, b in zip(args, args[1:]))
 if removing and os.environ.get("FAKE_GIT_REMOVE_FAIL"):
     print("fatal: refused", file=sys.stderr)
@@ -420,6 +426,10 @@ check "apply leaves the remote branch alone" '[ -n "$(git -C "$M" ls-remote orig
 check "apply never prunes" '! grep -q "worktree prune" "$FAKE/git.log"'
 check "apply deletes the branch only if it is still at the PR head" 'grep -q "update-ref -d refs/heads/feat/h $H" "$FAKE/git.log"'
 check "the last line counts removals" '[ "$(last)" = "wtclean: 1 removed, 0 kept (0 merged), 0 errors" ]'
+setup; mkwt wt-t1 feat/t1; pr feat/t1 MERGED; mkwt wt-t2 feat/t2; pr feat/t2 MERGED; FAKE_GIT_TERM="worktree remove $T/r/wt-t2" run --apply
+check "a run stopped by SIGTERM still shows the removal before it" '[ $rc -eq 143 ] && [ -d "$T/r/wt-t2" ] && [[ $out == *"removed       $T/r/wt-t1  feat/t1  #1; deleted branch feat/t1"* ]]'
+setup; mkwt wt-k1 feat/k1; mkwt wt-k2 feat/k2; pr feat/k2 MERGED; run
+check "removals come before kept lines in the report" '[[ $out == *"would remove  $T/r/wt-k2  feat/k2"*"kept          $T/r/wt-k1  feat/k1: no merged pull request"* ]]'
 setup; mkwt wt-o feat/o; pr feat/o MERGED; orca_row "$W"; run --apply
 check "apply removes an Orca worktree through Orca, by id" '[ ! -d "$W" ] && grep -q -- "worktree rm --worktree id:R1::$W --json" "$FAKE/orca.log"'
 setup; mkwt wt-ob feat/ob; pr feat/ob MERGED; orca_row "$W"; FAKE_ORCA_DELETES_BRANCH=1 run --apply

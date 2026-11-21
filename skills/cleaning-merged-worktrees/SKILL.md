@@ -17,7 +17,7 @@ description: Use when clearing out git worktrees whose pull request has merged, 
 | `wtclean --apply` | Removes, then prints the same report with what happened. | 0 done, 2 one or more errors, 3 usage |
 | `wtclean --check` | For the precheck. Prints one line of counts. | 0 if something can go or something failed, 1 if there is nothing to do |
 
-To clear out merged worktrees, run `wtclean`, read the report, then run `wtclean --apply`. `--repo <path>` (repeatable) adds repos to the scan. Any checkout of a repository works as the path. A usage error prints `wtclean: usage error: <message>` to stderr and exits 3 in every mode, `--check` included.
+To clear out merged worktrees, run `wtclean`, read the report, then run `wtclean --apply`. `--apply` can take minutes, so run it with a long timeout or in the background. `--repo <path>` (repeatable) adds repos to the scan. Any checkout of a repository works as the path. A usage error prints `wtclean: usage error: <message>` to stderr and exits 3 in every mode, `--check` included.
 
 wtclean scans the git repositories that Orca lists on this host, plus each `--repo`. It runs the Orca CLI in `ORCA_CLI_COMMAND`, else `orca-ide` on PATH. If neither exists but Orca looks installed, it stops with an error. Orca looks installed when `ORCA_USER_DATA_PATH` is set or `~/.config/orca` exists. Without Orca, it scans each `--repo`, or else the repository it runs in.
 
@@ -53,7 +53,7 @@ Orca's `worktree rm` answers only after the directory and git's entry are gone, 
 
 ## Read the report
 
-Each repository gets a `repo` line, then its worktrees. The `would remove` and `removed` lines come first, then the `kept` lines.
+Each repository gets a `repo` line, then its worktrees. The `would remove` and `removed` lines come first, then the `kept` lines. wtclean prints each `would remove` and `removed` line at once, and the `kept` lines when it finishes the repository. A run that stops early still shows what it removed.
 
 ```text
 skip  <path>: not a git repository
@@ -114,7 +114,7 @@ Give the automation this prompt:
 ```text
 Weekly worktree cleanup on this host. Do exactly these steps, then stop.
 
-1. Run "$HOME/.local/bin/wtclean" --apply once. Keep its full output and its exit status. If the command is missing or does not start, use exit status 127 and its error as the output.
+1. Run "$HOME/.local/bin/wtclean" --apply once, with a 10-minute timeout. Keep its full output and its exit status. If the command is missing or does not start, use exit status 127 and its error as the output. If the timeout stops it, treat that as a nonzero exit status.
 2. Set this workspace's comment to one line. If wtclean printed its last line ("wtclean: R removed, K kept (M merged), E errors"), run: "$ORCA_CLI_COMMAND" worktree set --worktree current --comment "wtclean <today, YYYY-MM-DD>: R removed, M merged kept, E errors" --json. Otherwise use the comment "wtclean <today>: did not finish".
 3. If the exit status is not 0, also run: "$ORCA_CLI_COMMAND" worktree set --worktree current --unread --json
 4. End with wtclean's full output as your last message.
@@ -149,5 +149,5 @@ After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M mer
 - The process check compares real paths, so it does not see a process that works in the worktree through a bind mount.
 - wtclean ignores fork PRs, so a clone whose `origin` is a fork keeps its worktrees.
 - A tool error stops the run at the first error, and wtclean does not scan the worktrees after it.
-- `git worktree remove` and Orca's `worktree rm` get 120 seconds. A removal that times out stops the run, and can leave a half-deleted worktree. If tracked files are gone, later runs keep it until someone cleans it up by hand.
+- `git worktree remove` and Orca's `worktree rm` get 10 minutes, and every other call gets 2 minutes. A removal that times out stops the run, and can leave a half-deleted worktree. If tracked files are gone, later runs keep it until someone cleans it up by hand.
 - A sidebar comment whose date stops advancing means the weekly run did not finish, or the precheck skipped it because nothing could go. Check `automations runs --id <automation-id>`. A skipped week shows as `skipped_precheck`.

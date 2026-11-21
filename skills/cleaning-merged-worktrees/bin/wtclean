@@ -44,7 +44,8 @@ Report:
     kept          <path>  <branch>: <reason>[ (merged #<pull request>)]
     error         <where>: <message>
   wtclean: <n> to remove, <k> kept (<m> merged), <e> errors
---apply ends with "<n> removed". --check prints only "wtclean: <n> can go, <e> errors". A usage error prints
+Each would remove or removed line prints at once, so a run that is stopped still shows what it removed. A repository's
+kept lines print after its last one. --apply ends with "<n> removed". --check prints only "wtclean: <n> can go, <e> errors". A usage error prints
 "wtclean: usage error: <message>" to stderr in every mode.
 
 exit  0  done (--check: something can go, or something failed)
@@ -66,6 +67,8 @@ GITHUB_REMOTE = re.compile(r"^(?:(?:https?|git|ssh)://(?:[^@/]+@)?github\.com(?:
                            r"([\w.-]+/[\w.-]+?)(?:\.git)?/?$", re.IGNORECASE)
 DAY = 86400     # seconds
 PR_LIMIT = 100  # pull requests that one gh pr list reads for a branch
+TIMEOUT = 120   # seconds that a call to git, gh or the Orca CLI gets
+REMOVE_TIMEOUT = 600    # seconds for a removal: deleting a large worktree can take minutes
 
 
 class ToolError(Exception):
@@ -93,7 +96,7 @@ def report_line(tag, text):
     return "  %-14s%s" % (tag, text)
 
 
-def run(cmd, cwd=None, timeout=120):
+def run(cmd, cwd=None, timeout=TIMEOUT):
     """Run cmd and capture its output. GIT_OPTIONAL_LOCKS=0 keeps git's status polling from rewriting an index."""
     env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
     try:
@@ -105,8 +108,8 @@ def run(cmd, cwd=None, timeout=120):
         raise ToolError("cannot run %s: %s" % (cmd[0], e.strerror or e))
 
 
-def git(where, *args):
-    return run(["git", "-C", where] + list(args))
+def git(where, *args, timeout=TIMEOUT):
+    return run(["git", "-C", where] + list(args), timeout=timeout)
 
 
 def orca_cli():
@@ -118,9 +121,9 @@ def orca_cli():
     return cli
 
 
-def orca(cli, *args):
+def orca(cli, *args, timeout=TIMEOUT):
     """Run one Orca CLI command with --json and return its `result`. Orca's own error text becomes the ToolError."""
-    r = run([cli] + list(args) + ["--json"])
+    r = run([cli] + list(args) + ["--json"], timeout=timeout)
     try:
         reply = json.loads(r.stdout)
     except ValueError:
@@ -563,9 +566,9 @@ def remove(main, wt, pr, cli, checkouts):
         return False, reason
     found = rows["by_path"].get(os.path.realpath(path), [])     # busy() has kept a path that Orca lists twice
     if found:
-        orca(cli, "worktree", "rm", "--worktree", "id:" + found[0]["worktreeId"])
+        orca(cli, "worktree", "rm", "--worktree", "id:" + found[0]["worktreeId"], timeout=REMOVE_TIMEOUT)
     else:
-        r = git(main, "worktree", "remove", path)
+        r = git(main, "worktree", "remove", path, timeout=REMOVE_TIMEOUT)
         if r.returncode != 0:
             why = (r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[0]
             return False, "git refused the removal: " + why[:200]
@@ -578,10 +581,11 @@ def remove(main, wt, pr, cli, checkouts):
 
 def scan(main, rows, tally, cli, apply, checkouts):
     """Classify the linked worktrees of one repository, remove the ones that may go when apply is set, and print its
-    part of the report. Whatever was found or removed before an error is still printed, and counted in tally."""
+    part of the report. A would remove or removed line prints at once, so a run that a time limit stops keeps the record
+    of what it removed. The kept lines follow when the loop ends, or when an error stops it, and tally counts them all."""
     repo_slug = slug(git(main, "config", "--get", "remote.origin.url").stdout)
     say("repo %s (%s)" % (main, repo_slug or "no GitHub remote"))
-    go, kept = [], []
+    kept = []
     try:
         for wt in worktrees(main)[1:]:
             label = "%s  %s" % (wt["worktree"], branch_of(wt) or "(detached)")
@@ -589,12 +593,12 @@ def scan(main, rows, tally, cli, apply, checkouts):
             if reason is None and apply:
                 removed, text = remove(main, wt, pr, cli, checkouts)
                 if removed:
-                    go.append(report_line("removed", "%s  %s" % (label, text)))
+                    say(report_line("removed", "%s  %s" % (label, text)))
                     tally["go"] += 1
                     continue
                 reason = text                                  # the second look, or git, said no: kept, like any other
             if reason is None:
-                go.append(report_line("would remove", label + ("  #%s" % pr["number"] if pr else "")))
+                say(report_line("would remove", label + ("  #%s" % pr["number"] if pr else "")))
                 tally["go"] += 1
             else:
                 merged = " (merged #%s)" % pr["number"] if pr else ""
@@ -603,7 +607,7 @@ def scan(main, rows, tally, cli, apply, checkouts):
                 if pr:
                     tally["merged"] += 1
     finally:
-        for text in go + kept:
+        for text in kept:
             say(text)
 
 
