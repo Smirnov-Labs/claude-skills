@@ -160,10 +160,11 @@ def orca(cli, *args, timeout=TIMEOUT):
     raise ToolError(str(message))
 
 
-def worktrees(main):
-    """git worktree list --porcelain as dicts, the main checkout first (the parser in skills/pr-land/bin/prland)."""
+def parse_worktrees(text):
+    """git worktree list --porcelain output as dicts, the main checkout first. The parser is the one in
+    skills/pr-land/bin/prland."""
     out, cur = [], {}
-    for line in git(main, "worktree", "list", "--porcelain").stdout.splitlines() + [""]:
+    for line in text.splitlines() + [""]:
         if not line.strip():
             if cur:
                 out.append(cur)
@@ -174,20 +175,34 @@ def worktrees(main):
     return out
 
 
+def worktrees(main):
+    """The worktrees of the repository at main, the main checkout first. A git worktree list that fails is a ToolError,
+    even when git printed part of the list first: a worktree that it leaves out can hold the branch, or lie inside a
+    worktree that goes."""
+    r = git(main, "worktree", "list", "--porcelain")
+    if r.returncode != 0:
+        detail = " ".join(r.stderr.split())[:200]
+        raise ToolError("git worktree list failed in %s (exit %d)%s" % (main, r.returncode,
+                                                                       ": " + detail if detail else ""))
+    return parse_worktrees(r.stdout)
+
+
 def main_checkout(path):
-    """Real path of the main checkout of the repository that holds path, or None if there is none or it is bare."""
+    """Real path of the main checkout of the repository that holds path, or None if there is none or it is bare. It
+    reads git's list even when git fails: no record means no repository, and a repository whose list breaks after its
+    main checkout is still scanned, where the strict reads of worktrees() report the failure as an error."""
     if not isinstance(path, str) or not os.path.isdir(path):    # git -C "" would quietly mean the current directory
         return None
-    first = (worktrees(path) or [{}])[0]
+    first = (parse_worktrees(git(path, "worktree", "list", "--porcelain").stdout) or [{}])[0]
     if not first.get("worktree") or first.get("bare"):
         return None
     return os.path.realpath(first["worktree"])
 
 
 def checkout_paths(main):
-    """The real path of every checkout of the repository at main: the main checkout and each linked worktree. git
-    always lists the main checkout, so an empty list means git failed, and that is a ToolError: a checkout it does not
-    show could lie inside a worktree that goes."""
+    """The real path of every checkout of the repository at main: the main checkout and each linked worktree.
+    worktrees() raises when git fails. git always lists the main checkout, so an empty answer is a ToolError too: a
+    checkout it does not show could lie inside a worktree that goes."""
     listed = worktrees(main)
     if not listed:
         raise ToolError("git could not list the worktrees of %s" % main)
@@ -290,14 +305,15 @@ def merged_pr(main, repo_slug, branch, head):
     return "commits not in the pull request", merged[0]
 
 
-# DISPOSABLE and local_data are adapted from skills/pr-land/bin/prland. They differ in two ways: git lists the untracked
-# and ignored files NUL-separated here, so a name made of spaces still counts, and any skip-worktree entry keeps the
-# worktree, whether or not its file exists. Their git calls go through git() above, which sets GIT_OPTIONAL_LOCKS=0, so
-# a look at a worktree never rewrites its index or resets its 24-hour clock. Keep the reason strings as they are: the
-# tests match them.
+# DISPOSABLE and local_data are adapted from skills/pr-land/bin/prland. They differ in three ways. git lists the
+# untracked and ignored files NUL-separated here, so a name made of spaces still counts. DISPOSABLE ends with \Z, not $:
+# a raw name can end in a newline, and $ also matches just before one, so "build\n" would count as build output. And
+# any skip-worktree entry keeps the worktree, whether or not its file exists. Their git calls go through git() above,
+# which sets GIT_OPTIONAL_LOCKS=0, so a look at a worktree never rewrites its index or resets its 24-hour clock. Keep
+# the reason strings as they are: the tests match them.
 DISPOSABLE = re.compile(r"(^|/)(node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|"
                         r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.cache|\.parcel-cache|coverage|"
-                        r"\.gradle|[^/]+\.egg-info)(/|$)|\.py[co]$|(^|/)\.DS_Store$")
+                        r"\.gradle|[^/]+\.egg-info)(/|\Z)|\.py[co]\Z|(^|/)\.DS_Store\Z")
 
 
 def nul_list(text):

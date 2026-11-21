@@ -34,6 +34,8 @@ cat > "$T/bin/git" <<'EOF'
 # FAKE_GIT_VANISH=TEXT: a call whose arguments end with TEXT runs, then deletes $FAKE/vbin/git. When that link is the
 # only git on PATH, wtclean's next git call cannot start.
 # FAKE_GIT_VERSION=V: `git --version` prints "git version V".
+# FAKE_GIT_LIST_FAIL=TEXT: after a call whose arguments end with TEXT, every `worktree list` prints only its first
+# record (the main checkout) and exits 128, as git does when it stops at a worktree entry that it cannot read.
 import os
 import signal
 import subprocess
@@ -52,6 +54,15 @@ if os.environ.get("FAKE_GIT_VANISH") and " ".join(args).endswith(os.environ["FAK
     code = subprocess.run([os.environ["REAL_GIT"]] + args).returncode
     os.unlink(os.path.join(os.environ["FAKE"], "vbin", "git"))
     sys.exit(code)
+broken = os.path.join(os.environ["FAKE"], "list.broken")
+listing = any(a == "worktree" and b == "list" for a, b in zip(args, args[1:]))
+if listing and os.environ.get("FAKE_GIT_LIST_FAIL") and os.path.exists(broken):
+    listed = subprocess.run([os.environ["REAL_GIT"]] + args, capture_output=True, text=True).stdout
+    print(listed.split("\n\n")[0] + "\n")
+    print("fatal: broken worktree entry", file=sys.stderr)
+    sys.exit(128)
+if os.environ.get("FAKE_GIT_LIST_FAIL") and " ".join(args).endswith(os.environ["FAKE_GIT_LIST_FAIL"]):
+    open(broken, "w").close()
 removing = any(a == "worktree" and b == "remove" for a, b in zip(args, args[1:]))
 if removing and os.environ.get("FAKE_GIT_REMOVE_FAIL"):
     print("fatal: refused", file=sys.stderr)
@@ -395,6 +406,8 @@ setup; mkwt wt-sp1 feat/sp1; pr feat/sp1 MERGED; printf '[ ]*\n' >> "$M/.git/inf
 check "an ignored file named only spaces keeps it, and the file stays" '[ -e "$W/   " ] && [[ $out == *"wt-sp1  feat/sp1: local files: ignored files that are not build output:     (merged #1)"* ]]'
 setup; mkwt wt-sp2 feat/sp2; pr feat/sp2 MERGED; echo keep > "$W/   "; age "$W"; run --apply
 check "an untracked file named only spaces keeps it, and the file stays" '[ -e "$W/   " ] && [[ $out == *"wt-sp2  feat/sp2: local files: 1 untracked files (merged #1)"* ]] && ! grep -q "worktree remove" "$FAKE/git.log"'
+NL=$'\n'; setup; mkwt wt-nl feat/nl; pr feat/nl MERGED; printf 'build*\n' >> "$M/.git/info/exclude"; echo keep > "$W/build$NL"; age "$W"; run --apply
+check "an ignored file named build and a newline keeps it, and the file and the branch stay" '[ -e "$W/build$NL" ] && git -C "$M" rev-parse -q --verify refs/heads/feat/nl >/dev/null && [[ $out == *"wt-nl  feat/nl: local files: ignored files that are not build output: build\n (merged #1)"* ]]'
 setup; mkwt wt-nm feat/nm; pr feat/nm MERGED; mkdir -p "$W/node_modules/x"; echo 1 > "$W/node_modules/x/i.js"; age "$W"; run
 check "build output alone does not keep it" '[[ $out == *"would remove  $T/r/wt-nm"* ]]'
 setup; git init -q -b main "$T/r/subsrc"; echo s > "$T/r/subsrc/s.txt"; git -C "$T/r/subsrc" add -A; git -C "$T/r/subsrc" commit -qm s
@@ -494,6 +507,10 @@ check "an Orca removal failure names the worktree" '[[ $out == *"error         $
 setup; mkwt wt-bn feat/bn; pr feat/bn MERGED; mkdir "$FAKE/vbin"; ln -s "$T/bin/git" "$T/bin/gh" "$T/sysbin/python3" "$FAKE/vbin/"
 : > "$FAKE/git.log"; out=$(cd "$WD" && env -u ORCA_CLI_COMMAND PATH="$FAKE/vbin" FAKE_GIT_VANISH="rev-parse --verify --quiet refs/heads/feat/bn" "$TOOL" --apply 2>&1); rc=$?
 check "a branch check that fails after a removal still reports the removal" '[ $rc -eq 0 ] && [ ! -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat/bn >/dev/null && [[ $out == *"removed       $W  feat/bn  #1; branch feat/bn: not checked (cannot run git: "* ]] && [ "$(last)" = "wtclean: 1 removed, 0 kept (0 merged), 0 errors" ]'
+setup; mkwt wt-lf feat/lf; pr feat/lf MERGED; FAKE_GIT_LIST_FAIL="config --get remote.origin.url" run
+check "a git worktree list that fails during the scan is an error that names the repo" '[ $rc -eq 2 ] && [[ $out == *"error         $M: git worktree list failed in $M (exit 128): fatal: broken worktree entry"* ]] && [ "$(last)" = "wtclean: 0 to remove, 0 kept (0 merged), 1 errors" ]'
+setup; mkwt wt-bl feat/bl; pr feat/bl MERGED; FAKE_GIT_LIST_FAIL="rev-parse --verify --quiet refs/heads/feat/bl" run --apply
+check "a git worktree list that fails in the branch step keeps the branch, with no update-ref" '[ $rc -eq 0 ] && [ ! -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat/bl >/dev/null && ! grep -q "update-ref" "$FAKE/git.log" && [[ $out == *"removed       $W  feat/bl  #1; branch feat/bl: not checked (git worktree list failed in $M (exit 128): fatal: broken worktree entry)"* ]]'
 setup; mkwt wt-noop feat/noop; pr feat/noop MERGED; orca_row "$W"; FAKE_ORCA_RM_NOOP=1 run --apply
 check "Orca says removed but the directory stays: an error" '[ $rc -eq 2 ] && [ -d "$W" ] && [[ $out == *"error"*"still there"* ]]'
 setup; mkwt wt-dir feat/dir; pr feat/dir MERGED; orca_row "$W"; FAKE_ORCA_RM_DIRONLY=1 run --apply
