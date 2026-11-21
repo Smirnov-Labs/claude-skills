@@ -23,18 +23,17 @@ A linked worktree goes only when all six conditions hold:
   6  nobody touched it for 24 hours: its git index and HEAD log are more than a day old
 An initialized submodule also keeps a worktree: git will not remove one without --force. So does a sparse checkout,
 whose skip-worktree entries count as local files. Orca listing the worktree twice keeps it too, and so does a child
-workspace that Orca does not list. Another checkout or an Orca workspace inside the worktree keeps it too, because
+workspace that Orca does not list. Another checkout or an Orca workspace inside the worktree keeps it as well, because
 removing the worktree deletes it. The checkout can belong to any scanned repository, and the workspace can be idle. A
 folder above the worktree does not count.
 Every other worktree stays, with its reason. A problem with one worktree is a reason to keep it, not an error.
 --apply checks conditions 4 to 6, and what lies inside the worktree, again just before each removal, and a worktree that
 fails that check stays. It removes a worktree that Orca lists with Orca's worktree rm, and any other with git worktree
 remove. A worktree that git refuses to remove stays too.
-Errors are failures of gh, the Orca CLI or wtclean itself, and the run stops at the first one. Orca's worktree list is
-an error when it looks cut off or is for another host. It is also an error when a row has no usable field. So is a
-failure of Orca's worktree rm, which can mean that Orca is down, and a git worktree list that fails in a scanned
-repository. An error during a removal names the worktree, which can be half deleted. Earlier removals stay done, and the
-report lists them.
+Errors are failures of gh, the Orca CLI, git worktree list or wtclean itself, and the run stops at the first one. Orca's
+worktree list is an error when it looks cut off or is for another host. It is also an error when any field that a row
+needs is missing or unusable. So is a failure of Orca's worktree rm, which can mean that Orca is down. An error during a
+removal names the worktree, which can be half deleted. Earlier removals stay done, and the report lists them.
 No removal uses --force. wtclean never runs git worktree prune and never deletes a remote branch. It deletes the local
 branch only when the branch is at the pull request head. The report says what became of the branch.
 
@@ -47,7 +46,8 @@ Report:
     error         <where>: <message>
   wtclean: <n> to remove, <k> kept (<m> merged), <e> errors
 Each would remove or removed line prints at once, so a run that is stopped still shows what it removed. A repository's
-kept lines print after its last one. --apply ends with "<n> removed". --check prints only "wtclean: <n> can go, <e> errors". A usage error prints
+kept lines print after its last one.
+--apply ends with "<n> removed". --check prints only "wtclean: <n> can go, <e> errors". A usage error prints
 "wtclean: usage error: <message>" to stderr in every mode.
 
 exit  0  done (--check: something can go, or something failed)
@@ -74,9 +74,9 @@ REMOVE_TIMEOUT = 600    # seconds for a removal: deleting a large worktree can t
 # git's repository-local variables, as `git rev-parse --local-env-vars` prints them (git 2.56). A git hook or a dotfiles
 # setup can export them, and GIT_DIR then points every git call at one repository, so run() drops them all.
 LOCAL_GIT_VARS = frozenset((
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY",
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS",
-    "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR"))
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR"))
 
 
 class ToolError(Exception):
@@ -605,8 +605,9 @@ def remove(main, wt, pr, cli, checkouts):
 
 def scan(main, rows, tally, cli, apply, checkouts):
     """Classify the linked worktrees of one repository, remove the ones that may go when apply is set, and print its
-    part of the report. A would remove or removed line prints at once, so a run that a time limit stops keeps the record
-    of what it removed. The kept lines follow when the loop ends, or when an error stops it, and tally counts them all."""
+    part of the report. A would remove or removed line prints at once, so a run that a time limit stops keeps the
+    record of what it removed. The kept lines follow when the loop ends, or when an error stops it, and tally counts
+    them all."""
     repo_slug = slug(git(main, "config", "--get", "remote.origin.url").stdout)
     say("repo %s (%s)" % (main, repo_slug or "no GitHub remote"))
     kept = []

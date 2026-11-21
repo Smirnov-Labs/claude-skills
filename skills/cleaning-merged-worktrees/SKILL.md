@@ -32,7 +32,7 @@ A linked worktree goes only when all six hold. The main checkout never goes.
 5. Nothing uses it: no Orca agent or terminal, no child workspace with an agent, no process working inside it.
 6. Nobody touched it for 24 hours: its git index and HEAD log are more than a day old.
 
-An initialized submodule keeps a worktree, because git will not remove one without `--force`. So does a sparse checkout, because its skip-worktree entries count as local files. Orca listing the worktree twice keeps it too, and so does a child workspace that Orca does not list. Another checkout or an Orca workspace inside the worktree keeps it too, because removing the worktree deletes it. The checkout can belong to any scanned repository, and the workspace can be idle. A folder above the worktree does not count. A problem with one worktree is a reason to keep it, not an error.
+An initialized submodule keeps a worktree, because git will not remove one without `--force`. So does a sparse checkout, because its skip-worktree entries count as local files. Orca listing the worktree twice keeps it too, and so does a child workspace that Orca does not list. Another checkout or an Orca workspace inside the worktree keeps it as well, because removing the worktree deletes it. The checkout can belong to any scanned repository, and the workspace can be idle. A folder above the worktree does not count. A problem with one worktree is a reason to keep it, not an error.
 
 For each worktree that can go, `--apply` does this:
 
@@ -40,7 +40,7 @@ For each worktree that can go, `--apply` does this:
 2. It removes the worktree with Orca's `worktree rm` if Orca lists it, and with `git worktree remove` if not. A worktree that git refuses to remove stays.
 3. It deletes the local branch, but only when the branch is at the PR head and no other worktree has it checked out.
 
-Orca's `worktree rm` answers only after the directory and git's entry are gone, and wtclean checks both anyway. Orca leaves the child workspaces of a removed parent in place, and they become top-level workspaces.
+Orca's `worktree rm` answers only after the directory and git's entry are gone, and wtclean checks both anyway. With the Orca 1.4.256 desktop app, the child workspaces of a removed parent stay, as top-level workspaces.
 
 ## What it never does
 
@@ -76,7 +76,7 @@ wtclean: <n> to remove, <k> kept (<m> merged), <e> errors
 A `removed` line ends with what became of the local branch:
 
 - `deleted branch <b> (was <sha>)`: the branch was at the PR head.
-- `branch <b> was already deleted`: the branch was gone after the removal. Orca's `worktree rm` can delete a merged branch itself.
+- `branch <b> was already deleted`: the branch was gone after the removal. Some Orca versions delete a merged branch themselves in `worktree rm`.
 - `kept branch <b>: another worktree has it checked out`.
 - `kept branch <b>: it is at <sha>, not the PR head <sha>`.
 - `kept branch <b>: <git's message>`: git refused to delete it.
@@ -108,7 +108,7 @@ Tell the user what wtclean removed, and why it kept each worktree that has a mer
 
 ## Weekly Orca automation
 
-An Orca automation can run `wtclean --apply` each week and post the result as a workspace comment. The run needs a folder workspace: a plain folder that Orca lists as a workspace, not a git worktree. Add one to Orca first. Its sidebar comment shows the last result, and `<dir>` below is its path.
+An Orca automation can run `wtclean --apply` each week and post the result as a workspace comment. The run needs a folder workspace: an empty directory that Orca lists as a workspace, not a git worktree. Make an empty directory `<dir>` and add it to Orca first, with `orca-ide repo add --path <dir> --kind folder --json`. Its sidebar comment shows the last result.
 
 Give the automation this prompt:
 
@@ -123,20 +123,20 @@ Weekly worktree cleanup on this host. Do exactly these steps, then stop.
 Do not remove, edit, move, commit or push anything yourself, and run no other commands. wtclean alone decides what is safe to remove.
 ```
 
-Create the automation with this command. Replace `<dir>` with the folder workspace's path. The prompt holds double quotes, so save it to a file and pass it as `--prompt "$(cat <file>)"`. Where `ORCA_CLI_COMMAND` is set, use `"$ORCA_CLI_COMMAND"` in place of `orca-ide`.
+Create the automation with this command. Replace `<dir>` with the path of that empty directory, and `<tz>` with your time zone's IANA name, such as `UTC`. The prompt holds double quotes, so save it to a file and pass it as `--prompt "$(cat <file>)"`. Where `ORCA_CLI_COMMAND` is set, use `"$ORCA_CLI_COMMAND"` in place of `orca-ide`, here and in `repo add` above.
 
 ```sh
 orca-ide automations create --json --name "Worktree cleanup" \
   --provider claude --extra-agent-args="--model sonnet" \
   --workspace path:<dir> --workspace-mode existing --fresh-session \
-  --trigger weekly --day 0 --time 09:00 --timezone America/Denver \
+  --trigger weekly --day 0 --time 09:00 --timezone <tz> \
   --precheck '[ "$("$HOME/.local/bin/wtclean" --check 2>&1)" != "wtclean: 0 can go, 0 errors" ]' --precheck-timeout 900 \
   --disabled --prompt "<the prompt above>"
 ```
 
-`--disabled` creates the automation switched off. Run `wtclean` by hand and read its report, then enable the automation in Orca. Change `--day`, `--time` and `--timezone` to suit.
+`--disabled` creates the automation switched off. Run `wtclean` by hand and read its report, then enable the automation in Orca. `--day 0` is Sunday. Change `--day`, `--time` and `--timezone` to suit.
 
-The precheck runs `wtclean --check` before each run. It skips the run only when the output is exactly `wtclean: 0 can go, 0 errors`. A missing or broken `wtclean` prints something else, so the run still starts and Claude reports the failure.
+The precheck runs `wtclean --check` before each run. It skips the run when the output is exactly `wtclean: 0 can go, 0 errors`. A missing or broken `wtclean` prints something else, so the run still starts and Claude reports the failure. Orca also skips the run when the precheck itself fails or times out.
 
 After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M merged kept, E errors`, or `wtclean <YYYY-MM-DD>: did not finish`. A nonzero exit also marks the workspace unread. A week the precheck skips leaves the comment as it was.
 
@@ -145,10 +145,10 @@ After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M mer
 - Ignored files inside `node_modules`, `dist`, `build` and the rest of `prland`'s list of build and cache folders count as build output, and go with the worktree.
 - wtclean does not see a checkout of a repository that it does not scan, when that checkout lies inside a worktree's build or cache folder. The checkout goes with the worktree.
 - Only the 24-hour check protects a worktree that an idle agent in another workspace used through `git -C`.
-- The process check reads `/proc`. Without it (macOS), a worktree that passes the checks before it stops the run with exit 2, so wtclean removes nothing there.
+- The process check reads `/proc`, so it fails on macOS, which has none. The first worktree that reaches the process check stops the run with exit 2, so wtclean removes nothing there.
 - The process check skips other users' processes, and same-user processes it cannot read.
 - The process check compares real paths, so it does not see a process that works in the worktree through a bind mount.
 - wtclean ignores fork PRs, so a clone whose `origin` is a fork keeps its worktrees.
 - A tool error stops the run at the first error, and wtclean does not scan the worktrees after it.
 - `git worktree remove` and Orca's `worktree rm` get 10 minutes, and every other call gets 2 minutes. A removal that times out stops the run with an error that names the worktree, and can leave it half deleted. If tracked files are gone, later runs keep it until someone cleans it up by hand.
-- A sidebar comment whose date stops advancing means the weekly run did not finish, or the precheck skipped it because nothing could go. Check `automations runs --id <automation-id>`. A skipped week shows as `skipped_precheck`.
+- A sidebar comment whose date stops advancing means the weekly run did not finish, or the precheck skipped it. The precheck skips a week when nothing can go, and when it fails or times out. Check `automations runs --id <automation-id>`. A skipped week shows as `skipped_precheck`.
