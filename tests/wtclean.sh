@@ -365,6 +365,8 @@ setup; mkwt wt-loc feat/loc; git clone -q https://github.com/o/r.git "$T/r/helpe
 echo z >> "$T/r/helper/a.txt"; git -C "$T/r/helper" commit -qam remote; git -C "$T/r/helper" push -q origin feat/loc
 pr feat/loc MERGED "$(git -C "$T/r/helper" rev-parse HEAD)"; echo l > "$W/b.txt"; git -C "$W" add b.txt; git -C "$W" commit -qm local; age "$W"; run
 check "a local-only commit, with a PR head only on GitHub, keeps it" '[[ $out == *"wt-loc  feat/loc: commits not in the pull request"* ]]'
+setup; mkwt wt-gd feat/gd; pr feat/gd MERGED; echo l > "$W/b.txt"; git -C "$W" add b.txt; git -C "$W" commit -qm local; age "$W"; GIT_DIR=$M/.git run
+check "an exported GIT_DIR does not hide a worktree's own commits" '[[ $out == *"wt-gd  feat/gd: commits not in the pull request (merged #1)"* ]]'
 setup; mkwt wt-reuse feat/reuse; pr feat/reuse MERGED; pr feat/reuse CLOSED "$(git -C "$M" rev-parse origin/main)"; run
 check "a branch reused by a later closed PR still matches its merged PR" '[[ $out == *"would remove  $T/r/wt-reuse  feat/reuse  #1"* ]]'
 setup; mkwt wt-m feat/m; pr feat/m MERGED; FAKE_GH_FAIL=1 run

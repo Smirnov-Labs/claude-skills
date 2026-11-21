@@ -12,7 +12,7 @@ It scans the git repositories Orca has registered on this host, plus each --repo
 --repo, or else the repository it runs in. The Orca CLI is $ORCA_CLI_COMMAND, else orca-ide on PATH. If Orca looks
 installed (ORCA_USER_DATA_PATH is set, or ~/.config/orca exists) but neither is found, it stops with an error.
 It appends ~/.local/bin to PATH, so gh is found even under an Orca server. It needs git 2.31 or newer, and an older git
-is an error.
+is an error. It drops GIT_DIR and git's other repository-local variables before it runs a command.
 
 A linked worktree goes only when all six conditions hold:
   1  it has a branch, is not locked, and is not an agent worktree (an agent-* directory or worktree-agent-* branch)
@@ -71,6 +71,12 @@ DAY = 86400     # seconds
 PR_LIMIT = 100  # pull requests that one gh pr list reads for a branch
 TIMEOUT = 120   # seconds that a call to git, gh or the Orca CLI gets
 REMOVE_TIMEOUT = 600    # seconds for a removal: deleting a large worktree can take minutes
+# git's repository-local variables, as `git rev-parse --local-env-vars` prints them (git 2.56). A git hook or a dotfiles
+# setup can export them, and GIT_DIR then points every git call at one repository, so run() drops them all.
+LOCAL_GIT_VARS = frozenset((
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR"))
 
 
 class ToolError(Exception):
@@ -99,8 +105,10 @@ def report_line(tag, text):
 
 
 def run(cmd, cwd=None, timeout=TIMEOUT):
-    """Run cmd and capture its output. GIT_OPTIONAL_LOCKS=0 keeps git's status polling from rewriting an index."""
-    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
+    """Run cmd and capture its output. GIT_OPTIONAL_LOCKS=0 keeps git's status polling from rewriting an index, and
+    git's repository-local variables (LOCAL_GIT_VARS) stay out of the environment."""
+    env = {name: value for name, value in os.environ.items() if name not in LOCAL_GIT_VARS}
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         return subprocess.run(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                               errors="replace", timeout=timeout)
