@@ -35,7 +35,7 @@ This section grows as patterns and preferences are discovered during work on thi
 - The Architect-Gate review blocks indirect hints of private work too: "a private repo", the name of a private feature, step numbers from a private plan (#13).
 
 ### Known Gotchas
-- **The working clone can be live.** On an authoring machine, the skillsync source is a symlink to the working clone. Every Claude Code session on that machine loads the files that are checked out. Never switch branches in that clone. Do PR work in a worktree: `git worktree add -b <branch> /tmp/<dir> origin/main`. Other sessions can have uncommitted edits in the clone. Leave them alone.
+- **The working clone can be live.** On an authoring machine, the skillsync source is a symlink to the working clone. Every Claude Code session on that machine loads the files that are checked out. Never switch branches in that clone. Do PR work in a worktree. Inside an Orca terminal (`ORCA_CLI_COMMAND` is set), create it with `"$ORCA_CLI_COMMAND" worktree create --repo path:<working clone> --name <dir> --branch <branch> --base-branch origin/main --json`, and read its path and id from the result. Then close the shell Orca opens there, so the worktree does not look busy later: `"$ORCA_CLI_COMMAND" terminal close --worktree id:<id> --all --json`. If the create fails, say so and use git. Outside Orca, use `git worktree add -b <branch> /tmp/<dir> origin/main`. Other sessions can have uncommitted edits in the clone. Leave them alone.
 - **`prbots` waits for Codex by default**, and Codex is not enabled here. Use `prbots wait <PR> --need sar --trigger`.
 - **The review does not run again on push.** `--trigger` or an `@architect-run` comment starts it.
 
@@ -51,6 +51,7 @@ This section grows as patterns and preferences are discovered during work on thi
 - **After a change to `latest-version`,** run `tests/latest-version.sh`. A local fake server plays the GitHub API and a registry with a token challenge, and a fake `gh` lends a token (`gh auth token`).
 - **After a change to `tp-scan`,** run `tests/tp-scan.sh`. It builds one synthetic repo per pattern in a temp dir, and canary files prove that the scan ran nothing.
 - **After a change to `nonstop`,** run `tests/nonstop.sh`. It runs the Stop hook and the turn-on and turn-off commands from SKILL.md with a temporary HOME and two fake sessions, in bash and, if it is installed, zsh.
+- **After a change to `wtclean`,** run `tests/wtclean.sh`. It uses real git repos in a temp dir, with a fake `gh` and a fake Orca CLI on PATH. A `sleep` inside a worktree plays the busy process.
 - **Merges:** `prland <PR> --need sar` (the pr-land skill): squash, with a subject that ends in `(#N)`, then the branch and worktree go. Machines pick up main at their next `skillsync`.
 
 ---
@@ -95,6 +96,7 @@ After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds an
 | `pr` | `/pr`: commit, push, open or update the PR, after checking what the push will carry (user-invoked only) |
 | `pr-fix` | `/pr-fix`: loop on a PR — fix CI and review feedback, push, wait with `prbots`, repeat until clean (user-invoked only) |
 | `pr-land` | Merge a PR once `prbots` says CLEAN, confirm MERGED, then remove its own worktree and branch and sync main (`prland`) |
+| `cleaning-merged-worktrees` | `wtclean`: remove worktrees whose PR merged and that hold nothing local; weekly Orca automation recipe |
 | `finding-latest-versions` | `latest-version`: the newest GitHub release or container image tag, sorted as versions, and image digests |
 | `bd-to-br-migration` | Migrate docs from bd (beads) to br (beads_rust) |
 | `debugging-kubernetes-rollouts` | Debug failed Kubernetes rollouts and ArgoCD / GitOps sync problems |
