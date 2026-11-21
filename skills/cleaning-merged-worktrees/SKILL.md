@@ -134,7 +134,7 @@ orca-ide automations create --json --name "Worktree cleanup" \
 
 The precheck runs `wtclean --check` before each run. It skips the run only when the output is exactly `wtclean: 0 can go, 0 errors`. A missing or broken `wtclean` prints something else, so the run still starts and Claude reports the failure.
 
-After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M merged kept, E errors`, or `wtclean <YYYY-MM-DD>: did not finish`. A nonzero exit also marks the workspace unread.
+After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M merged kept, E errors`, or `wtclean <YYYY-MM-DD>: did not finish`. A nonzero exit also marks the workspace unread. A week the precheck skips leaves the comment as it was.
 
 ## Known gaps
 
@@ -146,4 +146,4 @@ After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M mer
 - wtclean ignores fork PRs, so a clone whose `origin` is a fork keeps its worktrees.
 - A tool error stops the run at the first error, and wtclean does not scan the worktrees after it.
 - `git worktree remove` and Orca's `worktree rm` get 120 seconds. A removal that times out stops the run, and can leave a half-deleted worktree. If tracked files are gone, later runs keep it until someone cleans it up by hand.
-- A sidebar comment whose date stops advancing means the weekly run did not finish. Check `automations runs`.
+- A sidebar comment whose date stops advancing means the weekly run did not finish, or the precheck skipped it because nothing could go. Check `automations runs --id <automation-id>`. A skipped week shows as `skipped_precheck`.
