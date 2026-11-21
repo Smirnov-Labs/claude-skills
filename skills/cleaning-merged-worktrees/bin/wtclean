@@ -429,6 +429,27 @@ def last_touched(path):
     return time.time() if stamp is None else stamp
 
 
+def keep_reason(path, rows):
+    """Why conditions 4 to 6 keep the worktree at path, or None when they let it go. The first failing check gives the
+    reason, in this order: local files, initialized submodules, use, the last 24 hours. classify() asks at scan time,
+    and remove() asks again with fresh rows just before a removal. One function serves both, so a new condition
+    reaches both."""
+    # condition 4: nothing local
+    local = local_data(path)
+    if local:
+        return "local files: " + local
+    if has_submodules(path):
+        return "initialized submodules"
+    # condition 5: nothing uses it
+    use = busy(path, rows)
+    if use:
+        return use
+    # condition 6: nobody touched it for 24 hours
+    if time.time() - last_touched(path) < DAY:
+        return "touched in the last 24 hours"
+    return None
+
+
 def classify(main, wt, repo_slug, rows):
     """Decide one linked worktree: (None, pr) lets it go, (reason, pr) keeps it. pr is the branch's merged pull
     request once the PR check has found one (the newest, when HEAD is in none), else None. The checks run in
@@ -449,20 +470,7 @@ def classify(main, wt, repo_slug, rows):
     if reason:
         return reason, pr
     # HEAD is in the merged pull request from here on, so every reason carries pr and the kept line says "merged #N".
-    # condition 4: nothing local
-    local = local_data(path)
-    if local:
-        return "local files: " + local, pr
-    if has_submodules(path):
-        return "initialized submodules", pr
-    # condition 5: nothing uses it
-    use = busy(path, rows)
-    if use:
-        return use, pr
-    # condition 6: nobody touched it for 24 hours
-    if time.time() - last_touched(path) < DAY:
-        return "touched in the last 24 hours", pr
-    return None, pr
+    return keep_reason(path, rows), pr
 
 
 def branch_note(main, branch, pr_head):
@@ -483,23 +491,16 @@ def branch_note(main, branch, pr_head):
 
 
 def remove(main, wt, pr, cli):
-    """Remove a worktree that classify() let go, after one more look at conditions 4 to 6, then deal with its branch.
-    Returns (True, "#<pull request>; <what became of the branch>"), or (False, why it stays). Orca removes a worktree
-    that it lists, and git removes any other. Neither gets --force, and a refusal by git keeps the worktree. A failure
-    of the Orca CLI is a ToolError, so it stops the run: Orca may be down."""
+    """Remove a worktree that classify() let go, after asking keep_reason() again on a fresh read of Orca's list, then
+    deal with its branch. Returns (True, "#<pull request>; <what became of the branch>"), or (False, why it stays).
+    Orca removes a worktree that it lists, and git removes any other. Neither gets --force, and a refusal by git keeps
+    the worktree. A failure of the Orca CLI is a ToolError, so it stops the run: Orca may be down."""
     path, branch = wt["worktree"], branch_of(wt)
     number, pr_head = pr["number"], pr["headRefOid"]     # read now, so a bad record fails before anything is removed
     rows = orca_rows(cli)                                # a new read: an agent may have started since the scan
-    use = busy(path, rows)
-    if use:
-        return False, use
-    local = local_data(path)
-    if local:
-        return False, "local files: " + local
-    if has_submodules(path):
-        return False, "initialized submodules"
-    if time.time() - last_touched(path) < DAY:
-        return False, "touched in the last 24 hours"
+    reason = keep_reason(path, rows)                     # the checks of classify(), on the new rows
+    if reason:
+        return False, reason
     found = rows["by_path"].get(os.path.realpath(path), [])     # busy() has kept a path that Orca lists twice
     if found:
         orca(cli, "worktree", "rm", "--worktree", "id:" + found[0]["worktreeId"])
