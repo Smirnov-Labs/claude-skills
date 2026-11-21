@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""wtclean: remove git worktrees whose pull request merged and that hold nothing local.
+
+  wtclean [--apply | --check] [--repo PATH]...
+
+  (no flag)  dry run: print what it would remove and what it keeps, with one reason for each worktree
+  --apply    remove them, then print the same report with what happened
+  --check    print one line of counts and nothing else, for a precheck
+  --repo     also scan the repository at PATH (repeatable)
+
+It scans the git repositories Orca has registered on this host, plus each --repo. Without Orca it scans each
+--repo, or else the repository it runs in. The Orca CLI is $ORCA_CLI_COMMAND, else orca-ide on PATH. If Orca looks
+installed (ORCA_USER_DATA_PATH is set, or ~/.config/orca exists) but neither is found, it stops with an error.
+It appends ~/.local/bin to PATH, so gh is found even under an Orca server.
+
+A linked worktree goes only when all six conditions hold:
+  1  it has a branch, is not locked, and is not an agent worktree (an agent-* directory or worktree-agent-* branch)
+  2  GitHub has a merged pull request from that branch into the same repository, and no open one
+  3  HEAD is that pull request's head commit or an ancestor of it, so every commit is on GitHub
+  4  it holds nothing local: no changed tracked file, no untracked file, no ignored file except build output
+  5  nothing uses it: no Orca agent or live terminal, no child workspace with an agent, no process inside it
+  6  nobody touched it for 24 hours: its git index and HEAD log are more than a day old
+Every other worktree stays, with its reason. A problem with one worktree is a reason to keep it, not an error.
+Errors are failures of gh, the Orca CLI or wtclean itself, and the run stops at the first one. No removal uses
+--force. wtclean never runs git worktree prune and never deletes a remote branch. It deletes the local branch only
+when the branch is at the pull request head.
+
+Report:
+  skip  <path>: not a git repository     an Orca repository that is missing or bare; not an error
+  repo <main checkout> (<owner/repo> | no GitHub remote)
+    would remove  <path>  <branch>  #<pull request>
+    removed       <path>  <branch>  #<pull request>; <what happened to the branch>
+    kept          <path>  <branch>: <reason>[ (merged #<pull request>)]
+    error         <where>: <message>
+  wtclean: <n> to remove, <k> kept (<m> merged), <e> errors
+--apply ends with "<n> removed". --check prints only "wtclean: <n> can go, <e> errors". A usage error prints
+"wtclean: usage error: <message>" to stderr in every mode.
+
+exit  0  done (--check: something can go, or something failed)
+      1  --check only: nothing to do
+      2  an error: a tool failed, or wtclean crashed
+      3  usage error
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+# https://github.com/o/r(.git), git@github.com:o/r(.git) and ssh://git@github.com/o/r(.git)
+GITHUB_REMOTE = re.compile(r"^(?:(?:https?|git|ssh)://(?:[^@/]+@)?github\.com(?::\d+)?/|git@github\.com:)"
+                           r"([\w.-]+/[\w.-]+?)(?:\.git)?/?$", re.IGNORECASE)
+
+
+class ToolError(Exception):
+    """A failure of gh, the Orca CLI or the environment. It stops the run and counts as an error."""
+
+
+class UsageError(Exception):
+    """A bad command line, or no repository to scan. Exit 3."""
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise UsageError(message)
+
+
+def say(text):
+    print(text, flush=True)
+
+
+def report_line(tag, text):
+    return "  %-14s%s" % (tag, text)
+
+
+def run(cmd, cwd=None, timeout=120):
+    """Run cmd and capture its output. GIT_OPTIONAL_LOCKS=0 keeps git's status polling from rewriting an index."""
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
+    try:
+        return subprocess.run(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise ToolError("%s did not finish in %d seconds" % (cmd[0], timeout))
+    except OSError as e:
+        raise ToolError("cannot run %s: %s" % (cmd[0], e.strerror or e))
+
+
+def git(where, *args):
+    return run(["git", "-C", where] + list(args))
+
+
+def orca_cli():
+    """The Orca CLI: $ORCA_CLI_COMMAND, else orca-ide on PATH. None when Orca is not in use on this host."""
+    cli = os.environ.get("ORCA_CLI_COMMAND") or shutil.which("orca-ide")
+    if not cli and (os.environ.get("ORCA_USER_DATA_PATH") or os.path.exists(os.path.expanduser("~/.config/orca"))):
+        raise ToolError("Orca looks installed (ORCA_USER_DATA_PATH is set or ~/.config/orca exists), but no Orca CLI "
+                        "was found: set ORCA_CLI_COMMAND or put orca-ide on PATH")
+    return cli
+
+
+def orca(cli, *args):
+    """Run one Orca CLI command with --json and return its `result`. Orca's own error text becomes the ToolError."""
+    r = run([cli] + list(args) + ["--json"])
+    try:
+        reply = json.loads(r.stdout)
+    except ValueError:
+        reply = None
+    if not isinstance(reply, dict):
+        reply = {}
+    if r.returncode == 0 and reply.get("ok") is True and isinstance(reply.get("result"), dict):
+        return reply["result"]
+    error = reply.get("error")
+    message = error.get("message") if isinstance(error, dict) else None
+    if not message:
+        detail = " ".join((r.stderr or r.stdout).split())[:200]
+        message = "Orca CLI gave an unexpected answer to '%s' (exit %d)%s" % (" ".join(args), r.returncode,
+                                                                            ": " + detail if detail else "")
+    raise ToolError(str(message))
+
+
+def worktrees(main):
+    """git worktree list --porcelain as dicts, the main checkout first (the parser in skills/pr-land/bin/prland)."""
+    out, cur = [], {}
+    for line in git(main, "worktree", "list", "--porcelain").stdout.splitlines() + [""]:
+        if not line.strip():
+            if cur:
+                out.append(cur)
+            cur = {}
+            continue
+        key, _, val = line.partition(" ")
+        cur[key] = val if val else True
+    return out
+
+
+def main_checkout(path):
+    """Real path of the main checkout of the repository that holds path, or None if there is none or it is bare."""
+    if not isinstance(path, str) or not os.path.isdir(path):    # git -C "" would quietly mean the current directory
+        return None
+    first = (worktrees(path) or [{}])[0]
+    if not first.get("worktree") or first.get("bare"):
+        return None
+    return os.path.realpath(first["worktree"])
+
+
+def repos(cli, extra):
+    """Main-checkout real paths to scan, each once, in order: Orca's git repositories, then each --repo.
+    Without an Orca CLI and without --repo, the repository that holds the working directory."""
+    named = []
+    for path in extra:
+        top = main_checkout(path)
+        if not top:
+            raise UsageError("--repo %s is not a git repository, or it is a bare one" % path)
+        named.append(top)
+    if not cli and not extra:
+        top = main_checkout(os.getcwd())
+        if not top:
+            raise UsageError("not inside a git repository: run wtclean in one, or pass --repo PATH")
+        named.append(top)
+    found = []
+    if cli:
+        listed = orca(cli, "repo", "list").get("repos")
+        if not isinstance(listed, list):
+            raise ToolError("Orca's repo list has no repos array")
+        for row in listed:
+            if not isinstance(row, dict) or row.get("kind") != "git":
+                continue
+            top = main_checkout(row.get("path"))
+            if top:
+                found.append(top)
+            else:
+                say("skip  %s: not a git repository" % row.get("path"))
+    return list(dict.fromkeys(found + named))
+
+
+def slug(url):
+    """owner/repo for a github.com remote URL, else None. Pass the raw remote.origin.url: `git remote get-url`
+    applies url.<base>.insteadOf, and the raw value is what names the repository."""
+    m = GITHUB_REMOTE.match(url.strip())
+    return m.group(1) if m else None
+
+
+def branch_of(wt):
+    """The short branch name of a worktree record, or None when HEAD is detached."""
+    ref = wt.get("branch")
+    if not isinstance(ref, str):
+        return None
+    return ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+
+
+def classify(main, wt, repo_slug, rows):
+    """Decide one linked worktree: (None, pr) lets it go, (reason, pr) keeps it. pr is the matched merged pull
+    request once the PR check has run, else None. The checks run in order, and the first failure keeps it."""
+    path, branch = wt["worktree"], branch_of(wt)
+    if wt.get("prunable") or not os.path.isdir(path):
+        return "directory missing", None
+    if wt.get("detached") or wt.get("locked"):
+        return "detached or locked", None
+    if os.path.basename(path).startswith("agent-") or (branch or "").startswith("worktree-agent-"):
+        return "agent worktree (agent-* or worktree-agent-*)", None
+    if git(path, "rev-parse", "HEAD").returncode != 0:
+        return "git cannot read it", None
+    if not repo_slug:
+        return "no GitHub remote", None
+    return None, None
+
+
+def scan(main, rows, tally):
+    """Classify the linked worktrees of one repository and print its part of the report. Whatever was found
+    before an error is still printed, and counted in tally."""
+    repo_slug = slug(git(main, "config", "--get", "remote.origin.url").stdout)
+    say("repo %s (%s)" % (main, repo_slug or "no GitHub remote"))
+    go, kept = [], []
+    try:
+        for wt in worktrees(main)[1:]:
+            label = "%s  %s" % (wt["worktree"], branch_of(wt) or "(detached)")
+            reason, pr = classify(main, wt, repo_slug, rows)
+            if reason is None:
+                go.append(report_line("would remove", label + ("  #%s" % pr["number"] if pr else "")))
+                tally["go"] += 1
+            else:
+                merged = " (merged #%s)" % pr["number"] if pr else ""
+                kept.append(report_line("kept", "%s: %s%s" % (label, reason, merged)))
+                tally["kept"] += 1
+                if pr:
+                    tally["merged"] += 1
+    finally:
+        for text in go + kept:
+            say(text)
+
+
+def parse_args():
+    ap = Parser(prog="wtclean", add_help=False, allow_abbrev=False)
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true")
+    mode.add_argument("--check", action="store_true")
+    ap.add_argument("--repo", action="append", default=[])
+    return ap.parse_args()
+
+
+def add_local_bin():
+    """Append ~/.local/bin to PATH when it is missing, so gh resolves under an Orca server."""
+    local_bin = os.path.expanduser("~/.local/bin")
+    dirs = os.environ.get("PATH", os.defpath).split(os.pathsep)
+    if local_bin not in dirs:
+        os.environ["PATH"] = os.pathsep.join(dirs + [local_bin])
+
+
+def main():
+    if any(a in ("-h", "--help") for a in sys.argv[1:]):
+        print(__doc__.strip())
+        return 0
+    add_local_bin()
+    tally = {"go": 0, "kept": 0, "merged": 0, "errors": 0}
+    where, code = "wtclean", 0
+    try:
+        a = parse_args()
+        cli = orca_cli()
+        rows = {"by_path": {}, "by_id": {}}       # Orca's worktree rows by real path and by id; nothing loads them yet
+        for top in repos(cli, a.repo):
+            where = top
+            scan(top, rows, tally)
+    except UsageError as e:
+        print("wtclean: usage error: %s" % e, file=sys.stderr)
+        return 3
+    except Exception as e:                        # a failed tool, or a crash: report it and stop
+        tally["errors"] += 1
+        text = str(e) if isinstance(e, ToolError) else "%s: %s" % (type(e).__name__, e)
+        say(report_line("error", "%s: %s" % (where, " ".join(text.split()))))
+        code = 2
+    say("wtclean: %d to remove, %d kept (%d merged), %d errors"
+        % (tally["go"], tally["kept"], tally["merged"], tally["errors"]))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
