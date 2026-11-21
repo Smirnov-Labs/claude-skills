@@ -44,6 +44,8 @@ Orca's `worktree rm` answers only after the directory and git's entry are gone, 
 
 ## What it never does
 
+This list covers only the commands that wtclean runs itself. On an older Orca server, Orca's `worktree rm` can do more, as Known gaps says.
+
 - Use `--force`. Neither `git worktree remove` nor Orca's `worktree rm` gets it.
 - Run `git worktree prune`.
 - Delete a remote branch.
@@ -86,7 +88,7 @@ A `kept` line gives one reason. The first failing check names it, in this order:
 
 | Reason | What it means |
 |---|---|
-| `directory missing` | git lists the worktree, but its folder is gone. wtclean never prunes. `git worktree prune` drops the entry. |
+| `directory missing` | git lists the worktree, but its folder is gone. wtclean never runs `git worktree prune`, which drops the entry. |
 | `detached or locked` | It has a detached HEAD, or a lock. |
 | `agent worktree (agent-* or worktree-agent-*)` | The name marks it as an agent's worktree. |
 | `git cannot read it` | `git rev-parse HEAD` fails in it. |
@@ -144,6 +146,7 @@ After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M mer
 
 - Ignored files inside `node_modules`, `dist`, `build` and the rest of `prland`'s list of build and cache folders count as build output, and go with the worktree.
 - wtclean does not see a checkout of a repository that it does not scan, when that checkout lies inside a worktree's build or cache folder. The checkout goes with the worktree.
+- On an older Orca server, one that cannot be told to keep the branch, Orca's `worktree rm` follows Orca's own branch rule. It can delete a merged local branch, and Orca's code suggests that it can also prune stale worktree entries. wtclean's branch rule and its promise never to prune cover only the commands that wtclean runs.
 - Only the 24-hour check protects a worktree that an idle agent in another workspace used through `git -C`.
 - The process check reads `/proc`, so it fails on macOS, which has none. The first worktree that reaches the process check stops the run with exit 2, so wtclean removes nothing there.
 - The process check skips other users' processes, and same-user processes it cannot read.
