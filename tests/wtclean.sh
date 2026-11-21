@@ -280,13 +280,15 @@ with open(f, "w") as out:
 PY
 }
 # sleeping PID: wait, for about 2 seconds at most, until the background subshell PID has run its cd and exec'd sleep.
-# Before the exec its comm still reads bash, and its working directory may not be set yet.
+# Before the exec its comm still reads bash, and its working directory may not be set yet. A wait that runs out counts
+# as a failed check, so a process test cannot pass without its process.
 sleeping() {
   local n
   for n in {1..20}; do
     [ "$(cat "/proc/$1/comm" 2>/dev/null)" = sleep ] && return 0
     sleep 0.1
   done
+  fail=$((fail+1)); echo "FAIL process $1 did not exec sleep within 2 seconds"
   return 1
 }
 
@@ -326,7 +328,9 @@ check "a repo named twice, once through a symlink, is scanned once" '[ "$(grep -
 setup; mkwt "wt space" feat/space; pr feat/space MERGED; run
 check "a path with a space works" '[[ $out == *"would remove  $T/r/wt space  feat/space"* ]]'
 setup; orca_repo "$HOME" folder; orca_repo "$T/r/gone" git; run
-check "a folder repo and a missing repo are skipped, not errors" '[ $rc -eq 0 ]'
+check "a folder repo and a missing repo are skipped, not errors" '[ $rc -eq 0 ] && [[ $out == *"skip  $T/r/gone: not a git repository"* ]] && [[ $out != *"skip  $HOME"* ]]'
+run --check
+check "--check prints only its one line when a repo is skipped" '[ $rc -eq 1 ] && [ "$out" = "wtclean: 0 can go, 0 errors" ]'
 setup; mkwt wt-a feat/a; mkdir -p "$HOME/.config/orca"; run_bare
 check "Orca installed without a CLI on PATH is an error, and bare orca never runs" '[ $rc -eq 2 ] && [[ $out == *"Orca"* ]] && [ ! -e "$FAKE/orca.log" ]'
 setup; mkwt wt-a feat/a; ORCA_USER_DATA_PATH=$T/orca-data run_bare
@@ -365,6 +369,9 @@ setup; mkwt wt-loc feat/loc; git clone -q https://github.com/o/r.git "$T/r/helpe
 echo z >> "$T/r/helper/a.txt"; git -C "$T/r/helper" commit -qam remote; git -C "$T/r/helper" push -q origin feat/loc
 pr feat/loc MERGED "$(git -C "$T/r/helper" rev-parse HEAD)"; echo l > "$W/b.txt"; git -C "$W" add b.txt; git -C "$W" commit -qm local; age "$W"; run
 check "a local-only commit, with a PR head only on GitHub, keeps it" '[[ $out == *"wt-loc  feat/loc: commits not in the pull request"* ]]'
+setup; mkwt wt-div feat/div; git clone -q https://github.com/o/r.git "$T/r/helper"; echo d > "$T/r/helper/d.txt"; git -C "$T/r/helper" add d.txt
+git -C "$T/r/helper" commit -qm other; git -C "$T/r/helper" push -q origin HEAD:refs/heads/other; pr feat/div MERGED "$(git -C "$T/r/helper" rev-parse HEAD)"; run
+check "a compare answer with a missing commit (behind_by 1) keeps it" '[[ $out == *"wt-div  feat/div: commits not in the pull request (merged #1)"* ]] && grep -q "api repos/o/r/compare/" "$FAKE/gh.log"'
 setup; mkwt wt-gd feat/gd; pr feat/gd MERGED; echo l > "$W/b.txt"; git -C "$W" add b.txt; git -C "$W" commit -qm local; age "$W"; GIT_DIR=$M/.git run
 check "an exported GIT_DIR does not hide a worktree's own commits" '[[ $out == *"wt-gd  feat/gd: commits not in the pull request (merged #1)"* ]]'
 setup; mkwt wt-reuse feat/reuse; pr feat/reuse MERGED; pr feat/reuse CLOSED "$(git -C "$M" rev-parse origin/main)"; run
@@ -434,8 +441,10 @@ setup; mkwt wt-dup feat/dup; pr feat/dup MERGED; orca_row "$W"; orca_row "$W" id
 check "a worktree Orca lists twice is kept" '[[ $out == *"wt-dup  feat/dup: Orca lists it more than once"* ]]'
 setup; mkwt wt-deep feat/deep; pr feat/deep MERGED; orca_row "$W"; mkdir "$W/pkg"; (cd "$W/pkg" && exec sleep 300) & P=$!; sleeping "$P"; run; kill "$P"
 check "a process in a subdirectory keeps a worktree that Orca lists as idle" '[[ $out == *"wt-deep  feat/deep: in use: process $P (sleep) works in it"* ]]'
-setup; mkwt wt-m feat/m; pr feat/m MERGED; orca_row "$W"; orca_ps_patch 'd["result"]["worktrees"][0]["agents"] = None'; run
-check "an Orca row with a null agents field is an error" '[ $rc -eq 2 ] && [[ $out == *"agents"* ]]'
+for f in path worktreeId agents liveTerminalCount unverifiableTerminalCount hasAttachedPty childWorktreeIds; do
+  setup; mkwt wt-m feat/m; pr feat/m MERGED; orca_row "$W"; orca_ps_patch "d['result']['worktrees'][0]['$f'] = None"; run
+  check "an Orca row with a null $f field is an error" '[ $rc -eq 2 ] && [[ $out == *"missing or unusable field: $f"* ]]'
+done
 setup; mkwt wt-m feat/m; pr feat/m MERGED; orca_ps_patch 'd["ok"] = False; d["error"] = {"message": "worktree ps failed"}'; run
 check "a failed Orca worktree list is an error" '[ $rc -eq 2 ] && [[ $out == *"worktree ps failed"* ]]'
 setup; mkwt wt-h feat/h; pr feat/h MERGED; run --apply
@@ -491,6 +500,7 @@ setup; mkwt wt-dir feat/dir; pr feat/dir MERGED; orca_row "$W"; FAKE_ORCA_RM_DIR
 check "Orca deletes the directory but git still lists it: an error" '[ $rc -eq 2 ] && [ ! -d "$W" ] && [[ $out == *"error"*"still there"* ]]'
 setup; mkwt wt-gr feat/gr; pr feat/gr MERGED; FAKE_GIT_REMOVE_FAIL=1 run --apply
 check "a git refusal keeps the worktree, not an error" '[ $rc -eq 0 ] && [ -d "$W" ] && [[ $out == *"wt-gr  feat/gr: git refused the removal: fatal: refused"* ]]'
+check "a git refusal counts as kept and merged" '[ "$(last)" = "wtclean: 0 removed, 1 kept (1 merged), 0 errors" ]'
 setup; mkwt wt-gn feat/gn; pr feat/gn MERGED; FAKE_GIT_REMOVE_NOOP=1 run --apply
 check "git exits 0 but the directory stays: kept, not removed" '[ $rc -eq 0 ] && [ -d "$W" ] && [[ $out == *"wt-gn  feat/gn: git refused the removal: still present (merged #1)"* ]]'
 setup; mkwt wt-s1 feat/s; pr feat/s MERGED; git -C "$M" worktree add -q -f "$T/r/wt-s2" feat/s; run --apply
