@@ -379,6 +379,12 @@ setup; mkwt wt-m feat/m; pr feat/m MERGED; orca_ps_patch 'd["result"]["hostScope
 check "an Orca list from another host is an error" '[ $rc -eq 2 ]'
 setup; mkwt wt-dup feat/dup; pr feat/dup MERGED; orca_row "$W"; orca_row "$W" id=R2::dup; run
 check "a worktree Orca lists twice is kept" '[[ $out == *"wt-dup  feat/dup: Orca lists it more than once"* ]]'
+setup; mkwt wt-deep feat/deep; pr feat/deep MERGED; orca_row "$W"; mkdir "$W/pkg"; (cd "$W/pkg" && exec sleep 300) & P=$!; sleeping "$P"; run; kill "$P"
+check "a process in a subdirectory keeps a worktree that Orca lists as idle" '[[ $out == *"wt-deep  feat/deep: in use: process $P (sleep) works in it"* ]]'
+setup; mkwt wt-m feat/m; pr feat/m MERGED; orca_row "$W"; orca_ps_patch 'd["result"]["worktrees"][0]["agents"] = None'; run
+check "an Orca row with a null agents field is an error" '[ $rc -eq 2 ] && [[ $out == *"agents"* ]]'
+setup; mkwt wt-m feat/m; pr feat/m MERGED; orca_ps_patch 'd["ok"] = False; d["error"] = {"message": "worktree ps failed"}'; run
+check "a failed Orca worktree list is an error" '[ $rc -eq 2 ] && [[ $out == *"worktree ps failed"* ]]'
 
 echo "$pass passed, $fail failed"
 rm -rf "$T"
