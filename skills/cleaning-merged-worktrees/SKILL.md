@@ -90,6 +90,7 @@ A `kept` line gives one reason. The first failing check names it, in this order:
 | `agent worktree (agent-* or worktree-agent-*)` | The name marks it as an agent's worktree. |
 | `git cannot read it` | `git rev-parse HEAD` fails in it. |
 | `no GitHub remote` | The repository's `origin` is missing or is not on github.com. |
+| `too many pull requests from this branch to check them all` | `gh pr list` gave 100 PRs for the branch, its limit, so the list can leave out an open one. |
 | `open pull request #<n>` | The branch has an open PR. |
 | `no merged pull request` | GitHub has no merged PR from this branch into this repository. A fork PR does not count. |
 | `commits not in the pull request` | HEAD holds a commit that no merged PR from this branch holds. |

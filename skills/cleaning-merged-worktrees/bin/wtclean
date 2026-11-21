@@ -62,6 +62,7 @@ import time
 GITHUB_REMOTE = re.compile(r"^(?:(?:https?|git|ssh)://(?:[^@/]+@)?github\.com(?::\d+)?/|git@github\.com:)"
                            r"([\w.-]+/[\w.-]+?)(?:\.git)?/?$", re.IGNORECASE)
 DAY = 86400     # seconds
+PR_LIMIT = 100  # pull requests that one gh pr list reads for a branch
 
 
 class ToolError(Exception):
@@ -231,12 +232,15 @@ def contains(main, repo_slug, head, pr_head):
 def merged_pr(main, repo_slug, branch, head):
     """Check the branch's pull requests into this repository (not from forks) against the worktree's HEAD.
     Returns (None, pr) when a merged one holds head and none is open. Otherwise (reason, pr): pr is the newest
-    merged one if head is in none of them, else None."""
-    r = run(["gh", "pr", "list", "-R", repo_slug, "--head", branch, "--state", "all", "--limit", "100", "--json",
-             "number,state,headRefOid,isCrossRepository,url,mergedAt"], cwd="/")
+    merged one if head is in none of them, else None. A list as long as PR_LIMIT may have left an open one out, so it
+    keeps the worktree."""
+    r = run(["gh", "pr", "list", "-R", repo_slug, "--head", branch, "--state", "all", "--limit", str(PR_LIMIT),
+             "--json", "number,state,headRefOid,isCrossRepository,url,mergedAt"], cwd="/")
     prs = gh_answer(r, "gh pr list for %s" % branch)
     if not isinstance(prs, list) or not all(isinstance(p, dict) for p in prs):
         raise ToolError("gh pr list for %s did not give a list of pull requests" % branch)
+    if len(prs) >= PR_LIMIT:
+        return "too many pull requests from this branch to check them all", None
     prs = [p for p in prs if not p.get("isCrossRepository")]
     for p in prs:
         if p.get("state") == "OPEN":

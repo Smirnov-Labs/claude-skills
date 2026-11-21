@@ -46,9 +46,10 @@ EOF
 
 cat > "$T/bin/gh" <<'EOF'
 #!/usr/bin/env python3
-# Fake gh: logs its arguments to $FAKE/gh.log. `pr list -R o/r --head B` prints $FAKE/prs/<B, / as __>.json or [].
-# `api repos/o/r/compare/A...B` is answered from the bare origin ($FAKE_ORIGIN). FAKE_GH_FAIL=1 plays a 502 and
-# FAKE_GH_GARBAGE=1 an HTML page. Anything else exits 9.
+# Fake gh: logs its arguments to $FAKE/gh.log. `pr list -R o/r --head B` prints $FAKE/prs/<B, / as __>.json or [],
+# at most --limit entries, as gh does. `api repos/o/r/compare/A...B` is answered from the bare origin ($FAKE_ORIGIN).
+# FAKE_GH_FAIL=1 plays a 502 and FAKE_GH_GARBAGE=1 an HTML page. Anything else exits 9.
+import json
 import os
 import subprocess
 import sys
@@ -76,7 +77,8 @@ def origin_git(*a):
 
 if args[:2] == ["pr", "list"] and flag("-R") == "o/r" and flag("--head"):
     prs = os.path.join(fake, "prs", flag("--head").replace("/", "__") + ".json")
-    sys.stdout.write(open(prs).read() if os.path.exists(prs) else "[]\n")
+    listed = json.load(open(prs)) if os.path.exists(prs) else []
+    print(json.dumps(listed[:int(flag("--limit"))] if flag("--limit") else listed))
     sys.exit(0)
 if args[:1] == ["api"] and args[1:2] and args[1].startswith("repos/o/r/compare/"):
     base, _, head = args[1][len("repos/o/r/compare/"):].partition("...")
@@ -190,22 +192,24 @@ mkwt() {
   echo "$2" >> "$W/a.txt"; git -C "$W" commit -qam "work on $2"; git -C "$W" push -q -u origin "$2"
   H=$(git -C "$W" rev-parse HEAD); age "$W"
 }
-# pr BRANCH STATE [HEAD] [CROSS]: add a pull request to what the fake gh lists for BRANCH (HEAD defaults to the branch tip)
+# pr BRANCH STATE [HEAD] [CROSS] [COUNT]: add COUNT (default 1) pull requests to what the fake gh lists for BRANCH
+# (HEAD defaults to the branch tip)
 pr() {
   local head=${3:-}
   [ -n "$head" ] || head=$(git -C "$M" rev-parse "refs/heads/$1")
   mkdir -p "$FAKE/prs"
-  python3 - "$FAKE/prs/${1//\//__}.json" "$2" "$head" "${4:-false}" <<'PY'
+  python3 - "$FAKE/prs/${1//\//__}.json" "$2" "$head" "${4:-false}" "${5:-1}" <<'PY'
 import json
 import os
 import sys
 
-f, state, head, cross = sys.argv[1:5]
+f, state, head, cross, count = sys.argv[1:6]
 prs = json.load(open(f)) if os.path.exists(f) else []
-n = len(prs) + 1
-prs.append({"number": n, "state": state, "headRefOid": head, "isCrossRepository": cross == "true",
-            "url": "https://github.com/o/r/pull/%d" % n,
-            "mergedAt": "2026-11-%02dT00:00:00Z" % n if state == "MERGED" else None})
+for _ in range(int(count)):
+    n = len(prs) + 1
+    prs.append({"number": n, "state": state, "headRefOid": head, "isCrossRepository": cross == "true",
+                "url": "https://github.com/o/r/pull/%d" % n,
+                "mergedAt": "2026-11-%02dT00:00:00Z" % n if state == "MERGED" else None})
 with open(f, "w") as out:
     json.dump(prs, out)
 PY
@@ -320,6 +324,8 @@ setup; mkwt wt-closed feat/closed; pr feat/closed CLOSED; run
 check "a PR closed without merging keeps it" '[[ $out == *"wt-closed  feat/closed: no merged pull request"* ]]'
 setup; mkwt wt-open feat/open; pr feat/open MERGED; pr feat/open OPEN; run
 check "an open PR keeps it even after an earlier merge" '[[ $out == *"wt-open  feat/open: open pull request #2"* ]]'
+setup; mkwt wt-many feat/many; pr feat/many MERGED "" false 100; pr feat/many OPEN; run --apply
+check "as many PRs as gh lists at once keep it, so an open one past them counts" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat/many >/dev/null && [[ $out == *"wt-many  feat/many: too many pull requests from this branch to check them all"* ]]'
 setup; mkwt wt-fork feat/fork; pr feat/fork MERGED "" true; run
 check "a merged PR from a fork does not count" '[[ $out == *"wt-fork  feat/fork: no merged pull request"* ]]'
 setup; mkwt wt-ahead feat/ahead; pr feat/ahead MERGED; echo x >> "$W/a.txt"; git -C "$W" commit -qam local; age "$W"; run
