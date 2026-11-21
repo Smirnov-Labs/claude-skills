@@ -253,9 +253,10 @@ def main():
         return 0
     add_local_bin()
     tally = {"go": 0, "kept": 0, "merged": 0, "errors": 0}
-    where, code = "wtclean", 0
+    where, code, check = "wtclean", 0, False
     try:
         a = parse_args()
+        check = a.check
         cli = orca_cli()
         rows = {"by_path": {}, "by_id": {}}       # Orca's worktree rows by real path and by id; nothing loads them yet
         for top in repos(cli, a.repo):
@@ -268,7 +269,8 @@ def main():
         tally["errors"] += 1
         text = str(e) if isinstance(e, ToolError) else "%s: %s" % (type(e).__name__, e)
         say(report_line("error", "%s: %s" % (where, " ".join(text.split()))))
-        code = 2
+        # --check exits 0 when a tool fails, so the precheck still starts the run, and the run reports the error
+        code = 0 if check else 2
     say("wtclean: %d to remove, %d kept (%d merged), %d errors"
         % (tally["go"], tally["kept"], tally["merged"], tally["errors"]))
     return code

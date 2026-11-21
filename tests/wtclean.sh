@@ -285,6 +285,8 @@ setup; mkwt wt-a feat/a; mkdir -p "$HOME/.config/orca"; run_bare
 check "Orca installed without a CLI on PATH is an error, and bare orca never runs" '[ $rc -eq 2 ] && [[ $out == *"Orca"* ]] && [ ! -e "$FAKE/orca.log" ]'
 setup; mkwt wt-a feat/a; ORCA_USER_DATA_PATH=$T/orca-data run_bare
 check "ORCA_USER_DATA_PATH without a CLI is an error too" '[ $rc -eq 2 ]'
+setup; FAKE_ORCA_FAIL=1 run --check
+check "--check after an Orca failure returns 0, not 2" '[ $rc -eq 0 ] && [[ "$(last)" == *", 1 errors" ]]'
 
 echo "$pass passed, $fail failed"
 rm -rf "$T"
