@@ -18,13 +18,15 @@ A linked worktree goes only when all six conditions hold:
   2  GitHub has a merged pull request from that branch into the same repository, and no open one
   3  HEAD is that pull request's head commit or an ancestor of it, so every commit is on GitHub
   4  it holds nothing local: no changed tracked file, no untracked file, no ignored file except build output
-  5  nothing uses it: no Orca agent or live terminal, no child workspace with an agent, no process inside it
+  5  nothing uses it: no Orca agent or terminal, no child workspace with an agent, no process working inside it
   6  nobody touched it for 24 hours: its git index and HEAD log are more than a day old
-An initialized submodule also keeps a worktree: git will not remove one without --force.
+An initialized submodule also keeps a worktree: git will not remove one without --force. Orca listing the worktree
+twice keeps it too, and so does a child workspace that Orca does not list.
 Every other worktree stays, with its reason. A problem with one worktree is a reason to keep it, not an error.
-Errors are failures of gh, the Orca CLI or wtclean itself, and the run stops at the first one. No removal uses
---force. wtclean never runs git worktree prune and never deletes a remote branch. It deletes the local branch only
-when the branch is at the pull request head.
+Errors are failures of gh, the Orca CLI or wtclean itself, and the run stops at the first one. Orca's worktree list is
+an error when it looks cut off or is for another host. It is also an error when a row has no usable field. No removal
+uses --force. wtclean never runs git worktree prune and never deletes a remote branch. It deletes the local branch
+only when the branch is at the pull request head.
 
 Report:
   skip  <path>: not a git repository     an Orca repository that is missing or bare; not an error
@@ -293,6 +295,109 @@ def has_submodules(path):
     return False
 
 
+def is_count(value):
+    """True for a whole number of zero or more. A bool is not one, though Python counts it as an int."""
+    return type(value) is int and value >= 0
+
+
+# The fields of an Orca worktree row that decide use, each with a test for a usable value. A null or wrongly typed one
+# is as bad as a missing one: a null agents list or a null hasAttachedPty would read as nothing in use.
+ROW_FIELDS = {
+    "path": lambda v: isinstance(v, str) and os.path.isabs(v),
+    "worktreeId": lambda v: isinstance(v, str) and v != "",
+    "agents": lambda v: isinstance(v, list),
+    "liveTerminalCount": is_count,
+    "unverifiableTerminalCount": is_count,
+    "hasAttachedPty": lambda v: isinstance(v, bool),
+    "childWorktreeIds": lambda v: isinstance(v, list) and all(isinstance(c, str) for c in v),
+}
+
+
+def orca_rows(cli):
+    """Orca's worktree rows as {"by_path": {real path: [rows]}, "by_id": {worktreeId: row}}, both empty without Orca.
+    A list that may be partial or from another host is a ToolError, because a worktree it does not show would read as
+    unused. So is a row that lacks a usable value for any field in ROW_FIELDS."""
+    rows = {"by_path": {}, "by_id": {}}
+    if not cli:
+        return rows
+    ps = orca(cli, "worktree", "ps", "--limit", "100000")
+    listed = ps.get("worktrees")
+    if not isinstance(listed, list):
+        raise ToolError("Orca's worktree list has no worktrees array")
+    if ps.get("truncated") is not False:
+        raise ToolError("Orca's worktree list is truncated, or does not say that it is complete")
+    total = ps.get("totalCount")
+    if not is_count(total) or total != len(listed):
+        raise ToolError("Orca's worktree list does not add up (rows: %d, totalCount: %s)" % (len(listed), total))
+    scope = ps.get("hostScope")
+    hosts = scope.get("hostIds") if isinstance(scope, dict) else None
+    if hosts != ["local"]:
+        raise ToolError("Orca's worktree list is not for this host alone (hostIds: %s)" % json.dumps(hosts))
+    for row in listed:
+        bad = [name for name, usable in ROW_FIELDS.items() if not isinstance(row, dict) or not usable(row.get(name))]
+        if bad:
+            raise ToolError("Orca's worktree list has a row with a missing or unusable field: %s" % ", ".join(bad))
+        rows["by_path"].setdefault(os.path.realpath(row["path"]), []).append(row)
+        rows["by_id"][row["worktreeId"]] = row
+    return rows
+
+
+def cwd_users(path):
+    """(pid, comm) of each readable process whose working directory is path or inside it, lowest pid first. A process
+    that exited during the scan, or that belongs to someone else, cannot be read and is skipped."""
+    where = os.path.realpath(path)
+    try:
+        pids = sorted(int(n) for n in os.listdir("/proc") if n.isdigit())
+    except OSError:
+        raise ToolError("cannot list processes: /proc is missing")
+    users = []
+    for pid in pids:
+        try:
+            cwd = os.readlink("/proc/%d/cwd" % pid)
+        except OSError:
+            continue
+        if cwd.endswith(" (deleted)"):                 # the kernel's mark for a directory removed under the process
+            cwd = cwd[:-len(" (deleted)")]
+        if cwd == where or cwd.startswith(where + os.sep):
+            try:
+                with open("/proc/%d/comm" % pid, errors="replace") as f:
+                    comm = " ".join(f.read().split())  # one line, whatever the process named itself
+            except OSError:
+                comm = ""
+            users.append((pid, comm or "?"))
+    return users
+
+
+def busy(path, rows):
+    """Why something uses the worktree at path, or None. Orca's row for it comes first: an agent in any state, a live,
+    unverifiable or attached terminal, a child workspace with an agent or one Orca did not list. Then any process whose
+    working directory is inside it. A path that Orca lists twice stays, because Orca's view of it is in doubt."""
+    found = rows["by_path"].get(os.path.realpath(path), [])
+    if len(found) > 1:
+        return "Orca lists it more than once"
+    if found:
+        row = found[0]
+        if row["agents"]:
+            return "in use: %d agents in Orca" % len(row["agents"])
+        if row["liveTerminalCount"] > 0:
+            return "in use: %d live terminals" % row["liveTerminalCount"]
+        if row["unverifiableTerminalCount"] > 0:
+            return "in use: terminals Orca cannot verify"
+        if row["hasAttachedPty"]:
+            return "in use: a terminal is attached"
+        for child in row["childWorktreeIds"]:
+            kid = rows["by_id"].get(child)
+            if kid is None:
+                return "in use: a child workspace Orca did not list"
+            if kid["agents"]:
+                return "in use: a child workspace has an agent"
+    users = cwd_users(path)
+    if users:
+        pid, comm = users[0]
+        return "in use: process %d (%s) works in it" % (pid, comm)
+    return None
+
+
 def mtime(path):
     """The modification time of path in epoch seconds, or None when it cannot be read."""
     try:
@@ -342,6 +447,10 @@ def classify(main, wt, repo_slug, rows):
         return "local files: " + local, pr
     if has_submodules(path):
         return "initialized submodules", pr
+    # condition 5: nothing uses it
+    use = busy(path, rows)
+    if use:
+        return use, pr
     # condition 6: nobody touched it for 24 hours
     if time.time() - last_touched(path) < DAY:
         return "touched in the last 24 hours", pr
@@ -400,8 +509,9 @@ def main():
         a = parse_args()
         check = a.check
         cli = orca_cli()
-        rows = {"by_path": {}, "by_id": {}}       # Orca's worktree rows by real path and by id; nothing loads them yet
-        for top in repos(cli, a.repo):
+        tops = repos(cli, a.repo)                 # first, so a usage error wins over a problem with Orca's list
+        rows = orca_rows(cli)                     # one read per run, before the first repository is scanned
+        for top in tops:
             where = top
             scan(top, rows, tally)
     except UsageError as e:

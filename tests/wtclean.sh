@@ -243,6 +243,16 @@ with open(f, "w") as out:
     json.dump(d, out)
 PY
 }
+# sleeping PID: wait, for about 2 seconds at most, until the background subshell PID has run its cd and exec'd sleep.
+# Before the exec its comm still reads bash, and its working directory may not be set yet.
+sleeping() {
+  local n
+  for n in {1..20}; do
+    [ "$(cat "/proc/$1/comm" 2>/dev/null)" = sleep ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
 
 # ---- tests ----
 setup; run --apply --check
@@ -335,6 +345,40 @@ setup; mkwt wt-new feat/new; pr feat/new MERGED; touch "$(git -C "$W" rev-parse 
 check "a worktree touched in the last 24 hours is kept" '[[ $out == *"wt-new  feat/new: touched in the last 24 hours"* ]]'
 setup; mkwt wt-q feat/q; pr feat/q MERGED; run; run
 check "a dry run leaves the index alone, so a second run still would remove it" '[[ $out == *"would remove  $T/r/wt-q"* ]]'
+setup; mkwt wt-ag feat/ag; pr feat/ag MERGED; orca_row "$W" agents=1 state=done; run
+check "an Orca agent in the done state keeps it" '[[ $out == *"wt-ag  feat/ag: in use: 1 agents in Orca"* ]]'
+setup; mkwt wt-term feat/term; pr feat/term MERGED; orca_row "$W" live=1; run
+check "a live terminal keeps it" '[[ $out == *"wt-term  feat/term: in use: 1 live terminals"* ]]'
+setup; mkwt wt-unv feat/unv; pr feat/unv MERGED; orca_row "$W" unverifiable=1; run
+check "terminals Orca cannot verify keep it" '[[ $out == *"wt-unv  feat/unv: in use: terminals Orca cannot verify"* ]]'
+setup; mkwt wt-pty feat/pty; pr feat/pty MERGED; orca_row "$W" attached=1; run
+check "an attached terminal keeps it" '[[ $out == *"wt-pty  feat/pty: in use: a terminal is attached"* ]]'
+setup; mkwt wt-par feat/par; pr feat/par MERGED; orca_row "$T/r/child" agents=1 id=CHILD; orca_row "$W" children=CHILD; run
+check "a child workspace with an agent keeps its parent" '[[ $out == *"wt-par  feat/par: in use: a child workspace has an agent"* ]]'
+setup; mkwt wt-par2 feat/par2; pr feat/par2 MERGED; orca_row "$W" children=MISSING; run
+check "a child workspace Orca did not list keeps its parent" '[[ $out == *"wt-par2  feat/par2: in use: a child workspace Orca did not list"* ]]'
+setup; mkwt wt-idle feat/idle; pr feat/idle MERGED; orca_row "$W"; run
+check "an idle Orca workspace would go" '[[ $out == *"would remove  $T/r/wt-idle"* ]]'
+setup; mkwt wt-proc feat/proc; pr feat/proc MERGED; (cd "$W" && exec sleep 300) & P=$!; sleeping "$P"; run; kill "$P"
+check "a process working inside keeps it" '[[ $out == *"wt-proc  feat/proc: in use: process $P (sleep) works in it"* ]]'
+setup; mkwt wt-pre feat/pre; pr feat/pre MERGED; mkdir -p "$T/r/wt-pre2"; (cd "$T/r/wt-pre2" && exec sleep 300) & P=$!; sleeping "$P"; run; kill "$P"
+check "a process in a sibling path that shares the prefix does not count" '[[ $out == *"would remove  $T/r/wt-pre  "* ]]'
+setup; mkwt wt-self feat/self; pr feat/self MERGED; WD=$W run
+check "running wtclean inside a worktree keeps that worktree" '[[ $out == *"wt-self  feat/self: in use: process"* ]]'
+setup; mkwt wt-ln feat/ln; pr feat/ln MERGED; ln -s "$T/r" "$T/rl"; orca_row "$T/rl/wt-ln" agents=1; run
+check "Orca rows match by real path" '[[ $out == *"wt-ln  feat/ln: in use: 1 agents in Orca"* ]]'
+setup; mkwt wt-m feat/m; pr feat/m MERGED; FAKE_ORCA_FAIL=1 run
+check "an Orca failure is an error: exit 2" '[ $rc -eq 2 ] && [[ $out == *"Orca is not running"* ]]'
+setup; mkwt wt-m feat/m; pr feat/m MERGED; orca_ps_patch 'd["result"]["truncated"] = True'; run
+check "a truncated Orca list is an error" '[ $rc -eq 2 ] && [[ $out == *"error"* ]]'
+setup; mkwt wt-m feat/m; pr feat/m MERGED; orca_row "$W"; orca_ps_patch 'd["result"]["totalCount"] += 1'; run
+check "an Orca list whose count does not match its rows is an error" '[ $rc -eq 2 ]'
+setup; mkwt wt-m feat/m; pr feat/m MERGED; orca_row "$W"; orca_ps_patch 'del d["result"]["worktrees"][0]["agents"]'; run
+check "an Orca row without its agents field is an error" '[ $rc -eq 2 ]'
+setup; mkwt wt-m feat/m; pr feat/m MERGED; orca_ps_patch 'd["result"]["hostScope"]["hostIds"] = ["runtime:other"]'; run
+check "an Orca list from another host is an error" '[ $rc -eq 2 ]'
+setup; mkwt wt-dup feat/dup; pr feat/dup MERGED; orca_row "$W"; orca_row "$W" id=R2::dup; run
+check "a worktree Orca lists twice is kept" '[[ $out == *"wt-dup  feat/dup: Orca lists it more than once"* ]]'
 
 echo "$pass passed, $fail failed"
 rm -rf "$T"
