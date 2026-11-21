@@ -348,8 +348,15 @@ setup; mkwt wt-t feat/t; pr feat/t MERGED; echo edit >> "$W/a.txt"; age "$W"; ru
 check "a changed tracked file keeps it" '[[ $out == *"wt-t  feat/t: local files: 1 changed tracked files"* ]]'
 setup; mkwt wt-au feat/au; pr feat/au MERGED; git -C "$W" update-index --assume-unchanged a.txt; echo edit >> "$W/a.txt"; age "$W"; run
 check "an assume-unchanged edit keeps it" '[[ $out == *"wt-au"*"assume-unchanged or skip-worktree"* ]]'
+setup; mkwt wt-sparse feat/sparse; mkdir "$W/docs"; echo d > "$W/docs/d.txt"; git -C "$W" add docs; git -C "$W" commit -qm docs; git -C "$W" push -q
+pr feat/sparse MERGED; git -C "$W" sparse-checkout set src; age "$W"; run --apply
+check "a sparse-checkout worktree stays, and so does its branch" '[ -d "$W" ] && [ ! -e "$W/docs" ] && git -C "$M" rev-parse -q --verify refs/heads/feat/sparse >/dev/null && [[ $out == *"wt-sparse  feat/sparse: local files: 1 tracked files are marked assume-unchanged or skip-worktree"* ]]'
 setup; mkwt wt-env feat/env; pr feat/env MERGED; echo S=1 > "$W/.env"; age "$W"; run
 check "an ignored .env keeps it" '[[ $out == *"wt-env  feat/env: local files: ignored files that are not build output: .env"* ]]'
+setup; mkwt wt-sp1 feat/sp1; pr feat/sp1 MERGED; printf '[ ]*\n' >> "$M/.git/info/exclude"; echo keep > "$W/   "; age "$W"; run --apply
+check "an ignored file named only spaces keeps it, and the file stays" '[ -e "$W/   " ] && [[ $out == *"wt-sp1  feat/sp1: local files: ignored files that are not build output:     (merged #1)"* ]]'
+setup; mkwt wt-sp2 feat/sp2; pr feat/sp2 MERGED; echo keep > "$W/   "; age "$W"; run --apply
+check "an untracked file named only spaces keeps it, and the file stays" '[ -e "$W/   " ] && [[ $out == *"wt-sp2  feat/sp2: local files: 1 untracked files (merged #1)"* ]] && ! grep -q "worktree remove" "$FAKE/git.log"'
 setup; mkwt wt-nm feat/nm; pr feat/nm MERGED; mkdir -p "$W/node_modules/x"; echo 1 > "$W/node_modules/x/i.js"; age "$W"; run
 check "build output alone does not keep it" '[[ $out == *"would remove  $T/r/wt-nm"* ]]'
 setup; git init -q -b main "$T/r/subsrc"; echo s > "$T/r/subsrc/s.txt"; git -C "$T/r/subsrc" add -A; git -C "$T/r/subsrc" commit -qm s

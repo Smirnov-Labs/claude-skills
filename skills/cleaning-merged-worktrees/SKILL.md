@@ -32,7 +32,7 @@ A linked worktree goes only when all six hold. The main checkout never goes.
 5. Nothing uses it: no Orca agent or terminal, no child workspace with an agent, no process working inside it.
 6. Nobody touched it for 24 hours: its git index and HEAD log are more than a day old.
 
-An initialized submodule keeps a worktree, because git will not remove one without `--force`. Orca listing the worktree twice keeps it too, and so does a child workspace that Orca does not list. A problem with one worktree is a reason to keep it, not an error.
+An initialized submodule keeps a worktree, because git will not remove one without `--force`. So does a sparse checkout, because its skip-worktree entries count as local files. Orca listing the worktree twice keeps it too, and so does a child workspace that Orca does not list. A problem with one worktree is a reason to keep it, not an error.
 
 For each worktree that can go, `--apply` does this:
 
