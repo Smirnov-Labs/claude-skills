@@ -317,6 +317,24 @@ setup; mkwt wt-m feat/m; pr feat/m MERGED; FAKE_GH_FAIL=1 run
 check "a gh failure is an error: exit 2" '[ $rc -eq 2 ] && [[ $out == *"error"* ]] && [[ "$(last)" == *", 1 errors" ]]'
 setup; mkwt wt-m feat/m; pr feat/m MERGED; FAKE_GH_GARBAGE=1 run
 check "gh output that is not JSON is an error, not a traceback" '[ $rc -eq 2 ] && [[ $out != *"Traceback"* ]]'
+setup; mkwt wt-u feat/u; pr feat/u MERGED; touch "$W/notes.txt"; age "$W"; run
+check "an untracked file keeps it" '[[ $out == *"wt-u  feat/u: local files: 1 untracked files (merged #1)"* ]]'
+setup; mkwt wt-t feat/t; pr feat/t MERGED; echo edit >> "$W/a.txt"; age "$W"; run
+check "a changed tracked file keeps it" '[[ $out == *"wt-t  feat/t: local files: 1 changed tracked files"* ]]'
+setup; mkwt wt-au feat/au; pr feat/au MERGED; git -C "$W" update-index --assume-unchanged a.txt; echo edit >> "$W/a.txt"; age "$W"; run
+check "an assume-unchanged edit keeps it" '[[ $out == *"wt-au"*"assume-unchanged or skip-worktree"* ]]'
+setup; mkwt wt-env feat/env; pr feat/env MERGED; echo S=1 > "$W/.env"; age "$W"; run
+check "an ignored .env keeps it" '[[ $out == *"wt-env  feat/env: local files: ignored files that are not build output: .env"* ]]'
+setup; mkwt wt-nm feat/nm; pr feat/nm MERGED; mkdir -p "$W/node_modules/x"; echo 1 > "$W/node_modules/x/i.js"; age "$W"; run
+check "build output alone does not keep it" '[[ $out == *"would remove  $T/r/wt-nm"* ]]'
+setup; git init -q -b main "$T/r/subsrc"; echo s > "$T/r/subsrc/s.txt"; git -C "$T/r/subsrc" add -A; git -C "$T/r/subsrc" commit -qm s
+mkwt wt-sub feat/sub; git -C "$W" -c protocol.file.allow=always submodule add -q "$T/r/subsrc" sub; git -C "$W" commit -qm sub; git -C "$W" push -q
+pr feat/sub MERGED; age "$W"; run
+check "an initialized submodule keeps it" '[[ $out == *"wt-sub  feat/sub: initialized submodules"* ]]'
+setup; mkwt wt-new feat/new; pr feat/new MERGED; touch "$(git -C "$W" rev-parse --path-format=absolute --git-path index)"; run
+check "a worktree touched in the last 24 hours is kept" '[[ $out == *"wt-new  feat/new: touched in the last 24 hours"* ]]'
+setup; mkwt wt-q feat/q; pr feat/q MERGED; run; run
+check "a dry run leaves the index alone, so a second run still would remove it" '[[ $out == *"would remove  $T/r/wt-q"* ]]'
 
 echo "$pass passed, $fail failed"
 rm -rf "$T"

@@ -20,6 +20,7 @@ A linked worktree goes only when all six conditions hold:
   4  it holds nothing local: no changed tracked file, no untracked file, no ignored file except build output
   5  nothing uses it: no Orca agent or live terminal, no child workspace with an agent, no process inside it
   6  nobody touched it for 24 hours: its git index and HEAD log are more than a day old
+An initialized submodule also keeps a worktree: git will not remove one without --force.
 Every other worktree stays, with its reason. A problem with one worktree is a reason to keep it, not an error.
 Errors are failures of gh, the Orca CLI or wtclean itself, and the run stops at the first one. No removal uses
 --force. wtclean never runs git worktree prune and never deletes a remote branch. It deletes the local branch only
@@ -48,10 +49,12 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 # https://github.com/o/r(.git), git@github.com:o/r(.git) and ssh://git@github.com/o/r(.git)
 GITHUB_REMOTE = re.compile(r"^(?:(?:https?|git|ssh)://(?:[^@/]+@)?github\.com(?::\d+)?/|git@github\.com:)"
                            r"([\w.-]+/[\w.-]+?)(?:\.git)?/?$", re.IGNORECASE)
+DAY = 86400     # seconds
 
 
 class ToolError(Exception):
@@ -237,6 +240,82 @@ def merged_pr(main, repo_slug, branch, head):
     return "commits not in the pull request", merged[0]
 
 
+# DISPOSABLE and local_data are copied from skills/pr-land/bin/prland, with one long line wrapped. Their git calls go
+# through git() above, which sets GIT_OPTIONAL_LOCKS=0, so a look at a worktree never rewrites its index or resets its
+# 24-hour clock. Keep the reason strings as they are: the tests match them.
+DISPOSABLE = re.compile(r"(^|/)(node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|"
+                        r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.cache|\.parcel-cache|coverage|"
+                        r"\.gradle|[^/]+\.egg-info)(/|$)|\.py[co]$|(^|/)\.DS_Store$")
+
+
+def local_data(path):
+    """Why removing this worktree would lose data, or None. Config-independent, and fails closed."""
+    tracked = git(path, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none")
+    untracked = git(path, "ls-files", "--others", "--exclude-standard")
+    ignored = git(path, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory")
+    if tracked.returncode or untracked.returncode or ignored.returncode:
+        return "git could not inspect it"
+    if tracked.stdout.strip():
+        return "%d changed tracked files" % len(tracked.stdout.splitlines())
+    flags = git(path, "ls-files", "-v", "-z")
+    if flags.returncode:
+        return "git could not read its index flags"
+    hidden = []
+    for entry in flags.stdout.split("\0"):
+        tag, _, name = entry.partition(" ")
+        # assume-unchanged (a lowercase tag) and skip-worktree (S) hide edits from git status
+        if tag[:1].islower() or (tag == "S" and os.path.lexists(os.path.join(path, name))):
+            hidden.append(name)
+    if hidden:
+        return ("%d tracked files are marked assume-unchanged or skip-worktree, so status cannot vouch for them"
+                % len(hidden))
+    if untracked.stdout.strip():
+        return "%d untracked files" % len(untracked.stdout.splitlines())
+    keep = [p for p in ignored.stdout.splitlines() if p.strip() and not DISPOSABLE.search(p.rstrip("/"))]
+    if keep:
+        return "ignored files that are not build output: %s%s" % (", ".join(keep[:4]), " ..." if len(keep) > 4 else "")
+    return None
+
+
+def has_submodules(path):
+    """True when git would refuse `worktree remove` over submodules: the worktree's git directory has a modules
+    directory, or a gitlink (mode 160000) in its index has a .git inside its directory. Fails closed."""
+    r = git(path, "rev-parse", "--path-format=absolute", "--git-path", "modules")
+    if r.returncode or os.path.isdir(r.stdout.strip()):
+        return True
+    r = git(path, "ls-files", "--stage", "-z")
+    if r.returncode:
+        return True
+    for entry in r.stdout.split("\0"):
+        meta, _, name = entry.partition("\t")
+        if meta.startswith("160000 ") and os.path.lexists(os.path.join(path, name, ".git")):
+            return True
+    return False
+
+
+def mtime(path):
+    """The modification time of path in epoch seconds, or None when it cannot be read."""
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return None
+
+
+def last_touched(path):
+    """Epoch seconds of the latest sign of use: the newer mtime of the worktree's git index and HEAD log, which git
+    rewrites on commit, checkout, reset and add. The directory's mtime if neither exists, and now if even that is
+    unreadable, so a doubt keeps the worktree."""
+    stamps = []
+    for name in ("index", "logs/HEAD"):
+        stamp = mtime(git(path, "rev-parse", "--path-format=absolute", "--git-path", name).stdout.strip())
+        if stamp is not None:
+            stamps.append(stamp)
+    if stamps:
+        return max(stamps)
+    stamp = mtime(path)
+    return time.time() if stamp is None else stamp
+
+
 def classify(main, wt, repo_slug, rows):
     """Decide one linked worktree: (None, pr) lets it go, (reason, pr) keeps it. pr is the branch's merged pull
     request once the PR check has found one (the newest, when HEAD is in none), else None. The checks run in
@@ -256,6 +335,16 @@ def classify(main, wt, repo_slug, rows):
     reason, pr = merged_pr(main, repo_slug, branch, rev.stdout.strip())
     if reason:
         return reason, pr
+    # HEAD is in the merged pull request from here on, so every reason carries pr and the kept line says "merged #N".
+    # condition 4: nothing local
+    local = local_data(path)
+    if local:
+        return "local files: " + local, pr
+    if has_submodules(path):
+        return "initialized submodules", pr
+    # condition 6: nobody touched it for 24 hours
+    if time.time() - last_touched(path) < DAY:
+        return "touched in the last 24 hours", pr
     return None, pr
 
 
