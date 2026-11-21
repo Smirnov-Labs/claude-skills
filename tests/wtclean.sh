@@ -33,6 +33,7 @@ cat > "$T/bin/git" <<'EOF'
 # exits 143 without running git, as a time limit that stops the run would.
 # FAKE_GIT_VANISH=TEXT: a call whose arguments end with TEXT runs, then deletes $FAKE/vbin/git. When that link is the
 # only git on PATH, wtclean's next git call cannot start.
+# FAKE_GIT_VERSION=V: `git --version` prints "git version V".
 import os
 import signal
 import subprocess
@@ -41,6 +42,9 @@ import sys
 args = sys.argv[1:]
 with open(os.path.join(os.environ["FAKE"], "git.log"), "a") as log:
     log.write(" ".join(args) + "\n")
+if args == ["--version"] and os.environ.get("FAKE_GIT_VERSION"):
+    print("git version " + os.environ["FAKE_GIT_VERSION"])
+    sys.exit(0)
 if os.environ.get("FAKE_GIT_TERM") and " ".join(args).endswith(os.environ["FAKE_GIT_TERM"]):
     os.kill(os.getppid(), signal.SIGTERM)
     sys.exit(143)
@@ -327,6 +331,12 @@ setup; mkwt wt-a feat/a; mkdir -p "$HOME/.config/orca"; run_bare
 check "Orca installed without a CLI on PATH is an error, and bare orca never runs" '[ $rc -eq 2 ] && [[ $out == *"Orca"* ]] && [ ! -e "$FAKE/orca.log" ]'
 setup; mkwt wt-a feat/a; ORCA_USER_DATA_PATH=$T/orca-data run_bare
 check "ORCA_USER_DATA_PATH without a CLI is an error too" '[ $rc -eq 2 ]'
+setup; mkwt wt-v feat/v; pr feat/v MERGED; FAKE_GIT_VERSION=2.31.0 run
+check "git 2.31 is new enough" '[ $rc -eq 0 ] && [[ $out == *"would remove  $W  feat/v"* ]]'
+FAKE_GIT_VERSION=2.30.9 run --check
+check "--check counts an old git as an error" '[ $rc -eq 0 ] && [ "$out" = "wtclean: 0 can go, 1 errors" ]'
+FAKE_GIT_VERSION=2.30.9 run --apply
+check "git older than 2.31 is an error, and nothing goes" '[ $rc -eq 2 ] && [ -d "$W" ] && [[ $out == *"error         wtclean: wtclean needs git 2.31 or newer"*"2.30.9"* ]]'
 setup; FAKE_ORCA_FAIL=1 run --check
 check "--check after an Orca failure returns 0, not 2" '[ $rc -eq 0 ] && [[ "$(last)" == *", 1 errors" ]]'
 setup; mkwt wt-m feat/m; pr feat/m MERGED; run

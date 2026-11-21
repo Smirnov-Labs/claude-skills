@@ -9,7 +9,7 @@ description: Use when clearing out git worktrees whose pull request has merged, 
 
 ## Run it
 
-`wtclean` is on PATH where skillsync installed this skill. Otherwise call it by its full path, `<this skill's base directory>/bin/wtclean`. It needs `gh`, signed in to GitHub. It adds `~/.local/bin` to PATH, so it finds `gh` there under an Orca server too.
+`wtclean` is on PATH where skillsync installed this skill. Otherwise call it by its full path, `<this skill's base directory>/bin/wtclean`. It needs `gh`, signed in to GitHub, and git 2.31 or newer. With an older git it stops with an error. It adds `~/.local/bin` to PATH, so it finds `gh` there under an Orca server too.
 
 | Command | What it does | Exit codes |
 |---|---|---|

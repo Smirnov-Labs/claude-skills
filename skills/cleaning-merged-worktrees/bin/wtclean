@@ -11,7 +11,8 @@
 It scans the git repositories Orca has registered on this host, plus each --repo. Without Orca it scans each
 --repo, or else the repository it runs in. The Orca CLI is $ORCA_CLI_COMMAND, else orca-ide on PATH. If Orca looks
 installed (ORCA_USER_DATA_PATH is set, or ~/.config/orca exists) but neither is found, it stops with an error.
-It appends ~/.local/bin to PATH, so gh is found even under an Orca server.
+It appends ~/.local/bin to PATH, so gh is found even under an Orca server. It needs git 2.31 or newer, and an older git
+is an error.
 
 A linked worktree goes only when all six conditions hold:
   1  it has a branch, is not locked, and is not an agent worktree (an agent-* directory or worktree-agent-* branch)
@@ -111,6 +112,15 @@ def run(cmd, cwd=None, timeout=TIMEOUT):
 
 def git(where, *args, timeout=TIMEOUT):
     return run(["git", "-C", where] + list(args), timeout=timeout)
+
+
+def check_git():
+    """Stop with a ToolError unless git is 2.31 or newer. An older git prints --path-format=absolute back as its own
+    line, so the 24-hour and submodule checks would read the wrong paths and could let a worktree go."""
+    version = run(["git", "--version"]).stdout.strip()
+    m = re.match(r"git version (\d+)\.(\d+)", version)
+    if not m or (int(m.group(1)), int(m.group(2))) < (2, 31):
+        raise ToolError("wtclean needs git 2.31 or newer, and git --version says: %s" % (version or "nothing"))
 
 
 def orca_cli():
@@ -649,6 +659,7 @@ def main():
         a = parse_args()
         apply, check = a.apply, a.check
         QUIET = check
+        check_git()                               # before the first git call that relies on it
         cli = orca_cli()
         tops = repos(cli, a.repo)                 # first, so a usage error wins over a problem with Orca's list
         rows = orca_rows(cli)                     # one read per run, before the first repository is scanned
