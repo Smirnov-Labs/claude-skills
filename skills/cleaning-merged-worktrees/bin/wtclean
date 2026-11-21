@@ -22,14 +22,17 @@ A linked worktree goes only when all six conditions hold:
   6  nobody touched it for 24 hours: its git index and HEAD log are more than a day old
 An initialized submodule also keeps a worktree: git will not remove one without --force. So does a sparse checkout,
 whose skip-worktree entries count as local files. Orca listing the worktree twice keeps it too, and so does a child
-workspace that Orca does not list.
+workspace that Orca does not list. Another checkout or an Orca workspace inside the worktree keeps it too, because
+removing the worktree deletes it. The checkout can belong to any scanned repository, and the workspace can be idle. A
+folder above the worktree does not count.
 Every other worktree stays, with its reason. A problem with one worktree is a reason to keep it, not an error.
---apply checks conditions 4 to 6 again just before each removal, and a worktree that fails that check stays. It removes
-a worktree that Orca lists with Orca's worktree rm, and any other with git worktree remove. A worktree that git refuses
-to remove stays too.
+--apply checks conditions 4 to 6, and what lies inside the worktree, again just before each removal, and a worktree that
+fails that check stays. It removes a worktree that Orca lists with Orca's worktree rm, and any other with git worktree
+remove. A worktree that git refuses to remove stays too.
 Errors are failures of gh, the Orca CLI or wtclean itself, and the run stops at the first one. Orca's worktree list is
 an error when it looks cut off or is for another host. It is also an error when a row has no usable field. So is a
-failure of Orca's worktree rm, which can mean that Orca is down. Earlier removals stay done, and the report lists them.
+failure of Orca's worktree rm, which can mean that Orca is down, and a git worktree list that fails in a scanned
+repository. Earlier removals stay done, and the report lists them.
 No removal uses --force. wtclean never runs git worktree prune and never deletes a remote branch. It deletes the local
 branch only when the branch is at the pull request head. The report says what became of the branch.
 
@@ -157,6 +160,16 @@ def main_checkout(path):
     if not first.get("worktree") or first.get("bare"):
         return None
     return os.path.realpath(first["worktree"])
+
+
+def checkout_paths(main):
+    """The real path of every checkout of the repository at main: the main checkout and each linked worktree. git
+    always lists the main checkout, so an empty list means git failed, and that is a ToolError: a checkout it does not
+    show could lie inside a worktree that goes."""
+    listed = worktrees(main)
+    if not listed:
+        raise ToolError("git could not list the worktrees of %s" % main)
+    return [os.path.realpath(w["worktree"]) for w in listed]
 
 
 def repos(cli, extra):
@@ -452,11 +465,32 @@ def last_touched(path):
     return time.time() if stamp is None else stamp
 
 
-def keep_reason(path, rows):
-    """Why conditions 4 to 6 keep the worktree at path, or None when they let it go. The first failing check gives the
-    reason, in this order: local files, initialized submodules, use, the last 24 hours. classify() asks at scan time,
-    and remove() asks again with fresh rows just before a removal. One function serves both, so a new condition
+def inside(path, rows, checkouts):
+    """Why something else lives inside the worktree at path, or None: a checkout in checkouts ({main checkout: [real
+    paths]}) or a workspace in Orca's rows, whatever its state, whose real path lies strictly inside it. Removing the
+    worktree would delete that directory. A folder above the worktree never counts: Orca can list one as high as a home
+    directory."""
+    top = os.path.realpath(path) + os.sep
+    for paths in checkouts.values():
+        for other in paths:
+            if other.startswith(top):
+                return "another checkout lies inside it: " + other
+    for other in rows["by_path"]:
+        if other.startswith(top):
+            return "an Orca workspace lies inside it: " + other
+    return None
+
+
+def keep_reason(path, rows, checkouts):
+    """Why conditions 4 to 6, or what lies inside it, keep the worktree at path, or None when they let it go. The first
+    failing check gives the reason, in this order: a checkout or Orca workspace inside it, local files, initialized
+    submodules, use, the last 24 hours. classify() asks at scan time, and remove() asks again with fresh rows and a
+    fresh list of the repository's checkouts just before a removal. One function serves both, so a new condition
     reaches both."""
+    # nothing else lives inside it: the removal would delete that too
+    nested = inside(path, rows, checkouts)
+    if nested:
+        return nested
     # condition 4: nothing local
     local = local_data(path)
     if local:
@@ -473,7 +507,7 @@ def keep_reason(path, rows):
     return None
 
 
-def classify(main, wt, repo_slug, rows):
+def classify(main, wt, repo_slug, rows, checkouts):
     """Decide one linked worktree: (None, pr) lets it go, (reason, pr) keeps it. pr is the branch's merged pull
     request once the PR check has found one (the newest, when HEAD is in none), else None. The checks run in
     order, and the first failure keeps it."""
@@ -493,7 +527,7 @@ def classify(main, wt, repo_slug, rows):
     if reason:
         return reason, pr
     # HEAD is in the merged pull request from here on, so every reason carries pr and the kept line says "merged #N".
-    return keep_reason(path, rows), pr
+    return keep_reason(path, rows, checkouts), pr
 
 
 def branch_note(main, branch, pr_head):
@@ -513,15 +547,18 @@ def branch_note(main, branch, pr_head):
     return "deleted branch %s (was %s)" % (branch, pr_head[:10])
 
 
-def remove(main, wt, pr, cli):
-    """Remove a worktree that classify() let go, after asking keep_reason() again on a fresh read of Orca's list, then
-    deal with its branch. Returns (True, "#<pull request>; <what became of the branch>"), or (False, why it stays).
-    Orca removes a worktree that it lists, and git removes any other. Neither gets --force, and a refusal by git keeps
-    the worktree. A failure of the Orca CLI is a ToolError, so it stops the run: Orca may be down."""
+def remove(main, wt, pr, cli, checkouts):
+    """Remove a worktree that classify() let go, after asking keep_reason() again on a fresh read of Orca's list and of
+    this repository's checkouts, then deal with its branch. Returns (True, "#<pull request>; <what became of the
+    branch>"), or (False, why it stays). Orca removes a worktree that it lists, and git removes any other. Neither gets
+    --force, and a refusal by git keeps the worktree. A failure of the Orca CLI is a ToolError, so it stops the run:
+    Orca may be down."""
     path, branch = wt["worktree"], branch_of(wt)
     number, pr_head = pr["number"], pr["headRefOid"]     # read now, so a bad record fails before anything is removed
     rows = orca_rows(cli)                                # a new read: an agent may have started since the scan
-    reason = keep_reason(path, rows)                     # the checks of classify(), on the new rows
+    checkouts = dict(checkouts)                          # and a checkout may have been added inside it. Other
+    checkouts[main] = checkout_paths(main)               # repositories' lists are from the start of the run.
+    reason = keep_reason(path, rows, checkouts)          # the checks of classify(), on the new reads
     if reason:
         return False, reason
     found = rows["by_path"].get(os.path.realpath(path), [])     # busy() has kept a path that Orca lists twice
@@ -539,7 +576,7 @@ def remove(main, wt, pr, cli):
     return True, "#%s; %s" % (number, branch_note(main, branch, pr_head))
 
 
-def scan(main, rows, tally, cli, apply):
+def scan(main, rows, tally, cli, apply, checkouts):
     """Classify the linked worktrees of one repository, remove the ones that may go when apply is set, and print its
     part of the report. Whatever was found or removed before an error is still printed, and counted in tally."""
     repo_slug = slug(git(main, "config", "--get", "remote.origin.url").stdout)
@@ -548,9 +585,9 @@ def scan(main, rows, tally, cli, apply):
     try:
         for wt in worktrees(main)[1:]:
             label = "%s  %s" % (wt["worktree"], branch_of(wt) or "(detached)")
-            reason, pr = classify(main, wt, repo_slug, rows)
+            reason, pr = classify(main, wt, repo_slug, rows, checkouts)
             if reason is None and apply:
-                removed, text = remove(main, wt, pr, cli)
+                removed, text = remove(main, wt, pr, cli, checkouts)
                 if removed:
                     go.append(report_line("removed", "%s  %s" % (label, text)))
                     tally["go"] += 1
@@ -602,9 +639,10 @@ def main():
         cli = orca_cli()
         tops = repos(cli, a.repo)                 # first, so a usage error wins over a problem with Orca's list
         rows = orca_rows(cli)                     # one read per run, before the first repository is scanned
+        checkouts = {top: checkout_paths(top) for top in tops}     # every checkout, for the check of what is inside
         for top in tops:
             where = top
-            scan(top, rows, tally, cli, apply)
+            scan(top, rows, tally, cli, apply, checkouts)
     except UsageError as e:
         print("wtclean: usage error: %s" % e, file=sys.stderr)
         return 3

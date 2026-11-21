@@ -32,11 +32,11 @@ A linked worktree goes only when all six hold. The main checkout never goes.
 5. Nothing uses it: no Orca agent or terminal, no child workspace with an agent, no process working inside it.
 6. Nobody touched it for 24 hours: its git index and HEAD log are more than a day old.
 
-An initialized submodule keeps a worktree, because git will not remove one without `--force`. So does a sparse checkout, because its skip-worktree entries count as local files. Orca listing the worktree twice keeps it too, and so does a child workspace that Orca does not list. A problem with one worktree is a reason to keep it, not an error.
+An initialized submodule keeps a worktree, because git will not remove one without `--force`. So does a sparse checkout, because its skip-worktree entries count as local files. Orca listing the worktree twice keeps it too, and so does a child workspace that Orca does not list. Another checkout or an Orca workspace inside the worktree keeps it too, because removing the worktree deletes it. The checkout can belong to any scanned repository, and the workspace can be idle. A folder above the worktree does not count. A problem with one worktree is a reason to keep it, not an error.
 
 For each worktree that can go, `--apply` does this:
 
-1. It checks conditions 4 to 6 again. A worktree that fails the check stays.
+1. It checks conditions 4 to 6 again, and what lies inside the worktree. A worktree that fails the check stays.
 2. It removes the worktree with Orca's `worktree rm` if Orca lists it, and with `git worktree remove` if not. A worktree that git refuses to remove stays.
 3. It deletes the local branch, but only when the branch is at the PR head and no other worktree has it checked out.
 
@@ -69,7 +69,7 @@ wtclean: <n> to remove, <k> kept (<m> merged), <e> errors
 - `(no GitHub remote)` on a `repo` line means that its `origin` is not on GitHub. Every worktree there stays.
 - `would remove` appears in a dry run. `removed` appears after `--apply`.
 - `(merged #<n>)` ends a `kept` line when the branch has a merged PR. Something else keeps the worktree, so read the reason.
-- `error` is a failure of `gh`, the Orca CLI or wtclean itself. `<where>` is the repository that wtclean was scanning, or `wtclean` when the failure came first. It never names the worktree. The run stops there, and the report still lists the removals that came before.
+- `error` is a failure of `gh`, the Orca CLI, `git worktree list` or wtclean itself. `<where>` is the repository that wtclean was scanning, or `wtclean` when the failure came first. It never names the worktree. The run stops there, and the report still lists the removals that came before.
 - The last line counts the run. A dry run says `<n> to remove`, and `--apply` says `<n> removed`. `<m> merged` counts the kept worktrees that have a merged PR.
 - `--check` prints only `wtclean: <n> can go, <e> errors`.
 
@@ -94,6 +94,8 @@ A `kept` line gives one reason. The first failing check names it, in this order:
 | `open pull request #<n>` | The branch has an open PR. |
 | `no merged pull request` | GitHub has no merged PR from this branch into this repository. A fork PR does not count. |
 | `commits not in the pull request` | HEAD holds a commit that no merged PR from this branch holds. |
+| `another checkout lies inside it: <path>` | The main checkout or a linked worktree of a scanned repository is inside this worktree. Removing this worktree deletes it. |
+| `an Orca workspace lies inside it: <path>` | Orca lists a workspace inside this worktree, whether or not it is in use. Removing this worktree deletes it. |
 | `local files: ...` | Condition 4 fails. The rest says why: `<n> changed tracked files`, `<n> untracked files`, `ignored files that are not build output: <names>`, `<n> tracked files are marked assume-unchanged or skip-worktree, so status cannot vouch for them`, `git could not inspect it` or `git could not read its index flags`. |
 | `initialized submodules` | It holds an initialized submodule. |
 | `Orca lists it more than once` | Orca's list holds the same path twice, so wtclean doubts Orca's view of it. |
@@ -140,6 +142,7 @@ After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M mer
 ## Known gaps
 
 - Ignored files inside `node_modules`, `dist`, `build` and the rest of `prland`'s list of build and cache folders count as build output, and go with the worktree.
+- wtclean does not see a checkout of a repository that it does not scan, when that checkout lies inside a worktree's build or cache folder. The checkout goes with the worktree.
 - Only the 24-hour check protects a worktree that an idle agent in another workspace used through `git -C`.
 - The process check reads `/proc`. Without it (macOS), a worktree that passes the checks before it stops the run with exit 2, so wtclean removes nothing there.
 - The process check skips other users' processes, and same-user processes it cannot read.

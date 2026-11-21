@@ -438,6 +438,18 @@ check "a worktree touched after the scan keeps it" '[ -d "$W" ] && [[ $out == *"
 setup; mkwt wt-sm feat/sm; pr feat/sm MERGED; orca_row "$W"
 FAKE_PS2_PY="os.makedirs('$(git -C "$W" rev-parse --path-format=absolute --git-path modules)')" run --apply
 check "a submodule that appears after the scan keeps it" '[ -d "$W" ] && [[ $out == *"wt-sm  feat/sm: initialized submodules (merged #1)"* ]]'
+setup; mkwt wt-host feat/host; pr feat/host MERGED; git -C "$M" worktree add -q -b feat/inner "$W/node_modules/wt-b" origin/main
+echo keep > "$W/node_modules/wt-b/precious.txt"; run --apply
+check "another checkout in its ignored build folder keeps it, and all of it stays" '[ -e "$W/node_modules/wt-b/precious.txt" ] && [[ $out == *"wt-host  feat/host: another checkout lies inside it: $W/node_modules/wt-b (merged #1)"* ]]'
+setup; mkwt wt-fold feat/fold; pr feat/fold MERGED; mkdir "$W/pkg"; orca_row "$W/pkg"; run --apply
+check "an idle Orca workspace inside it keeps it" '[ -d "$W/pkg" ] && [[ $out == *"wt-fold  feat/fold: an Orca workspace lies inside it: $W/pkg (merged #1)"* ]]'
+setup; mkwt wt-anc feat/anc; pr feat/anc MERGED; orca_row "$T/r"; run
+check "an Orca workspace in a folder above it does not keep it" '[[ $out == *"would remove  $T/r/wt-anc  feat/anc"* ]]'
+setup; mkwt main/.wt/wt-low feat/low; pr feat/low MERGED; run
+check "a worktree inside its main checkout can still go" '[[ $out == *"would remove  $T/r/main/.wt/wt-low  feat/low"* ]]'
+setup; mkwt wt-lat feat/lat; pr feat/lat MERGED
+FAKE_PS2_PY="subprocess.run([os.environ['REAL_GIT'], '-C', '$M', 'worktree', 'add', '-q', '-b', 'feat/lat2', '$W/node_modules/wt-c', 'origin/main'])" run --apply
+check "a checkout added inside it after the scan keeps it" '[ -d "$W/node_modules/wt-c" ] && [[ $out == *"wt-lat  feat/lat: another checkout lies inside it: $W/node_modules/wt-c (merged #1)"* ]]'
 setup; mkwt wt-ref feat/ref; pr feat/ref MERGED; orca_row "$W"; FAKE_ORCA_RM_FAIL=1 run --apply
 check "an Orca failure during removal stops the run with an error" '[ $rc -eq 2 ] && [ -d "$W" ] && [[ $out == *"error"*"refused"* ]]'
 setup; mkwt wt-noop feat/noop; pr feat/noop MERGED; orca_row "$W"; FAKE_ORCA_RM_NOOP=1 run --apply
