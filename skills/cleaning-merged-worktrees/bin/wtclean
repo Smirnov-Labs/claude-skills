@@ -32,7 +32,8 @@ remove. A worktree that git refuses to remove stays too.
 Errors are failures of gh, the Orca CLI or wtclean itself, and the run stops at the first one. Orca's worktree list is
 an error when it looks cut off or is for another host. It is also an error when a row has no usable field. So is a
 failure of Orca's worktree rm, which can mean that Orca is down, and a git worktree list that fails in a scanned
-repository. Earlier removals stay done, and the report lists them.
+repository. An error during a removal names the worktree, which can be half deleted. Earlier removals stay done, and the
+report lists them.
 No removal uses --force. wtclean never runs git worktree prune and never deletes a remote branch. It deletes the local
 branch only when the branch is at the pull request head. The report says what became of the branch.
 
@@ -555,7 +556,8 @@ def remove(main, wt, pr, cli, checkouts):
     this repository's checkouts, then deal with its branch. Returns (True, "#<pull request>; <what became of the
     branch>"), or (False, why it stays). Orca removes a worktree that it lists, and git removes any other. Neither gets
     --force, and a refusal by git keeps the worktree. A failure of the Orca CLI is a ToolError, so it stops the run:
-    Orca may be down."""
+    Orca may be down. A ToolError in the branch check comes after the removal, so the removal is still reported, and
+    the branch stays."""
     path, branch = wt["worktree"], branch_of(wt)
     number, pr_head = pr["number"], pr["headRefOid"]     # read now, so a bad record fails before anything is removed
     rows = orca_rows(cli)                                # a new read: an agent may have started since the scan
@@ -574,9 +576,13 @@ def remove(main, wt, pr, cli, checkouts):
             return False, "git refused the removal: " + why[:200]
     if os.path.lexists(path) or any(w["worktree"] == path for w in worktrees(main)):
         if found:
-            raise ToolError("Orca said it removed %s, but git still lists it or the directory is still there" % path)
+            raise ToolError("Orca said it removed it, but git still lists it or the directory is still there")
         return False, "git refused the removal: still present"
-    return True, "#%s; %s" % (number, branch_note(main, branch, pr_head))
+    try:
+        note = branch_note(main, branch, pr_head)
+    except ToolError as e:                               # the worktree is gone: report that, and leave the branch
+        note = "branch %s: not checked (%s)" % (branch, e)
+    return True, "#%s; %s" % (number, note)
 
 
 def scan(main, rows, tally, cli, apply, checkouts):
@@ -591,7 +597,10 @@ def scan(main, rows, tally, cli, apply, checkouts):
             label = "%s  %s" % (wt["worktree"], branch_of(wt) or "(detached)")
             reason, pr = classify(main, wt, repo_slug, rows, checkouts)
             if reason is None and apply:
-                removed, text = remove(main, wt, pr, cli, checkouts)
+                try:
+                    removed, text = remove(main, wt, pr, cli, checkouts)
+                except ToolError as e:                         # the error names the worktree, which may be half gone
+                    raise ToolError("%s: %s" % (wt["worktree"], e))
                 if removed:
                     say(report_line("removed", "%s  %s" % (label, text)))
                     tally["go"] += 1

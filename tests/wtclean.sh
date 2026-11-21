@@ -31,8 +31,11 @@ cat > "$T/bin/git" <<'EOF'
 # FAKE_GIT_REMOVE_NOOP=1 makes `worktree remove` exit 0 and remove nothing.
 # FAKE_GIT_TERM=TEXT: a call whose arguments, joined by spaces, end with TEXT sends SIGTERM to its caller (wtclean) and
 # exits 143 without running git, as a time limit that stops the run would.
+# FAKE_GIT_VANISH=TEXT: a call whose arguments end with TEXT runs, then deletes $FAKE/vbin/git. When that link is the
+# only git on PATH, wtclean's next git call cannot start.
 import os
 import signal
+import subprocess
 import sys
 
 args = sys.argv[1:]
@@ -41,6 +44,10 @@ with open(os.path.join(os.environ["FAKE"], "git.log"), "a") as log:
 if os.environ.get("FAKE_GIT_TERM") and " ".join(args).endswith(os.environ["FAKE_GIT_TERM"]):
     os.kill(os.getppid(), signal.SIGTERM)
     sys.exit(143)
+if os.environ.get("FAKE_GIT_VANISH") and " ".join(args).endswith(os.environ["FAKE_GIT_VANISH"]):
+    code = subprocess.run([os.environ["REAL_GIT"]] + args).returncode
+    os.unlink(os.path.join(os.environ["FAKE"], "vbin", "git"))
+    sys.exit(code)
 removing = any(a == "worktree" and b == "remove" for a, b in zip(args, args[1:]))
 if removing and os.environ.get("FAKE_GIT_REMOVE_FAIL"):
     print("fatal: refused", file=sys.stderr)
@@ -462,6 +469,10 @@ FAKE_PS2_PY="subprocess.run([os.environ['REAL_GIT'], '-C', '$M', 'worktree', 'ad
 check "a checkout added inside it after the scan keeps it" '[ -d "$W/node_modules/wt-c" ] && [[ $out == *"wt-lat  feat/lat: another checkout lies inside it: $W/node_modules/wt-c (merged #1)"* ]]'
 setup; mkwt wt-ref feat/ref; pr feat/ref MERGED; orca_row "$W"; FAKE_ORCA_RM_FAIL=1 run --apply
 check "an Orca failure during removal stops the run with an error" '[ $rc -eq 2 ] && [ -d "$W" ] && [[ $out == *"error"*"refused"* ]]'
+check "an Orca removal failure names the worktree" '[[ $out == *"error         $M: $W: refused"* ]]'
+setup; mkwt wt-bn feat/bn; pr feat/bn MERGED; mkdir "$FAKE/vbin"; ln -s "$T/bin/git" "$T/bin/gh" "$T/sysbin/python3" "$FAKE/vbin/"
+: > "$FAKE/git.log"; out=$(cd "$WD" && env -u ORCA_CLI_COMMAND PATH="$FAKE/vbin" FAKE_GIT_VANISH="rev-parse --verify --quiet refs/heads/feat/bn" "$TOOL" --apply 2>&1); rc=$?
+check "a branch check that fails after a removal still reports the removal" '[ $rc -eq 0 ] && [ ! -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat/bn >/dev/null && [[ $out == *"removed       $W  feat/bn  #1; branch feat/bn: not checked (cannot run git: "* ]] && [ "$(last)" = "wtclean: 1 removed, 0 kept (0 merged), 0 errors" ]'
 setup; mkwt wt-noop feat/noop; pr feat/noop MERGED; orca_row "$W"; FAKE_ORCA_RM_NOOP=1 run --apply
 check "Orca says removed but the directory stays: an error" '[ $rc -eq 2 ] && [ -d "$W" ] && [[ $out == *"error"*"still there"* ]]'
 setup; mkwt wt-dir feat/dir; pr feat/dir MERGED; orca_row "$W"; FAKE_ORCA_RM_DIRONLY=1 run --apply

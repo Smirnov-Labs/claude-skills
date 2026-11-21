@@ -69,7 +69,7 @@ wtclean: <n> to remove, <k> kept (<m> merged), <e> errors
 - `(no GitHub remote)` on a `repo` line means that its `origin` is not on GitHub. Every worktree there stays.
 - `would remove` appears in a dry run. `removed` appears after `--apply`.
 - `(merged #<n>)` ends a `kept` line when the branch has a merged PR. Something else keeps the worktree, so read the reason.
-- `error` is a failure of `gh`, the Orca CLI, `git worktree list` or wtclean itself. `<where>` is the repository that wtclean was scanning, or `wtclean` when the failure came first. It never names the worktree. The run stops there, and the report still lists the removals that came before.
+- `error` is a failure of `gh`, the Orca CLI, `git worktree list` or wtclean itself. `<where>` is the repository that wtclean was scanning, or `wtclean` when the failure came first. A failure during the removal of a worktree puts that worktree's path at the start of `<message>`. Check that worktree, because the removal can have stopped halfway. The run stops there, and the report still lists the removals that came before.
 - The last line counts the run. A dry run says `<n> to remove`, and `--apply` says `<n> removed`. `<m> merged` counts the kept worktrees that have a merged PR.
 - `--check` prints only `wtclean: <n> can go, <e> errors`.
 
@@ -80,6 +80,7 @@ A `removed` line ends with what became of the local branch:
 - `kept branch <b>: another worktree has it checked out`.
 - `kept branch <b>: it is at <sha>, not the PR head <sha>`.
 - `kept branch <b>: <git's message>`: git refused to delete it.
+- `branch <b>: not checked (<error>)`: git failed or timed out after the removal, so wtclean left the branch alone. The run goes on.
 
 A `kept` line gives one reason. The first failing check names it, in this order:
 
@@ -149,5 +150,5 @@ After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M mer
 - The process check compares real paths, so it does not see a process that works in the worktree through a bind mount.
 - wtclean ignores fork PRs, so a clone whose `origin` is a fork keeps its worktrees.
 - A tool error stops the run at the first error, and wtclean does not scan the worktrees after it.
-- `git worktree remove` and Orca's `worktree rm` get 10 minutes, and every other call gets 2 minutes. A removal that times out stops the run, and can leave a half-deleted worktree. If tracked files are gone, later runs keep it until someone cleans it up by hand.
+- `git worktree remove` and Orca's `worktree rm` get 10 minutes, and every other call gets 2 minutes. A removal that times out stops the run with an error that names the worktree, and can leave it half deleted. If tracked files are gone, later runs keep it until someone cleans it up by hand.
 - A sidebar comment whose date stops advancing means the weekly run did not finish, or the precheck skipped it because nothing could go. Check `automations runs --id <automation-id>`. A skipped week shows as `skipped_precheck`.
