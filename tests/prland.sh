@@ -67,6 +67,7 @@ cat > "$T/bin/orca" <<'EOF'
 # Fake Orca CLI: logs its arguments to $FAKE/orca.log and answers `worktree ps` from $FAKE/ps.json. `worktree rm
 # --worktree id:R1::<path>` removes that worktree with git. --force, a call without --json, and any command it does not
 # know exit 9. FAKE_ORCA_FAIL=1: every call says Orca is not running. FAKE_ORCA_RM_FAIL=1: `worktree rm` refuses.
+# FAKE_ORCA_RM_NOOP=1: `worktree rm` says it removed the worktree and removes nothing.
 # From its second call on, `worktree ps` answers from $FAKE/ps.next.json if it exists, as if Orca changed meanwhile.
 # FAKE_PS2_TOUCH=FILE: from its second call on, `worktree ps` writes FILE before it answers.
 import json
@@ -104,6 +105,8 @@ if args[:3] == ["worktree", "set", "--worktree"]:
 if args[:3] == ["worktree", "rm", "--worktree"] and args[3].startswith("id:R1::"):
     if os.environ.get("FAKE_ORCA_RM_FAIL"):
         reply({"ok": False, "error": {"message": "refused"}}, 1)
+    if os.environ.get("FAKE_ORCA_RM_NOOP"):
+        reply({"ok": True, "result": {"removed": True}})
     wt = args[3][len("id:R1::"):]
     listing = subprocess.run(["git", "-C", wt, "worktree", "list", "--porcelain"], capture_output=True, text=True)
     main = listing.stdout.splitlines()[0][len("worktree "):]
@@ -293,6 +296,8 @@ setup; orca_row "$W"; FAKE_VERDICT=CLEAN FAKE_ORCA_FAIL=1 orun 7
 check "Orca: an unreadable worktree list keeps it, and the merge still counts" '[ $rc -eq 0 ] && [ -d "$W" ] && [ "$(orca_calls)" = "ps ps " ] && [[ $out == *"left in place: Orca'"'"'s worktree list could not be read in full: Orca is not running"* ]]'
 setup; orca_row "$W"; FAKE_VERDICT=CLEAN FAKE_ORCA_RM_FAIL=1 orun 7
 check "Orca: a refused worktree rm keeps the worktree and the branch" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"remove failed, left in place: refused"* ]]'
+setup; orca_row "$W"; FAKE_VERDICT=CLEAN FAKE_ORCA_RM_NOOP=1 orun 7
+check "Orca: a worktree rm that says removed but leaves the worktree keeps the branch" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"Orca said it removed it, but it is still on disk"* ]]'
 setup; orca_row "$W"; touch "$W/notes.txt"; FAKE_VERDICT=CLEAN orun 7
 check "Orca: local files keep it, and the card says completed" '[ -e "$W/notes.txt" ] && [ "$(orca_calls)" = "ps set ps " ] && [[ $out == *"untracked"* ]]'
 setup; orca_row "$W"; FAKE_VERDICT=CLEAN orun 7 --keep-worktree
