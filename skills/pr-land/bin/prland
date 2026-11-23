@@ -174,8 +174,9 @@ def local_data(path):
 def cwd_users(path):
     """(pid, name) of each readable process whose working directory is path or inside it, lowest pid first. It reads
     /proc where the host has one (Linux), and asks lsof where it has none (macOS). A process that exited during the
-    scan, or that belongs to someone else, cannot be read and is skipped. A ToolError means no way to list them: no
-    /proc and no lsof, an lsof run that fails or lists nothing, or a path with a character that lsof escapes.
+    scan, or that belongs to someone else, cannot be read and is skipped. lsof escapes some characters in the names
+    it prints, so each name counts both as printed and with those escapes undone: a second reading can only add a
+    match. A ToolError means no way to list them: no /proc and no lsof, or an lsof run that fails or lists nothing.
     skills/cleaning-merged-worktrees/bin/wtclean and skills/pr-land/bin/prland hold the same function."""
     where = os.path.realpath(path)
 
@@ -206,21 +207,37 @@ def cwd_users(path):
     lsof = shutil.which("lsof")
     if not lsof:
         raise ToolError("cannot list processes: there is no %s and no lsof on PATH" % PROC_ROOT)
-    if any(c == "\\" or not " " <= c <= "~" for c in where):   # lsof escapes these in names, so none could match
-        raise ToolError("cannot list processes: lsof cannot show the path %r as it is" % where)
+
+    def unescaped(name):                               # lsof's escapes undone: \t and the like, \xNN, ^X
+        named, out, i = {b"b": 8, b"f": 12, b"n": 10, b"r": 13, b"t": 9, b"\\": 92}, bytearray(), 0
+        while i < len(name):
+            two, hexa = name[i:i + 2], name[i + 2:i + 4]
+            if two[:1] == b"\\" and two[1:] in named:
+                out.append(named[two[1:]])
+                i += 2
+            elif two == b"\\x" and len(hexa) == 2 and all(c in b"0123456789abcdefABCDEF" for c in hexa):
+                out.append(int(hexa, 16))
+                i += 4
+            elif two[:1] == b"^" and len(two) == 2 and (0x40 <= two[1] <= 0x5f or two[1] == 0x3f):
+                out.append(0x7f if two[1] == 0x3f else two[1] - 0x40)
+                i += 2
+            else:
+                out.append(name[i])
+                i += 1
+        return os.fsdecode(bytes(out))
+
     try:
-        r = subprocess.run([lsof, "-w", "-d", "cwd", "-F", "pcn"], capture_output=True, text=True, errors="replace",
-                           timeout=120)
+        r = subprocess.run([lsof, "-w", "-d", "cwd", "-F", "pcn"], capture_output=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise ToolError("cannot list processes: lsof did not finish (%s)" % e.__class__.__name__)
     listed, pid, comm = False, None, ""
-    for line in r.stdout.splitlines():                 # per process: p<pid>, c<command>, then n<working directory>
+    for line in r.stdout.split(b"\n"):               # per process: p<pid>, c<command>, then n<working directory>
         tag, value = line[:1], line[1:]
-        if tag == "p":
+        if tag == b"p":
             listed, pid, comm = True, int(value) if value.isdigit() else None, ""
-        elif tag == "c":
-            comm = " ".join(value.split())
-        elif tag == "n" and pid is not None and inside(value):
+        elif tag == b"c":
+            comm = " ".join(value.decode("utf-8", "replace").split())
+        elif tag == b"n" and pid is not None and (inside(os.fsdecode(value)) or inside(unescaped(value))):
             users.append((pid, comm or "?"))
     if r.returncode != 0:                              # a partial list could leave out the process that matters
         raise ToolError("cannot list processes: lsof exited %d" % r.returncode)

@@ -328,17 +328,17 @@ PY
 if [ -e "$(dirname "$TOOL")/../../cleaning-merged-worktrees/bin/wtclean" ]; then
   rc=0 out="cwd_users differs"; check "prland and wtclean hold the same process check" 'same_check'
 fi
-# cwd_users() on the lsof path, called directly. lsof escapes control characters, backslashes and non-ASCII bytes in
-# the names it prints, so a worktree path with one of them cannot be checked. An escape further down, in a
-# subdirectory's name, still leaves the worktree's own prefix as it is.
+# cwd_users() on the lsof path, called directly. lsof can print a control character as \t or ^A, a backslash as \\,
+# and a non-ASCII byte as \xNN, or print any of them as it is. Each name counts both ways, so a busy worktree is found
+# whichever way lsof printed it, and an idle one still goes.
 lsof_unit() { PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc python3 - "$TOOL" "$T" <<'PY'
 import os
 import runpy
 import sys
 
-tool, t = sys.argv[1:3]
+tool, t = sys.argv[1], os.path.realpath(sys.argv[2])
 g = runpy.run_path(tool, run_name="lsof_unit")
-bad = []
+bad, BUSY = [], [(4242, "fake proc")]
 
 
 def case(label, where, want, cwd="/", mode=""):
@@ -351,10 +351,18 @@ def case(label, where, want, cwd="/", mode=""):
         bad.append("%s: got %r" % (label, got))
 
 
-case("a tab in the path", t + "/wt\ttab", "ToolError: cannot list processes: lsof cannot show", cwd=t + "/wt\\ttab")
-case("a backslash in the path", t + "/wt\\b", "ToolError: cannot list processes: lsof cannot show")
-case("a non-ASCII path", t + "/wt-é", "ToolError: cannot list processes: lsof cannot show")
-case("an escape in a subdirectory", t + "/plain", [(4242, "fake proc")], cwd=t + "/plain/sub\\tdir")
+case("a tab, printed as \\t", t + "/wt\ttab", BUSY, cwd=t + "/wt\\ttab/sub")
+case("a tab, idle", t + "/wt\ttab", [])
+case("a control character, printed as ^A", t + "/wt\x01x", BUSY, cwd=t + "/wt^Ax")
+case("a caret, printed as it is", t + "/wt^Ax", BUSY, cwd=t + "/wt^Ax")
+case("a backslash, printed as it is", t + "/wt\\b", BUSY, cwd=t + "/wt\\b")
+case("a backslash, printed as \\\\", t + "/wt\\b", BUSY, cwd=t + "/wt\\\\b")
+case("a backslash, idle", t + "/wt\\b", [])
+case("non-ASCII, printed as it is", t + "/José/wt", BUSY, cwd=t + "/José/wt/sub")
+case("non-ASCII in a parent, printed as \\xNN", t + "/José/wt", BUSY, cwd=t + "/Jos\\xc3\\xa9/wt")
+case("non-ASCII in a parent, idle", t + "/José/wt", [], cwd=t + "/Jos\\xc3\\xa9/other")
+case("an escape in a subdirectory", t + "/plain", BUSY, cwd=t + "/plain/sub\\tdir")
+case("a sibling that only an escape makes look alike", t + "/plain", [], cwd=t + "/plain\\x2dx")
 case("an idle plain path", t + "/plain", [])
 case("a failed run with output", t + "/plain", "ToolError: cannot list processes: lsof exited 1", mode="partial")
 case("no output", t + "/plain", "ToolError: cannot list processes: lsof listed none", mode="empty")
