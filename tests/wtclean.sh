@@ -237,6 +237,21 @@ mkwt() {
   echo "$2" >> "$W/a.txt"; git -C "$W" commit -qam "work on $2"; git -C "$W" push -q -u origin "$2"
   H=$(git -C "$W" rev-parse HEAD); age "$W"
 }
+# flutter_files DIR: what flutter pub get and flutter build leave in DIR and DIR/app, ignored as Flutter's .gitignore
+# files ignore it, with a local.properties that holds only SDK paths. *.secret is ignored too, for a file to keep.
+flutter_files() {
+  printf '%s\n' '.dart_tool/' '.flutter-plugins-dependencies' 'GeneratedPluginRegistrant.*' 'Generated.xcconfig' \
+    'flutter_export_environment.sh' 'ephemeral/' 'local.properties' '*.secret' >> "$M/.git/info/exclude"
+  mkdir -p "$1/.dart_tool" "$1/app/android/app/src/main/java/io/flutter/plugins" "$1/app/ios/Flutter/ephemeral" \
+    "$1/app/ios/Runner" "$1/app/linux/flutter/ephemeral"
+  echo x > "$1/.dart_tool/package_config.json"; echo x > "$1/app/.flutter-plugins-dependencies"
+  echo x > "$1/app/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java"
+  echo x > "$1/app/ios/Runner/GeneratedPluginRegistrant.h"; echo x > "$1/app/ios/Runner/GeneratedPluginRegistrant.m"
+  echo x > "$1/app/ios/Flutter/Generated.xcconfig"; echo x > "$1/app/ios/Flutter/flutter_export_environment.sh"
+  echo x > "$1/app/ios/Flutter/ephemeral/flutter_lldbinit"; echo x > "$1/app/linux/flutter/ephemeral/.plugin_symlinks"
+  printf '%s\n' '## Written by Android Studio and Flutter' 'sdk.dir=/opt/android-sdk' 'flutter.sdk=/opt/flutter' \
+    > "$1/app/android/local.properties"
+}
 # pr BRANCH STATE [HEAD] [CROSS] [COUNT]: add COUNT (default 1) pull requests to what the fake gh lists for BRANCH
 # (HEAD defaults to the branch tip)
 pr() {
@@ -431,6 +446,12 @@ setup; mkwt wt-nx feat/nx; pr feat/nx MERGED; printf '.nx/\n' >> "$M/.git/info/e
 check "an Nx cache (.nx) alone does not keep it" '[[ $out == *"would remove  $T/r/wt-nx  feat/nx"* ]]'
 setup; mkwt wt-nxrc feat/nxrc; pr feat/nxrc MERGED; printf '.nx*\n' >> "$M/.git/info/exclude"; echo keep > "$W/.nxrc"; age "$W"; run
 check "an ignored file whose name only starts with .nx keeps it" '[[ $out == *"wt-nxrc  feat/nxrc: local files: ignored files that are not build output: .nxrc (merged #1)"* ]]'
+setup; mkwt wt-fl feat/fl; pr feat/fl MERGED; flutter_files "$W"; age "$W"; run
+check "Flutter's generated files and an SDK-only local.properties do not keep it" '[[ $out == *"would remove  $T/r/wt-fl  feat/fl"* ]]'
+setup; mkwt wt-flk feat/flk; pr feat/flk MERGED; flutter_files "$W"; echo custom.setting=1 >> "$W/app/android/local.properties"; age "$W"; run
+check "a local.properties with any other key keeps it" '[[ $out == *"wt-flk  feat/flk: local files: ignored files that are not build output: "*"app/android/local.properties"*"(merged #1)"* ]]'
+setup; mkwt wt-flj feat/flj; pr feat/flj MERGED; flutter_files "$W"; echo keep > "$W/app/android/app/src/main/java/notes.secret"; age "$W"; run
+check "a folder off the list keeps it when it holds a file that is not build output" '[[ $out == *"wt-flj  feat/flj: local files: ignored files that are not build output: app/"*"(merged #1)"* ]]'
 setup; git init -q -b main "$T/r/subsrc"; echo s > "$T/r/subsrc/s.txt"; git -C "$T/r/subsrc" add -A; git -C "$T/r/subsrc" commit -qm s
 mkwt wt-sub feat/sub; git -C "$W" -c protocol.file.allow=always submodule add -q "$T/r/subsrc" sub; git -C "$W" commit -qm sub; git -C "$W" push -q
 pr feat/sub MERGED; age "$W"; run

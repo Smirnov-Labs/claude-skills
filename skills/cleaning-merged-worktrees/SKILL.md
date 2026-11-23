@@ -89,7 +89,7 @@ A `kept` line gives one reason. The first failing check names it, in this order:
 
 | Reason | What it means |
 |---|---|
-| `directory missing` | git lists the worktree, but its folder is gone. wtclean never runs `git worktree prune`, which drops the entry. |
+| `directory missing` | git lists the worktree, but its folder is not where git expects it. wtclean never runs `git worktree prune`, which drops the entry. If the repository moved, its worktrees can have moved with it, so look under the moved checkout first. If they are there, run `git worktree repair <their new paths>` in the moved checkout to link them again. A prune would cut those folders off from git. |
 | `detached or locked` | It has a detached HEAD, or a lock. |
 | `agent worktree (agent-* or worktree-agent-*)` | The name marks it as an agent's worktree. |
 | `git cannot read it` | `git rev-parse HEAD` fails in it. |
@@ -149,7 +149,7 @@ After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M mer
 
 ## Known gaps
 
-- Ignored files inside `node_modules`, `dist`, `build` and the rest of `prland`'s list of build and cache folders count as build output, and go with the worktree.
+- Ignored files inside `node_modules`, `dist`, `build` and the rest of `prland`'s list of build and cache folders count as build output, and go with the worktree. So do the files that `flutter pub get` and `flutter build` write, such as `.dart_tool/` and `GeneratedPluginRegistrant.java`. An Android `local.properties` counts only when it holds just the keys that Android Studio and Flutter write, such as `sdk.dir` and `flutter.sdk`. Any other key, an API key for one, keeps the worktree. A folder that is not on the list counts when every ignored file in it counts.
 - wtclean does not see a checkout of a repository that it does not scan, when that checkout lies inside a worktree's build or cache folder. The checkout goes with the worktree.
 - On an older Orca server, one that cannot be told to keep the branch, Orca's `worktree rm` follows Orca's own branch rule. It can delete a merged local branch, and Orca's code suggests that it can also prune stale worktree entries. wtclean's branch rule and its promise never to prune cover only the commands that wtclean runs.
 - Only the 24-hour check protects a worktree that an idle agent in another workspace used through `git -C`.

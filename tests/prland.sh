@@ -191,6 +191,21 @@ setup() {
   WD=$M
 }
 remote_has_feat() { [ -n "$(git -C "$M" ls-remote origin refs/heads/feat)" ]; }
+# flutter_files DIR: what flutter pub get and flutter build leave in DIR and DIR/app, ignored as Flutter's .gitignore
+# files ignore it, with a local.properties that holds only SDK paths. *.secret is ignored too, for a file to keep.
+flutter_files() {
+  printf '%s\n' '.dart_tool/' '.flutter-plugins-dependencies' 'GeneratedPluginRegistrant.*' 'Generated.xcconfig' \
+    'flutter_export_environment.sh' 'ephemeral/' 'local.properties' '*.secret' >> "$M/.git/info/exclude"
+  mkdir -p "$1/.dart_tool" "$1/app/android/app/src/main/java/io/flutter/plugins" "$1/app/ios/Flutter/ephemeral" \
+    "$1/app/ios/Runner" "$1/app/linux/flutter/ephemeral"
+  echo x > "$1/.dart_tool/package_config.json"; echo x > "$1/app/.flutter-plugins-dependencies"
+  echo x > "$1/app/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java"
+  echo x > "$1/app/ios/Runner/GeneratedPluginRegistrant.h"; echo x > "$1/app/ios/Runner/GeneratedPluginRegistrant.m"
+  echo x > "$1/app/ios/Flutter/Generated.xcconfig"; echo x > "$1/app/ios/Flutter/flutter_export_environment.sh"
+  echo x > "$1/app/ios/Flutter/ephemeral/flutter_lldbinit"; echo x > "$1/app/linux/flutter/ephemeral/.plugin_symlinks"
+  printf '%s\n' '## Written by Android Studio and Flutter' 'sdk.dir=/opt/android-sdk' 'flutter.sdk=/opt/flutter' \
+    > "$1/app/android/local.properties"
+}
 
 setup; FAKE_VERDICT=CLEAN run 7
 check "clean PR: exit 0" '[ $rc -eq 0 ]'
@@ -240,6 +255,12 @@ setup; printf '.nx/\n' >> "$M/.git/info/exclude"; mkdir -p "$W/.nx/cache"; echo 
 check "an Nx cache (.nx) alone does not keep the worktree" '[ ! -d "$W" ]'
 setup; printf '.nx*\n' >> "$M/.git/info/exclude"; echo keep > "$W/.nxrc"; FAKE_VERDICT=CLEAN run 7
 check "an ignored file whose name only starts with .nx keeps the worktree" '[ -e "$W/.nxrc" ]'
+setup; flutter_files "$W"; FAKE_VERDICT=CLEAN run 7
+check "Flutter's generated files and an SDK-only local.properties do not keep the worktree" '[ ! -d "$W" ]'
+setup; flutter_files "$W"; echo custom.setting=1 >> "$W/app/android/local.properties"; FAKE_VERDICT=CLEAN run 7
+check "a local.properties with any other key keeps the worktree" '[ -e "$W/app/android/local.properties" ] && [[ $out == *"app/android/local.properties"* ]]'
+setup; flutter_files "$W"; echo keep > "$W/app/android/app/src/main/java/notes.secret"; FAKE_VERDICT=CLEAN run 7
+check "a folder off the list keeps the worktree when it holds a file that is not build output" '[ -e "$W/app/android/app/src/main/java/notes.secret" ]'
 setup; echo more >> "$W/a.txt"; git -C "$W" commit -qam extra; FAKE_VERDICT=CLEAN run 7
 check "a local commit past the PR head keeps the worktree" '[ -d "$W" ] && [[ $out == *"not on the PR head"* ]]'
 
