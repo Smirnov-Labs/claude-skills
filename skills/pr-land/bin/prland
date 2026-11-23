@@ -174,7 +174,8 @@ def local_data(path):
 def cwd_users(path):
     """(pid, name) of each readable process whose working directory is path or inside it, lowest pid first. It reads
     /proc where the host has one (Linux), and asks lsof where it has none (macOS). A process that exited during the
-    scan, or that belongs to someone else, cannot be read and is skipped. No way to list processes is a ToolError.
+    scan, or that belongs to someone else, cannot be read and is skipped. A ToolError means no way to list them: no
+    /proc and no lsof, an lsof run that fails or lists nothing, or a path with a character that lsof escapes.
     skills/cleaning-merged-worktrees/bin/wtclean and skills/pr-land/bin/prland hold the same function."""
     where = os.path.realpath(path)
 
@@ -205,6 +206,8 @@ def cwd_users(path):
     lsof = shutil.which("lsof")
     if not lsof:
         raise ToolError("cannot list processes: there is no %s and no lsof on PATH" % PROC_ROOT)
+    if any(c == "\\" or not " " <= c <= "~" for c in where):   # lsof escapes these in names, so none could match
+        raise ToolError("cannot list processes: lsof cannot show the path %r as it is" % where)
     try:
         r = subprocess.run([lsof, "-w", "-d", "cwd", "-F", "pcn"], capture_output=True, text=True, errors="replace",
                            timeout=120)
@@ -219,8 +222,10 @@ def cwd_users(path):
             comm = " ".join(value.split())
         elif tag == "n" and pid is not None and inside(value):
             users.append((pid, comm or "?"))
-    if r.returncode != 0 and not listed:
+    if r.returncode != 0:                              # a partial list could leave out the process that matters
         raise ToolError("cannot list processes: lsof exited %d" % r.returncode)
+    if not listed:                                     # it always lists this process, at least
+        raise ToolError("cannot list processes: lsof listed none")
     return sorted(users)
 
 

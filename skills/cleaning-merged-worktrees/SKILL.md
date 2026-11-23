@@ -153,7 +153,7 @@ After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M mer
 - wtclean does not see a checkout of a repository that it does not scan, when that checkout lies inside a worktree's build or cache folder. The checkout goes with the worktree.
 - On an older Orca server, one that cannot be told to keep the branch, Orca's `worktree rm` follows Orca's own branch rule. It can delete a merged local branch, and Orca's code suggests that it can also prune stale worktree entries. wtclean's branch rule and its promise never to prune cover only the commands that wtclean runs.
 - Only the 24-hour check protects a worktree that an idle agent in another workspace used through `git -C`.
-- The process check reads `/proc`. Where there is no `/proc`, as on macOS, it asks `lsof`. With neither, the first worktree that reaches the process check stops the run with exit 2, so wtclean removes nothing. prland runs the same check.
+- The process check reads `/proc`. Where there is no `/proc`, as on macOS, it asks `lsof`. With neither, the first worktree that reaches the process check stops the run with exit 2, so wtclean removes nothing. A failed `lsof` run does the same, and so does a worktree path with a control character, a backslash or a non-ASCII character, because `lsof` escapes those. prland runs the same check.
 - The process check skips other users' processes, and same-user processes it cannot read.
 - The process check compares real paths, so it does not see a process that works in the worktree through a bind mount.
 - wtclean ignores fork PRs, so a clone whose `origin` is a fork keeps its worktrees.

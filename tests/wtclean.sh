@@ -190,13 +190,18 @@ print("fake orca: unexpected: " + " ".join(args), file=sys.stderr)
 sys.exit(9)
 EOF
 # A fake lsof, on PATH only for the tests that name $T/lsofbin. It logs its arguments to $FAKE/lsof.log.
-# FAKE_LSOF=fail: it exits 1 and prints nothing. Otherwise it prints, in the form of lsof -F, process 1 working in /
-# and process 4242 ("fake  proc") working in $FAKE_LSOF_CWD, each with the f line that macOS's lsof adds.
+# FAKE_LSOF=fail: it exits 1 and prints nothing. FAKE_LSOF=partial: it prints process 1, then exits 1. FAKE_LSOF=empty:
+# it prints nothing and exits 0. Otherwise it prints, in the form of lsof -F, process 1 working in / and process 4242
+# ("fake  proc") working in $FAKE_LSOF_CWD, each with the f line that macOS's lsof adds.
 mkdir -p "$T/lsofbin"
 cat > "$T/lsofbin/lsof" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE/lsof.log"
-[ "${FAKE_LSOF:-}" = fail ] && exit 1
+case "${FAKE_LSOF:-}" in
+  fail) exit 1 ;;
+  partial) printf 'p1\ncinit\nfcwd\nn/\n'; exit 1 ;;
+  empty) exit 0 ;;
+esac
 printf 'p1\ncinit\nfcwd\nn/\np4242\ncfake  proc\nfcwd\nn%s\n' "${FAKE_LSOF_CWD:-/}"
 EOF
 chmod +x "$T/bin/git" "$T/bin/gh" "$T/bin/orca" "$T/lsofbin/lsof"
@@ -459,6 +464,8 @@ setup; mkwt wt-lsof feat/lsof; pr feat/lsof MERGED; PATH="$T/lsofbin:$PATH" WTCL
 check "without /proc, a worktree that lsof shows no process in would go" '[[ $out == *"would remove  $T/r/wt-lsof"* ]] && [ -s "$FAKE/lsof.log" ]'
 setup; mkwt wt-lsof feat/lsof; pr feat/lsof MERGED; PATH="$T/lsofbin:$PATH" WTCLEAN_PROC_ROOT=$T/noproc FAKE_LSOF=fail run
 check "without /proc, an lsof that fails is an error" '[ $rc -eq 2 ] && [[ $out == *"cannot list processes: lsof exited 1"* ]]'
+setup; mkwt wt-lsof feat/lsof; pr feat/lsof MERGED; PATH="$T/lsofbin:$PATH" WTCLEAN_PROC_ROOT=$T/noproc FAKE_LSOF=partial run --apply
+check "without /proc, an lsof that lists some processes and then fails is an error, and nothing goes" '[ $rc -eq 2 ] && [ -d "$W" ] && [[ $out == *"cannot list processes: lsof exited 1"* ]]'
 if command -v lsof >/dev/null; then
   setup; mkwt wt-rl feat/rl; pr feat/rl MERGED; (cd "$W" && exec sleep 300) & P=$!; sleeping "$P"; WTCLEAN_PROC_ROOT=$T/noproc run; kill "$P"
   check "the real lsof finds a process inside" '[[ $out == *"wt-rl  feat/rl: in use: process $P (sleep) works in it"* ]]'

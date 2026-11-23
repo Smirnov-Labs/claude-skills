@@ -118,13 +118,18 @@ print("fake orca: unexpected: " + " ".join(args), file=sys.stderr)
 sys.exit(9)
 EOF
 # A fake lsof, on PATH only for the tests that name $T/lsofbin. It logs its arguments to $FAKE/lsof.log.
-# FAKE_LSOF=fail: it exits 1 and prints nothing. Otherwise it prints, in the form of lsof -F, process 1 working in /
-# and process 4242 ("fake  proc") working in $FAKE_LSOF_CWD, each with the f line that macOS's lsof adds.
+# FAKE_LSOF=fail: it exits 1 and prints nothing. FAKE_LSOF=partial: it prints process 1, then exits 1. FAKE_LSOF=empty:
+# it prints nothing and exits 0. Otherwise it prints, in the form of lsof -F, process 1 working in / and process 4242
+# ("fake  proc") working in $FAKE_LSOF_CWD, each with the f line that macOS's lsof adds.
 mkdir -p "$T/lsofbin"
 cat > "$T/lsofbin/lsof" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE/lsof.log"
-[ "${FAKE_LSOF:-}" = fail ] && exit 1
+case "${FAKE_LSOF:-}" in
+  fail) exit 1 ;;
+  partial) printf 'p1\ncinit\nfcwd\nn/\n'; exit 1 ;;
+  empty) exit 0 ;;
+esac
 printf 'p1\ncinit\nfcwd\nn/\np4242\ncfake  proc\nfcwd\nn%s\n' "${FAKE_LSOF_CWD:-/}"
 EOF
 chmod +x "$T/bin/gh" "$T/bin/prbots" "$T/bin/orca" "$T/lsofbin/lsof"
@@ -301,6 +306,10 @@ setup; PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc FAKE_LSOF_CWD=$T/r/wt-
 check "without /proc, a worktree that lsof shows no process in goes" '[ ! -d "$W" ] && [ -s "$FAKE/lsof.log" ]'
 setup; PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc FAKE_LSOF=fail FAKE_VERDICT=CLEAN run 7
 check "a process list that cannot be read keeps it, and the merge still counts" '[ $rc -eq 0 ] && [ -d "$W" ] && [[ $out == *"left in place: cannot list processes: lsof exited 1"* ]]'
+setup; PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc FAKE_LSOF=partial FAKE_VERDICT=CLEAN run 7
+check "an lsof that lists some processes and then fails keeps it" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"left in place: cannot list processes: lsof exited 1"* ]]'
+setup; PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc FAKE_LSOF=empty FAKE_VERDICT=CLEAN run 7
+check "an lsof that lists no process at all keeps it" '[ -d "$W" ] && [[ $out == *"left in place: cannot list processes: lsof listed none"* ]]'
 if command -v lsof >/dev/null; then
   setup; (cd "$W" && exec sleep 300) & P=$!; sleeping "$P"; PRLAND_PROC_ROOT=$T/noproc FAKE_VERDICT=CLEAN run 7; stop "$P"
   check "the real lsof finds a process in it" '[ -d "$W" ] && [[ $out == *"process $P (sleep) works in it"* ]]'
@@ -319,6 +328,42 @@ PY
 if [ -e "$(dirname "$TOOL")/../../cleaning-merged-worktrees/bin/wtclean" ]; then
   rc=0 out="cwd_users differs"; check "prland and wtclean hold the same process check" 'same_check'
 fi
+# cwd_users() on the lsof path, called directly. lsof escapes control characters, backslashes and non-ASCII bytes in
+# the names it prints, so a worktree path with one of them cannot be checked. An escape further down, in a
+# subdirectory's name, still leaves the worktree's own prefix as it is.
+lsof_unit() { PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc python3 - "$TOOL" "$T" <<'PY'
+import os
+import runpy
+import sys
+
+tool, t = sys.argv[1:3]
+g = runpy.run_path(tool, run_name="lsof_unit")
+bad = []
+
+
+def case(label, where, want, cwd="/", mode=""):
+    os.environ["FAKE_LSOF_CWD"], os.environ["FAKE_LSOF"] = cwd, mode
+    try:
+        got = g["cwd_users"](where)
+    except g["ToolError"] as e:
+        got = "ToolError: %s" % e
+    if not (got == want if isinstance(want, list) else str(got).startswith(want)):
+        bad.append("%s: got %r" % (label, got))
+
+
+case("a tab in the path", t + "/wt\ttab", "ToolError: cannot list processes: lsof cannot show", cwd=t + "/wt\\ttab")
+case("a backslash in the path", t + "/wt\\b", "ToolError: cannot list processes: lsof cannot show")
+case("a non-ASCII path", t + "/wt-é", "ToolError: cannot list processes: lsof cannot show")
+case("an escape in a subdirectory", t + "/plain", [(4242, "fake proc")], cwd=t + "/plain/sub\\tdir")
+case("an idle plain path", t + "/plain", [])
+case("a failed run with output", t + "/plain", "ToolError: cannot list processes: lsof exited 1", mode="partial")
+case("no output", t + "/plain", "ToolError: cannot list processes: lsof listed none", mode="empty")
+print("\n".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+out=$(lsof_unit 2>&1); rc=$?
+check "cwd_users on the lsof path: escaped paths, partial and empty lists" '[ $rc -eq 0 ]'
 
 # Inside Orca ($ORCA_CLI_COMMAND set). orca_calls prints the worktree ps, set and rm calls, in order, on one line.
 orca_calls() { grep -o -E "^worktree (ps|set|rm)" "$FAKE/orca.log" 2>/dev/null | sed 's/^worktree //' | tr '\n' ' '; }
