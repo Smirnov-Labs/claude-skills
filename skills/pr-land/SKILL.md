@@ -12,11 +12,11 @@ description: Use when asked to merge or land a pull request ("merge it", "land i
 1. Wait for the bots: `prbots wait <PR> --trigger`, in the background (the watching-pr-bot-reviews skill). prland checks the verdict once and does not wait.
 2. Read the repo's CLAUDE.md. It may name the bots that must be clean (`--need`) or a merge method other than squash.
 3. If this session entered the PR's worktree with EnterWorktree, leave it with ExitWorktree first. Otherwise the harness blocks git in the main checkout.
-4. Make sure no agent you started still works in that worktree. In Orca, prland also checks this (see In Orca).
+4. Make sure no agent you started still works in that worktree. prland also checks: it keeps a worktree that any process works in, and in Orca one where Orca shows an agent or a terminal (see In Orca).
 
 ## Run it
 
-Run it from any checkout of the repo: the main one or the PR's worktree. `prland` is on PATH where skillsync installed this skill. Otherwise call it by its full path, `<this skill's base directory>/bin/prland`, and stay in the checkout: it finds the repo and the worktrees from there. It calls `prbots` from the watching-pr-bot-reviews skill.
+Run it from any checkout of the repo. To have the PR's worktree removed, run it from another one, such as the main checkout. From inside the PR's worktree, prland merges but keeps that worktree, because your shell works in it. `prland` is on PATH where skillsync installed this skill. Otherwise call it by its full path, `<this skill's base directory>/bin/prland`, and stay in the checkout: it finds the repo and the worktrees from there. It calls `prbots` from the watching-pr-bot-reviews skill.
 
 | Case | Command |
 |---|---|
@@ -62,8 +62,6 @@ When Orca lists the PR's worktree, prland does three more things after the merge
 - It removes the worktree with Orca's `worktree rm`, never with `--force`, after the same checks as above. The output says `removed <path> through Orca`.
 - It leaves the worktree in place while Orca shows an agent or a terminal in it or in a child workspace, because `worktree rm` closes them. It reads Orca's list again for each worktree, before the local checks. It also leaves the worktree when it cannot read Orca's list.
 
-prland does not look for processes outside Orca that work in the worktree, with or without Orca. `wtclean` does.
-
 So an agent that runs in the PR's own Orca workspace cannot remove that workspace. prland marks the card completed and leaves the worktree. After someone closes that agent and its terminals, run prland again from another workspace. Or let `wtclean` (the cleaning-merged-worktrees skill) remove it.
 
 ## What it will not do
@@ -73,6 +71,7 @@ So an agent that runs in the PR's own Orca workspace cannot remove that workspac
 - Merge through a merge queue: a base branch with one is refused, and an auto-merge that GitHub queued instead of merging is cancelled.
 - Delete the remote branch if someone pushed to it after the merge. The delete is GitHub's compare-and-delete (`updateRefs` with `beforeOid` set to the PR head) on that exact repository, so no git URL rewrite can redirect it.
 - Act on a PR from another host or repo: a URL's host must match the host `gh` uses, and the PR URL GitHub returns must name the requested repo and number.
+- Remove a worktree that a process works in: a shell, an editor, a build, or prland itself. On Linux it reads `/proc`, and where there is no `/proc`, as on macOS, it asks `lsof`. If it cannot list the processes, the worktree stays. It skips other users' processes. `wtclean` runs the same check.
 - Remove a worktree with `--force`, one where Orca shows an agent or a terminal, or one with changed tracked files, untracked files, commits past the PR head, files marked assume-unchanged or skip-worktree, or ignored files other than build and cache output (`.env` and notes stay). It reads these with `git ls-files`, so `status.showUntrackedFiles` cannot hide them.
 - Delete a local branch that moved: the delete is an atomic `update-ref` on the PR head.
 - Prune other worktrees, or touch any branch except the PR's own. A fork PR's branches are left alone.

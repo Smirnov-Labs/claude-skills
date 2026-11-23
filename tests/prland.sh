@@ -117,8 +117,30 @@ if args[:3] == ["worktree", "rm", "--worktree"] and args[3].startswith("id:R1::"
 print("fake orca: unexpected: " + " ".join(args), file=sys.stderr)
 sys.exit(9)
 EOF
-chmod +x "$T/bin/gh" "$T/bin/prbots" "$T/bin/orca"
+# A fake lsof, on PATH only for the tests that name $T/lsofbin. It logs its arguments to $FAKE/lsof.log.
+# FAKE_LSOF=fail: it exits 1 and prints nothing. Otherwise it prints, in the form of lsof -F, process 1 working in /
+# and process 4242 ("fake  proc") working in $FAKE_LSOF_CWD, each with the f line that macOS's lsof adds.
+mkdir -p "$T/lsofbin"
+cat > "$T/lsofbin/lsof" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE/lsof.log"
+[ "${FAKE_LSOF:-}" = fail ] && exit 1
+printf 'p1\ncinit\nfcwd\nn/\np4242\ncfake  proc\nfcwd\nn%s\n' "${FAKE_LSOF_CWD:-/}"
+EOF
+chmod +x "$T/bin/gh" "$T/bin/prbots" "$T/bin/orca" "$T/lsofbin/lsof"
 export PATH="$T/bin:$PATH"
+
+# sleeping PID: wait, about 2 seconds at most, until the background subshell PID has run its cd and exec'd sleep.
+# A process that never gets there counts as a failed check, so a process test cannot pass without its process.
+sleeping() {
+  local i
+  for i in $(seq 20); do
+    case "$(ps -o comm= -p "$1" 2>/dev/null)" in *sleep) return 0 ;; esac
+    sleep 0.1
+  done
+  fail=$((fail+1)); echo "FAIL process $1 did not exec sleep within 2 seconds"
+}
+stop() { kill "$1" 2>/dev/null; wait "$1" 2>/dev/null; }
 
 # orca_row PATH [agents=N] [live=N] [children=ID,...] [id=ID] [host=H]: add a row to the fake `worktree ps` answer
 # ($PS_FILE, default $FAKE/ps.json)
@@ -263,7 +285,40 @@ check "a PR whose URL names another repo is refused" '[ $rc -eq 2 ] && [ ! -e "$
 setup; git -C "$M" config url."$T/r/fork.git".pushInsteadOf https://github.com/o/r.git; git init -q --bare -b main "$T/r/fork.git"; git -C "$W" push -q "$T/r/fork.git" feat; FAKE_VERDICT=CLEAN run 7
 check "pushInsteadOf cannot redirect the remote delete" '! remote_has_feat && [ -n "$(git -C "$T/r/fork.git" for-each-ref refs/heads/feat)" ]'
 setup; WD=$W; FAKE_VERDICT=CLEAN run
-check "from inside the PR worktree: removes it, deletes the branch, says cd" '[ $rc -eq 0 ] && [ ! -d "$W" ] && ! git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"your shell was inside it"* ]]'
+check "from inside the PR worktree: merges, and keeps the worktree and the branch, because the shell works in it" '[ $rc -eq 0 ] && grep -q -- "--squash" "$FAKE/merge.log" && [ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"left in place: process "*" works in it"* ]]'
+
+# Processes that work in the worktree. On Linux prland reads /proc. PRLAND_PROC_ROOT names a missing directory to
+# take the lsof path that macOS uses.
+setup; (cd "$W" && exec sleep 300) & P=$!; sleeping "$P"; FAKE_VERDICT=CLEAN run 7; stop "$P"
+check "a process working in the worktree keeps it and the branch, and names the process" '[ $rc -eq 0 ] && [ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"$W left in place: process $P (sleep) works in it"* ]]'
+setup; mkdir "$W/sub"; (cd "$W/sub" && exec sleep 300) & P=$!; sleeping "$P"; FAKE_VERDICT=CLEAN run 7; stop "$P"
+check "a process in a subdirectory keeps it" '[ -d "$W" ] && [[ $out == *"process $P (sleep) works in it"* ]]'
+setup; mkdir -p "$T/r/wt-feat2"; (cd "$T/r/wt-feat2" && exec sleep 300) & P=$!; sleeping "$P"; FAKE_VERDICT=CLEAN run 7; stop "$P"
+check "a process in a sibling path that shares the prefix does not count" '[ ! -d "$W" ] && [[ $out == *"removed $W"* ]]'
+setup; mkdir "$W/sub"; PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc FAKE_LSOF_CWD=$W/sub FAKE_VERDICT=CLEAN run 7
+check "without /proc, lsof finds a process in it, and prland keeps it" '[ -d "$W" ] && grep -qxF -- "-w -d cwd -F pcn" "$FAKE/lsof.log" && [[ $out == *"left in place: process 4242 (fake proc) works in it"* ]]'
+setup; PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc FAKE_LSOF_CWD=$T/r/wt-feat2 FAKE_VERDICT=CLEAN run 7
+check "without /proc, a worktree that lsof shows no process in goes" '[ ! -d "$W" ] && [ -s "$FAKE/lsof.log" ]'
+setup; PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc FAKE_LSOF=fail FAKE_VERDICT=CLEAN run 7
+check "a process list that cannot be read keeps it, and the merge still counts" '[ $rc -eq 0 ] && [ -d "$W" ] && [[ $out == *"left in place: cannot list processes: lsof exited 1"* ]]'
+if command -v lsof >/dev/null; then
+  setup; (cd "$W" && exec sleep 300) & P=$!; sleeping "$P"; PRLAND_PROC_ROOT=$T/noproc FAKE_VERDICT=CLEAN run 7; stop "$P"
+  check "the real lsof finds a process in it" '[ -d "$W" ] && [[ $out == *"process $P (sleep) works in it"* ]]'
+fi
+same_check() { python3 - "$(dirname "$TOOL")/../../cleaning-merged-worktrees/bin/wtclean" "$TOOL" <<'PY'
+import re
+import sys
+
+def body(fp):
+    m = re.search(r"^def cwd_users\(path\):\n.*?(?=^def |\Z)", open(fp).read(), re.S | re.M)
+    return m.group(0).rstrip() if m else None
+
+sys.exit(0 if body(sys.argv[1]) and body(sys.argv[1]) == body(sys.argv[2]) else 1)
+PY
+}
+if [ -e "$(dirname "$TOOL")/../../cleaning-merged-worktrees/bin/wtclean" ]; then
+  rc=0 out="cwd_users differs"; check "prland and wtclean hold the same process check" 'same_check'
+fi
 
 # Inside Orca ($ORCA_CLI_COMMAND set). orca_calls prints the worktree ps, set and rm calls, in order, on one line.
 orca_calls() { grep -o -E "^worktree (ps|set|rm)" "$FAKE/orca.log" 2>/dev/null | sed 's/^worktree //' | tr '\n' ' '; }

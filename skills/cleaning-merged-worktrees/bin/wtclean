@@ -71,6 +71,7 @@ DAY = 86400     # seconds
 PR_LIMIT = 100  # pull requests that one gh pr list reads for a branch
 TIMEOUT = 120   # seconds that a call to git, gh or the Orca CLI gets
 REMOVE_TIMEOUT = 600    # seconds for a removal: deleting a large worktree can take minutes
+PROC_ROOT = os.environ.get("WTCLEAN_PROC_ROOT", "/proc")    # tests name a missing directory to take the lsof path
 # git's repository-local variables, as `git rev-parse --local-env-vars` prints them (git 2.56). A git hook or a dotfiles
 # setup can export them, and GIT_DIR then points every git call at one repository, so run() drops them all.
 LOCAL_GIT_VARS = frozenset((
@@ -425,29 +426,56 @@ def orca_rows(cli):
 
 
 def cwd_users(path):
-    """(pid, comm) of each readable process whose working directory is path or inside it, lowest pid first. A process
-    that exited during the scan, or that belongs to someone else, cannot be read and is skipped."""
+    """(pid, name) of each readable process whose working directory is path or inside it, lowest pid first. It reads
+    /proc where the host has one (Linux), and asks lsof where it has none (macOS). A process that exited during the
+    scan, or that belongs to someone else, cannot be read and is skipped. No way to list processes is a ToolError.
+    skills/cleaning-merged-worktrees/bin/wtclean and skills/pr-land/bin/prland hold the same function."""
     where = os.path.realpath(path)
-    try:
-        pids = sorted(int(n) for n in os.listdir("/proc") if n.isdigit())
-    except OSError:
-        raise ToolError("cannot list processes: /proc is missing")
-    users = []
-    for pid in pids:
-        try:
-            cwd = os.readlink("/proc/%d/cwd" % pid)
-        except OSError:
-            continue
+
+    def inside(cwd):
         if cwd.endswith(" (deleted)"):                 # the kernel's mark for a directory removed under the process
             cwd = cwd[:-len(" (deleted)")]
-        if cwd == where or cwd.startswith(where + os.sep):
+        return cwd == where or cwd.startswith(where + os.sep)
+
+    users = []
+    if os.path.isdir(PROC_ROOT):
+        try:
+            pids = sorted(int(n) for n in os.listdir(PROC_ROOT) if n.isdigit())
+        except OSError as e:
+            raise ToolError("cannot list processes: %s" % (e.strerror or e))
+        for pid in pids:
             try:
-                with open("/proc/%d/comm" % pid, errors="replace") as f:
+                if not inside(os.readlink(os.path.join(PROC_ROOT, str(pid), "cwd"))):
+                    continue
+            except OSError:
+                continue
+            try:
+                with open(os.path.join(PROC_ROOT, str(pid), "comm"), errors="replace") as f:
                     comm = " ".join(f.read().split())  # one line, whatever the process named itself
             except OSError:
                 comm = ""
             users.append((pid, comm or "?"))
-    return users
+        return users
+    lsof = shutil.which("lsof")
+    if not lsof:
+        raise ToolError("cannot list processes: there is no %s and no lsof on PATH" % PROC_ROOT)
+    try:
+        r = subprocess.run([lsof, "-w", "-d", "cwd", "-F", "pcn"], capture_output=True, text=True, errors="replace",
+                           timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise ToolError("cannot list processes: lsof did not finish (%s)" % e.__class__.__name__)
+    listed, pid, comm = False, None, ""
+    for line in r.stdout.splitlines():                 # per process: p<pid>, c<command>, then n<working directory>
+        tag, value = line[:1], line[1:]
+        if tag == "p":
+            listed, pid, comm = True, int(value) if value.isdigit() else None, ""
+        elif tag == "c":
+            comm = " ".join(value.split())
+        elif tag == "n" and pid is not None and inside(value):
+            users.append((pid, comm or "?"))
+    if r.returncode != 0 and not listed:
+        raise ToolError("cannot list processes: lsof exited %d" % r.returncode)
+    return sorted(users)
 
 
 def busy(path, rows):

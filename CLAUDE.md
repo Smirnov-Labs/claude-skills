@@ -44,14 +44,14 @@ This section grows as patterns and preferences are discovered during work on thi
 - **Leak-scan before every push.** Run `detect-secrets scan <files>`. Also grep the added lines for client names, internal hostnames, RFC1918 IPs, private repo names, tokens and home-directory paths.
 - **After a change to `bin/skillsync`,** run `tests/skillsync.sh`. On macOS, also run it under `/bin/bash` (3.2).
 - **After a change to `codex-review`,** run `tests/codex-review.sh`. A fake `codex` on PATH plays each failure the real one has shown.
-- **After a change to `prland`,** run `tests/prland.sh`. Fake `gh`, `prbots` and Orca CLI on PATH, real git repos and worktrees in a temp dir.
+- **After a change to `prland`,** run `tests/prland.sh`. Fake `gh`, `prbots` and Orca CLI on PATH, real git repos and worktrees in a temp dir. A `sleep` inside a worktree plays the busy process, and a fake `lsof` plays macOS. prland and wtclean hold the same `cwd_users()`, and the test fails if the two differ.
 - **After a change to `prbots`,** run `tests/prbots.sh`. A fake `gh` on PATH serves snapshots of one PR's Codex comments, and prland runs through it.
 - **After a change to `cc-sessions`,** run `tests/cc-sessions.sh`. It builds synthetic transcripts and never reads your real ones.
 - **After a change to `add-to-claude-link`,** run `tests/add-to-claude-link.sh`. It decodes each format in Python before it compares, so a stray `&amp;` or a `+` for a space fails it.
 - **After a change to `latest-version`,** run `tests/latest-version.sh`. A local fake server plays the GitHub API and a registry with a token challenge, and a fake `gh` lends a token (`gh auth token`).
 - **After a change to `tp-scan`,** run `tests/tp-scan.sh`. It builds one synthetic repo per pattern in a temp dir, and canary files prove that the scan ran nothing.
 - **After a change to `nonstop`,** run `tests/nonstop.sh`. It runs the Stop hook and the turn-on and turn-off commands from SKILL.md with a temporary HOME and two fake sessions, in bash and, if it is installed, zsh.
-- **After a change to `wtclean`,** run `tests/wtclean.sh`. It uses real git repos in a temp dir, with a fake `gh` and a fake Orca CLI on PATH. A `sleep` inside a worktree plays the busy process.
+- **After a change to `wtclean`,** run `tests/wtclean.sh`. It uses real git repos in a temp dir, with a fake `gh` and a fake Orca CLI on PATH. A `sleep` inside a worktree plays the busy process, and a fake `lsof` plays macOS.
 - **Merges:** `prland <PR> --need sar` (the pr-land skill): squash, with a subject that ends in `(#N)`, then the branch and worktree go. Machines pick up main at their next `skillsync`.
 
 ---
