@@ -410,6 +410,10 @@ NL=$'\n'; setup; mkwt wt-nl feat/nl; pr feat/nl MERGED; printf 'build*\n' >> "$M
 check "an ignored file named build and a newline keeps it, and the file and the branch stay" '[ -e "$W/build$NL" ] && git -C "$M" rev-parse -q --verify refs/heads/feat/nl >/dev/null && [[ $out == *"wt-nl  feat/nl: local files: ignored files that are not build output: build\n (merged #1)"* ]]'
 setup; mkwt wt-nm feat/nm; pr feat/nm MERGED; mkdir -p "$W/node_modules/x"; echo 1 > "$W/node_modules/x/i.js"; age "$W"; run
 check "build output alone does not keep it" '[[ $out == *"would remove  $T/r/wt-nm"* ]]'
+setup; mkwt wt-nx feat/nx; pr feat/nx MERGED; printf '.nx/\n' >> "$M/.git/info/exclude"; mkdir -p "$W/.nx/cache"; echo 1 > "$W/.nx/cache/run.json"; age "$W"; run
+check "an Nx cache (.nx) alone does not keep it" '[[ $out == *"would remove  $T/r/wt-nx  feat/nx"* ]]'
+setup; mkwt wt-nxrc feat/nxrc; pr feat/nxrc MERGED; printf '.nx*\n' >> "$M/.git/info/exclude"; echo keep > "$W/.nxrc"; age "$W"; run
+check "an ignored file whose name only starts with .nx keeps it" '[[ $out == *"wt-nxrc  feat/nxrc: local files: ignored files that are not build output: .nxrc (merged #1)"* ]]'
 setup; git init -q -b main "$T/r/subsrc"; echo s > "$T/r/subsrc/s.txt"; git -C "$T/r/subsrc" add -A; git -C "$T/r/subsrc" commit -qm s
 mkwt wt-sub feat/sub; git -C "$W" -c protocol.file.allow=always submodule add -q "$T/r/subsrc" sub; git -C "$W" commit -qm sub; git -C "$W" push -q
 pr feat/sub MERGED; age "$W"; run

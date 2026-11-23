@@ -46,7 +46,7 @@ PR_FIELDS = ("number,title,state,isDraft,headRefName,headRefOid,baseRefName,url,
 CONFIRM_WAIT = float(os.environ.get("PRLAND_CONFIRM_WAIT", "18"))   # seconds to wait for MERGED
 BOTS = {"codex", "sar", "ci", "all"}
 DISPOSABLE = re.compile(r"(^|/)(node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|"
-                        r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.cache|\.parcel-cache|coverage|"
+                        r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.nx|\.cache|\.parcel-cache|coverage|"
                         r"\.gradle|[^/]+\.egg-info)(/|$)|\.py[co]$|(^|/)\.DS_Store$")
 
 

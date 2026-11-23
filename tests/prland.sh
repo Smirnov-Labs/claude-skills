@@ -127,6 +127,10 @@ setup; echo SECRET=1 > "$W/.env"; echo more >> "$W/a.txt"; git -C "$W" commit -q
 check "--allow-ignored still keeps a worktree with commits past the PR head" '[ -d "$W" ] && [[ $out == *"not on the PR head"* ]]'
 setup; mkdir -p "$W/node_modules/x"; echo 1 > "$W/node_modules/x/i.js"; FAKE_VERDICT=CLEAN run 7
 check "build output alone (node_modules) does not keep the worktree" '[ ! -d "$W" ]'
+setup; printf '.nx/\n' >> "$M/.git/info/exclude"; mkdir -p "$W/.nx/cache"; echo 1 > "$W/.nx/cache/run.json"; FAKE_VERDICT=CLEAN run 7
+check "an Nx cache (.nx) alone does not keep the worktree" '[ ! -d "$W" ]'
+setup; printf '.nx*\n' >> "$M/.git/info/exclude"; echo keep > "$W/.nxrc"; FAKE_VERDICT=CLEAN run 7
+check "an ignored file whose name only starts with .nx keeps the worktree" '[ -e "$W/.nxrc" ]'
 setup; echo more >> "$W/a.txt"; git -C "$W" commit -qam extra; FAKE_VERDICT=CLEAN run 7
 check "a local commit past the PR head keeps the worktree" '[ -d "$W" ] && [[ $out == *"not on the PR head"* ]]'
 
