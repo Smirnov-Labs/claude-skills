@@ -70,13 +70,13 @@ For a review that takes more than a few minutes, you can run Codex as an Orca wo
 3. Start the worker, then end your turn:
 
    ```sh
-   "$ORCA_CLI_COMMAND" orchestration worker-start --agent codex --model gpt-6-astra --effort high \
+   "$ORCA_CLI_COMMAND" orchestration worker-start --agent codex --model <model> --effort high \
      --worktree current --spec-file <dir>/brief.md --json
    ```
 
 4. When Orca wakes you with the `worker_done`, read `<dir>/review.md`, and then do the steps in "Read the result". There is no exit status. Use the verdict line in the review instead.
 
-Orca does not start the worker in a read-only sandbox, as `codex-review` does. Only the brief tells it not to edit. Use the model pin from Model below.
+`<model>` is the pin from Model below. Orca does not start the worker in a read-only sandbox, as `codex-review` does. Only the brief tells it not to edit.
 
 ## Model
 
