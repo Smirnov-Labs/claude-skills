@@ -22,7 +22,8 @@ In order:
              printed. A PR worktree missing from disk loses its registration; other worktrees are not pruned.
              With $ORCA_CLI_COMMAND set, a worktree that Orca lists gets its card marked completed, even with
              --keep-worktree. It goes through Orca's worktree rm (no --force) after the same checks, and stays
-             while Orca shows an agent or a terminal in it, because worktree rm closes them.
+             while Orca shows an agent or a terminal in it or in a child workspace, because worktree rm closes
+             them. Orca's list is read again just before the removal. Processes outside Orca are not checked.
   5 sync     the main checkout fast-forwards to origin/<base>, only if it is on <base> with no tracked changes,
              and never over an ignored file the new commits start tracking.
 
@@ -198,25 +199,28 @@ def orca_rows():
 
 
 def orca_busy(found, by_id):
-    """Why Orca's worktree rm must not take this worktree, or None. found is Orca's rows for its path."""
+    """Why Orca's worktree rm must not take this worktree, or None. found is Orca's rows for its path. An agent or a
+    terminal in it, or in any of its child workspaces and theirs, keeps it, and so does a row Orca cannot vouch for."""
     if len(found) > 1:
         return "Orca lists it more than once"
-    row = found[0]
-    counts = [row.get(k) for k in ("liveTerminalCount", "unverifiableTerminalCount")]
-    if not (isinstance(row.get("worktreeId"), str) and isinstance(row.get("agents"), list) and
-            all(type(c) is int for c in counts) and isinstance(row.get("hasAttachedPty"), bool) and
-            isinstance(row.get("childWorktreeIds"), list)):
-        return "Orca's row for it lacks a field"
-    if row["agents"]:
-        return "Orca shows an agent in it"
-    if any(counts) or row["hasAttachedPty"]:
-        return "Orca shows a terminal in it"
-    for child in row["childWorktreeIds"]:
-        kid = by_id.get(child)
-        if not isinstance(kid, dict) or not isinstance(kid.get("agents"), list):
-            return "a child workspace that Orca did not list"
-        if kid["agents"]:
-            return "a child workspace has an agent in Orca"
+    todo, seen = [(found[0], "it")], set()
+    while todo:
+        row, where = todo.pop()
+        counts = [row.get(k) for k in ("liveTerminalCount", "unverifiableTerminalCount")]
+        if not (isinstance(row.get("worktreeId"), str) and isinstance(row.get("agents"), list) and
+                all(type(c) is int for c in counts) and isinstance(row.get("hasAttachedPty"), bool) and
+                isinstance(row.get("childWorktreeIds"), list)):
+            return "Orca's row for %s lacks a field" % where
+        if row["agents"]:
+            return "Orca shows an agent in " + where
+        if any(counts) or row["hasAttachedPty"]:
+            return "Orca shows a terminal in " + where
+        for child in row["childWorktreeIds"]:
+            if child not in seen:
+                seen.add(child)
+                if not isinstance(by_id.get(child), dict):
+                    return "a child workspace that Orca did not list"
+                todo.append((by_id[child], "a child workspace"))
     return None
 
 
@@ -433,8 +437,12 @@ def main():
             if not why and git(path, "rev-parse", "HEAD").stdout.strip() != head:
                 why = "it is not on the PR head %s" % head[:7]
             found = by_path.get(os.path.realpath(path), [])     # Orca's rows for it: Orca removes what it lists
-            if not why:
-                why = orca_why or (orca_busy(found, by_id) if found else None)
+            if not why and found:                # a new read, right before the removal: a terminal may have opened
+                fresh, fresh_ids, why = orca_rows()
+                found = fresh.get(os.path.realpath(path), [])
+                why = why or (orca_busy(found, fresh_ids) if found else "Orca stopped listing it while prland ran")
+            elif not why:
+                why = orca_why
             if why:
                 say("worktree", "%s left in place: %s" % (path, why))
                 keep_branch = True
