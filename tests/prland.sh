@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Sandbox test for prland: fake `gh` and `prbots` on PATH, real git repos and
-# worktrees under a temp dir, so it never talks to GitHub or touches your checkouts.
+# Sandbox test for prland: fake `gh`, `prbots` and Orca CLI on PATH, real git repos and
+# worktrees under a temp dir, so it never talks to GitHub or Orca or touches your checkouts.
 #   tests/prland.sh                  test this checkout's script
 #   TOOL=/path/to/prland tests/...   test another copy
 set -uo pipefail
@@ -8,9 +8,11 @@ TOOL=${TOOL:-$(cd "$(dirname "$0")/.." && pwd)/skills/pr-land/bin/prland}
 T=$(mktemp -d /tmp/prland-test.XXXXXX)
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 export GIT_CONFIG_GLOBAL=$T/gitconfig GIT_CONFIG_NOSYSTEM=1 FAKE=$T/fake
+unset ORCA_CLI_COMMAND   # outside Orca, unless a test names the fake Orca CLI with orun
 pass=0 fail=0
 check() { if eval "$2"; then pass=$((pass+1)); echo "ok   $1"; else fail=$((fail+1)); echo "FAIL $1"; echo "     exit $rc, output was: $out"; fi; }
 run() { out=$(cd "$WD" && "$TOOL" "$@" 2>&1); rc=$?; }
+orun() { ORCA_CLI_COMMAND=$T/bin/orca run "$@"; }    # like run, inside Orca
 
 mkdir -p "$T/bin" "$FAKE"
 cat > "$T/bin/gh" <<'EOF'
@@ -60,8 +62,72 @@ head=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["headRefO
 printf '{"repo":"%s","number":%s,"head":"%s","verdict":"%s","progress":"sar done","sar":{"title":"ok"},"codex":{"status":"none"},"ci":{"failing":[],"pending":[]}}\n' \
   "${FAKE_PB_REPO:-o/r}" "${FAKE_PB_NUMBER:-7}" "${FAKE_PB_HEAD:-$head}" "$FAKE_VERDICT"
 EOF
-chmod +x "$T/bin/gh" "$T/bin/prbots"
+cat > "$T/bin/orca" <<'EOF'
+#!/usr/bin/env python3
+# Fake Orca CLI: logs its arguments to $FAKE/orca.log and answers `worktree ps` from $FAKE/ps.json. `worktree rm
+# --worktree id:R1::<path>` removes that worktree with git. --force, a call without --json, and any command it does not
+# know exit 9. FAKE_ORCA_FAIL=1: every call says Orca is not running. FAKE_ORCA_RM_FAIL=1: `worktree rm` refuses.
+import json
+import os
+import subprocess
+import sys
+
+args = sys.argv[1:]
+fake = os.environ["FAKE"]
+with open(os.path.join(fake, "orca.log"), "a") as log:
+    log.write(" ".join(args) + "\n")
+
+
+def reply(obj, code=0):
+    print(json.dumps(obj))
+    sys.exit(code)
+
+
+if os.environ.get("FAKE_ORCA_FAIL"):
+    reply({"ok": False, "error": {"message": "Orca is not running"}}, 1)
+if "--force" in args or args[-1:] != ["--json"]:
+    sys.exit(9)
+if args[:2] == ["worktree", "ps"]:
+    sys.stdout.write(open(os.path.join(fake, "ps.json")).read())
+    sys.exit(0)
+if args[:3] == ["worktree", "set", "--worktree"]:
+    reply({"ok": True, "result": {"worktree": {}}})
+if args[:3] == ["worktree", "rm", "--worktree"] and args[3].startswith("id:R1::"):
+    if os.environ.get("FAKE_ORCA_RM_FAIL"):
+        reply({"ok": False, "error": {"message": "refused"}}, 1)
+    wt = args[3][len("id:R1::"):]
+    listing = subprocess.run(["git", "-C", wt, "worktree", "list", "--porcelain"], capture_output=True, text=True)
+    main = listing.stdout.splitlines()[0][len("worktree "):]
+    r = subprocess.run(["git", "-C", main, "worktree", "remove", wt], capture_output=True, text=True)
+    if r.returncode != 0:
+        reply({"ok": False, "error": {"message": r.stderr.strip()}}, 1)
+    reply({"ok": True, "result": {"removed": True}})
+print("fake orca: unexpected: " + " ".join(args), file=sys.stderr)
+sys.exit(9)
+EOF
+chmod +x "$T/bin/gh" "$T/bin/prbots" "$T/bin/orca"
 export PATH="$T/bin:$PATH"
+
+# orca_row PATH [agents=N] [live=N] [children=ID,...] [id=ID] [host=H]: add a row to the fake `worktree ps` answer
+orca_row() {
+  local p=$1; shift
+  python3 - "$FAKE/ps.json" "$p" "$@" <<'PY'
+import json
+import sys
+
+f, row_path = sys.argv[1:3]
+kw = dict(a.split("=", 1) for a in sys.argv[3:])
+d = json.load(open(f))
+d["result"]["worktrees"].append({
+    "worktreeId": kw.get("id") or "R1::" + row_path, "path": row_path, "hostId": kw.get("host", "local"),
+    "agents": [{"state": "working"} for _ in range(int(kw.get("agents", 0)))],
+    "liveTerminalCount": int(kw.get("live", 0)), "unverifiableTerminalCount": 0, "hasAttachedPty": False,
+    "childWorktreeIds": [c for c in kw.get("children", "").split(",") if c]})
+d["result"]["totalCount"] += 1
+with open(f, "w") as out:
+    json.dump(d, out)
+PY
+}
 
 # origin (bare, reached through insteadOf), the main checkout, and a worktree on branch feat with one
 # pushed commit. A helper clone then lands the squash commit on origin/main, as GitHub would.
@@ -79,6 +145,7 @@ setup() {
   git -C "$FAKE_HELPER" commit -qam "Title (#7)"; git -C "$FAKE_HELPER" push -q origin main; SQUASH=$(git -C "$FAKE_HELPER" rev-parse HEAD)
   printf '{"number":7,"title":"Title","state":"%s","isDraft":%s,"headRefName":"feat","headRefOid":"%s","baseRefName":"main","url":"https://github.com/o/r/pull/7","isCrossRepository":%s,"mergeCommit":null}\n' \
     "${1:-OPEN}" "${2:-false}" "$HEADSHA" "${3:-false}" > "$FAKE/pr.json"
+  printf '{"ok":true,"result":{"worktrees":[],"totalCount":0,"truncated":false,"hostScope":{"hostIds":["local"]}}}\n' > "$FAKE/ps.json"
   WD=$M
 }
 remote_has_feat() { [ -n "$(git -C "$M" ls-remote origin refs/heads/feat)" ]; }
@@ -184,6 +251,39 @@ setup; git -C "$M" config url."$T/r/fork.git".pushInsteadOf https://github.com/o
 check "pushInsteadOf cannot redirect the remote delete" '! remote_has_feat && [ -n "$(git -C "$T/r/fork.git" for-each-ref refs/heads/feat)" ]'
 setup; WD=$W; FAKE_VERDICT=CLEAN run
 check "from inside the PR worktree: removes it, deletes the branch, says cd" '[ $rc -eq 0 ] && [ ! -d "$W" ] && ! git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"your shell was inside it"* ]]'
+
+# Inside Orca ($ORCA_CLI_COMMAND set). orca_calls prints the worktree set and rm calls, in order, on one line.
+orca_calls() { grep -o -E "^worktree (set|rm)" "$FAKE/orca.log" 2>/dev/null | tr '\n' ' '; }
+setup; orca_row "$W"; FAKE_VERDICT=CLEAN orun 7
+check "Orca: an idle worktree goes through Orca's worktree rm, by id, with no --force" '[ $rc -eq 0 ] && [ ! -d "$W" ] && grep -qxF -- "worktree rm --worktree id:R1::$W --json" "$FAKE/orca.log" && [[ $out == *"removed $W through Orca"* ]]'
+check "Orca: its card is marked completed, before the removal" 'grep -qxF -- "worktree set --worktree id:R1::$W --workspace-status completed --json" "$FAKE/orca.log" && [ "$(orca_calls)" = "worktree set worktree rm " ]'
+check "Orca: the branch still goes by the atomic update-ref" '! git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"deleted feat (was ${HEADSHA:0:10})"* ]]'
+setup; orca_row "$W" agents=1; FAKE_VERDICT=CLEAN orun 7
+check "Orca: an agent in it keeps the worktree and the branch, and the card says completed" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [ "$(orca_calls)" = "worktree set " ] && [[ $out == *"left in place: Orca shows an agent in it"* ]]'
+setup; orca_row "$W" live=1; WD=$W; FAKE_VERDICT=CLEAN orun
+check "Orca: prland run from a terminal inside it keeps it" '[ $rc -eq 0 ] && [ -d "$W" ] && [ "$(orca_calls)" = "worktree set " ] && [[ $out == *"Orca shows a terminal in it"* ]]'
+setup; orca_row "$T/r/kid" agents=1 id=R1::kid; orca_row "$W" children=R1::kid; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a child workspace with an agent keeps it" '[ -d "$W" ] && [[ $out == *"a child workspace has an agent"* ]]'
+setup; orca_row "$W" children=R1::gone; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a child workspace that Orca did not list keeps it" '[ -d "$W" ] && [[ $out == *"Orca did not list"* ]]'
+setup; orca_row "$W"; orca_row "$W" id=R2::dup; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a worktree that Orca lists twice stays, and no card is touched" '[ -d "$W" ] && [ -z "$(orca_calls)" ] && [[ $out == *"Orca lists it more than once"* ]]'
+setup; orca_row "$W"; FAKE_VERDICT=CLEAN FAKE_ORCA_FAIL=1 orun 7
+check "Orca: an unreadable worktree list keeps it, and the merge still counts" '[ $rc -eq 0 ] && [ -d "$W" ] && [ -z "$(orca_calls)" ] && [[ $out == *"could not be read in full: Orca is not running"* ]]'
+setup; orca_row "$W"; FAKE_VERDICT=CLEAN FAKE_ORCA_RM_FAIL=1 orun 7
+check "Orca: a refused worktree rm keeps the worktree and the branch" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"remove failed, left in place: refused"* ]]'
+setup; orca_row "$W"; touch "$W/notes.txt"; FAKE_VERDICT=CLEAN orun 7
+check "Orca: local files keep it before Orca is asked, and the card says completed" '[ -e "$W/notes.txt" ] && [ "$(orca_calls)" = "worktree set " ]'
+setup; orca_row "$W"; FAKE_VERDICT=CLEAN orun 7 --keep-worktree
+check "Orca: --keep-worktree still marks the card completed" '[ -d "$W" ] && [ "$(orca_calls)" = "worktree set " ] && [[ $out == *"$W completed in Orca"* ]]'
+setup; orca_row "$W"; FAKE_VERDICT=CLEAN orun 7 --dry-run
+check "Orca: --dry-run changes nothing in Orca" '[ -d "$W" ] && [ -z "$(orca_calls)" ] && [[ $out == *"would remove worktree $W through Orca"* ]] && [[ $out == *"would mark the Orca card of $W completed"* ]]'
+setup; orca_row "$W" host=runtime:other; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a worktree that Orca lists only for another host goes through git" '[ ! -d "$W" ] && [ -z "$(orca_calls)" ] && [[ $out == *"removed $W"* ]] && [[ $out != *"through Orca"* ]]'
+setup; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a worktree that Orca does not list goes through git" '[ ! -d "$W" ] && [ -z "$(orca_calls)" ]'
+setup OPEN false true; orca_row "$W"; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a fork PR touches no card" '[ -d "$W" ] && [ ! -e "$FAKE/orca.log" ]'
 
 echo "$pass passed, $fail failed"
 rm -rf "$T"

@@ -12,7 +12,7 @@ description: Use when asked to merge or land a pull request ("merge it", "land i
 1. Wait for the bots: `prbots wait <PR> --trigger`, in the background (the watching-pr-bot-reviews skill). prland checks the verdict once and does not wait.
 2. Read the repo's CLAUDE.md. It may name the bots that must be clean (`--need`) or a merge method other than squash.
 3. If this session entered the PR's worktree with EnterWorktree, leave it with ExitWorktree first. Otherwise the harness blocks git in the main checkout.
-4. Make sure no agent you started still works in that worktree.
+4. Make sure no agent you started still works in that worktree. In Orca, prland also checks this (see In Orca).
 
 ## Run it
 
@@ -52,6 +52,18 @@ sync     ~/src/claude-skills is at 4af28c7 (origin/main)
 
 Report the merge SHA, plus anything it left in place and why.
 
+## In Orca
+
+This section applies only when `ORCA_CLI_COMMAND` is set. Without it, prland works as described above.
+
+When Orca lists the PR's worktree, prland does three more things after the merge:
+
+- It marks the worktree's card completed, also with `--keep-worktree`. The output shows a `card` line.
+- It removes the worktree with Orca's `worktree rm`, never with `--force`, after the same checks as above. The output says `removed <path> through Orca`.
+- It leaves the worktree in place while Orca shows an agent or a terminal in it or in a child workspace, because `worktree rm` closes them. It also leaves the worktree when it cannot read Orca's list.
+
+So an agent that runs in the PR's own Orca workspace cannot remove that workspace. prland marks the card completed and leaves the worktree. After someone closes that agent and its terminals, run prland again from another workspace. Or let `wtclean` (the cleaning-merged-worktrees skill) remove it.
+
 ## What it will not do
 
 - Merge without a CLEAN verdict for this repo, this PR and its current head SHA. It reads `prbots --json`, so text in a check name cannot fake the verdict. A misspelled `--need` is an error, not an empty gate.
@@ -59,7 +71,7 @@ Report the merge SHA, plus anything it left in place and why.
 - Merge through a merge queue: a base branch with one is refused, and an auto-merge that GitHub queued instead of merging is cancelled.
 - Delete the remote branch if someone pushed to it after the merge. The delete is GitHub's compare-and-delete (`updateRefs` with `beforeOid` set to the PR head) on that exact repository, so no git URL rewrite can redirect it.
 - Act on a PR from another host or repo: a URL's host must match the host `gh` uses, and the PR URL GitHub returns must name the requested repo and number.
-- Remove a worktree with `--force`, or one with changed tracked files, untracked files, commits past the PR head, files marked assume-unchanged or skip-worktree, or ignored files other than build and cache output (`.env` and notes stay). It reads these with `git ls-files`, so `status.showUntrackedFiles` cannot hide them.
+- Remove a worktree with `--force`, one where Orca shows an agent or a terminal, or one with changed tracked files, untracked files, commits past the PR head, files marked assume-unchanged or skip-worktree, or ignored files other than build and cache output (`.env` and notes stay). It reads these with `git ls-files`, so `status.showUntrackedFiles` cannot hide them.
 - Delete a local branch that moved: the delete is an atomic `update-ref` on the PR head.
 - Prune other worktrees, or touch any branch except the PR's own. A fork PR's branches are left alone.
 - Switch branches in the main checkout, sync it while it has tracked changes, or follow its upstream: it fast-forwards to `origin/<base>`, and never over an ignored file the new commits start tracking.

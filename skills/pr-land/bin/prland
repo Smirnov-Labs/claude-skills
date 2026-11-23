@@ -20,6 +20,9 @@ In order:
              ignored files except build and cache output (node_modules, .venv, __pycache__, dist, ...).
              The branch goes only if it still points at the PR head (an atomic update-ref), and its SHA is
              printed. A PR worktree missing from disk loses its registration; other worktrees are not pruned.
+             With $ORCA_CLI_COMMAND set, a worktree that Orca lists gets its card marked completed, even with
+             --keep-worktree. It goes through Orca's worktree rm (no --force) after the same checks, and stays
+             while Orca shows an agent or a terminal in it, because worktree rm closes them.
   5 sync     the main checkout fast-forwards to origin/<base>, only if it is on <base> with no tracked changes,
              and never over an ignored file the new commits start tracking.
 
@@ -44,6 +47,7 @@ import time
 PR_FIELDS = ("number,title,state,isDraft,headRefName,headRefOid,baseRefName,url,isCrossRepository,mergeCommit,"
              "autoMergeRequest")
 CONFIRM_WAIT = float(os.environ.get("PRLAND_CONFIRM_WAIT", "18"))   # seconds to wait for MERGED
+ORCA_TIMEOUT, ORCA_RM_TIMEOUT = 120, 600    # seconds for one Orca CLI call, and for Orca's worktree rm
 BOTS = {"codex", "sar", "ci", "all"}
 DISPOSABLE = re.compile(r"(^|/)(node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|"
                         r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.nx|\.cache|\.parcel-cache|coverage|"
@@ -156,6 +160,79 @@ def local_data(path):
     if keep:
         return "ignored files that are not build output: %s%s" % (", ".join(keep[:4]), " ..." if len(keep) > 4 else "")
     return None
+
+
+def orca(*args, timeout=ORCA_TIMEOUT):
+    """One $ORCA_CLI_COMMAND call with --json: (its result, None), or (None, why it failed)."""
+    try:
+        r = subprocess.run([os.environ["ORCA_CLI_COMMAND"]] + list(args) + ["--json"], capture_output=True,
+                           text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, "the Orca CLI did not answer (%s)" % e.__class__.__name__
+    try:
+        reply = json.loads(r.stdout)
+    except ValueError:
+        reply = None
+    if r.returncode == 0 and isinstance(reply, dict) and reply.get("ok") is True and isinstance(reply.get("result"), dict):
+        return reply["result"], None
+    error = reply.get("error") if isinstance(reply, dict) else None
+    why = (error.get("message") if isinstance(error, dict) else None) or r.stderr or r.stdout or "exit %d" % r.returncode
+    return None, " ".join(str(why).split())[:200]
+
+
+def orca_rows():
+    """This host's Orca workspaces as ({real path: [rows]}, {worktreeId: row}, None), or ({}, {}, why) when Orca's
+    list cannot be read in full. Without $ORCA_CLI_COMMAND there are none, and nothing is wrong."""
+    if not os.environ.get("ORCA_CLI_COMMAND"):
+        return {}, {}, None
+    ps, why = orca("worktree", "ps", "--limit", "100000")
+    listed = ps.get("worktrees") if ps else None
+    if why or not isinstance(listed, list) or ps.get("truncated") is not False:
+        return {}, {}, "Orca's worktree list could not be read in full" + (": " + why if why else "")
+    by_path, by_id = {}, {}
+    for row in listed:
+        if isinstance(row, dict) and isinstance(row.get("path"), str) and row.get("hostId", "local") == "local":
+            by_path.setdefault(os.path.realpath(row["path"]), []).append(row)
+            by_id[row.get("worktreeId")] = row
+    return by_path, by_id, None
+
+
+def orca_busy(found, by_id):
+    """Why Orca's worktree rm must not take this worktree, or None. found is Orca's rows for its path."""
+    if len(found) > 1:
+        return "Orca lists it more than once"
+    row = found[0]
+    counts = [row.get(k) for k in ("liveTerminalCount", "unverifiableTerminalCount")]
+    if not (isinstance(row.get("worktreeId"), str) and isinstance(row.get("agents"), list) and
+            all(type(c) is int for c in counts) and isinstance(row.get("hasAttachedPty"), bool) and
+            isinstance(row.get("childWorktreeIds"), list)):
+        return "Orca's row for it lacks a field"
+    if row["agents"]:
+        return "Orca shows an agent in it"
+    if any(counts) or row["hasAttachedPty"]:
+        return "Orca shows a terminal in it"
+    for child in row["childWorktreeIds"]:
+        kid = by_id.get(child)
+        if not isinstance(kid, dict) or not isinstance(kid.get("agents"), list):
+            return "a child workspace that Orca did not list"
+        if kid["agents"]:
+            return "a child workspace has an agent in Orca"
+    return None
+
+
+def orca_cards(main_wt, ref, by_path, dry_run):
+    """Mark the Orca card of each linked worktree on the PR branch completed. This comes before any removal, so a
+    worktree that stays shows the merge in Orca. A card that cannot be marked is reported and changes nothing else."""
+    for w in worktrees(main_wt) if by_path else []:
+        path = w["worktree"]
+        found = by_path.get(os.path.realpath(path), [])
+        if w.get("branch") != ref or path == main_wt or len(found) != 1 or not isinstance(found[0].get("worktreeId"), str):
+            continue
+        if dry_run:
+            say("dry-run", "would mark the Orca card of %s completed" % path)
+            continue
+        _, why = orca("worktree", "set", "--worktree", "id:" + found[0]["worktreeId"], "--workspace-status", "completed")
+        say("card", "%s %s" % (path, "completed in Orca" if not why else "not updated in Orca: " + why))
 
 
 def main():
@@ -325,6 +402,8 @@ def main():
         say("clean", "skipped: not run from a checkout of %s" % repo)
         return 0
     ref = "refs/heads/" + branch
+    by_path, by_id, orca_why = ({}, {}, None) if p["isCrossRepository"] else orca_rows()
+    orca_cards(main_wt, ref, by_path, a.dry_run)
     if p["isCrossRepository"]:
         say("clean", "skipped: a fork PR's branch name can match unrelated local work")
     elif a.keep_worktree:
@@ -353,18 +432,27 @@ def main():
                 why = None
             if not why and git(path, "rev-parse", "HEAD").stdout.strip() != head:
                 why = "it is not on the PR head %s" % head[:7]
+            found = by_path.get(os.path.realpath(path), [])     # Orca's rows for it: Orca removes what it lists
+            if not why:
+                why = orca_why or (orca_busy(found, by_id) if found else None)
             if why:
                 say("worktree", "%s left in place: %s" % (path, why))
                 keep_branch = True
             elif a.dry_run:
-                say("dry-run", "would remove worktree " + path)
+                say("dry-run", "would remove worktree %s%s" % (path, " through Orca" if found else ""))
             else:
-                r = git(main_wt, "worktree", "remove", path)
-                if r.returncode != 0:
-                    say("worktree", "remove failed, left in place: " + r.stderr.strip()[:200])
+                if found:
+                    _, err = orca("worktree", "rm", "--worktree", "id:" + found[0]["worktreeId"], timeout=ORCA_RM_TIMEOUT)
+                    ok = not os.path.lexists(path) and all(x["worktree"] != path for x in worktrees(main_wt))
+                    detail = err or "Orca said it removed it, but it is still on disk or in git's worktree list"
+                else:
+                    r = git(main_wt, "worktree", "remove", path)
+                    ok, detail = r.returncode == 0, r.stderr.strip()[:200]
+                if not ok:
+                    say("worktree", "remove failed, left in place: " + detail)
                     keep_branch = True
                 else:
-                    say("worktree", "removed " + path)
+                    say("worktree", "removed %s%s" % (path, " through Orca" if found else ""))
                     if here == path or here.startswith(path + os.sep):
                         say("note", "your shell was inside it: cd %s" % main_wt)
         tip = git(main_wt, "rev-parse", "--verify", "--quiet", ref).stdout.strip()

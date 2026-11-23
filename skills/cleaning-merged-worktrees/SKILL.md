@@ -40,13 +40,14 @@ For each worktree that can go, `--apply` does this:
 2. It removes the worktree with Orca's `worktree rm` if Orca lists it, and with `git worktree remove` if not. A worktree that git refuses to remove stays.
 3. It deletes the local branch, but only when the branch is at the PR head and no other worktree has it checked out.
 
-Orca's `worktree rm` answers only after the directory and git's entry are gone, and wtclean checks both anyway. With the Orca 1.4.256 desktop app, the child workspaces of a removed parent stay, as top-level workspaces.
+Orca's `worktree rm` answers only after the directory and git's entry are gone, and wtclean checks both anyway. With Orca 1.4.256 and 1.4.267, the child workspaces of a removed parent stay, as top-level workspaces. Orca 1.4.267's `worktree rm` also keeps the local branch.
 
 ## What it never does
 
 This list covers only the commands that wtclean runs itself. On an older Orca server, Orca's `worktree rm` can do more, as Known gaps says.
 
 - Use `--force`. Neither `git worktree remove` nor Orca's `worktree rm` gets it.
+- Run a repository's Orca archive hooks. Orca's `worktree rm` gets no `--run-hooks`, so Orca skips them.
 - Run `git worktree prune`.
 - Delete a remote branch.
 - Delete a local branch that is not at the PR head.
@@ -107,6 +108,10 @@ A `kept` line gives one reason. The first failing check names it, in this order:
 | `git refused the removal: ...` | `--apply` only. git refused, or exited 0 and left the directory in place. The worktree stays. |
 
 Tell the user what wtclean removed, and why it kept each worktree that has a merged PR. Do not clear a reason yourself by discarding files or stopping an agent. Ask the owner.
+
+## Orca's own cleanup rules
+
+Orca has cleanup rules of its own, which you set in Orca settings. wtclean does not read or change them. `"$ORCA_CLI_COMMAND" workspace cleanup preview --json` lists what they can remove now. It removes nothing, and `rows[].evaluation` says why each other workspace stays. Orca's rules are not wtclean's six conditions, so read that preview before you turn them on beside wtclean.
 
 ## Weekly Orca automation
 

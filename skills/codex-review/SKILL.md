@@ -56,6 +56,28 @@ Then:
 
 On exit 2, read the log tail it prints. Don't report "Codex found nothing".
 
+## Long reviews in Orca
+
+This section applies only when `ORCA_CLI_COMMAND` is set. Without it, and for a short review, run `codex-review` as above.
+
+For a review that takes more than a few minutes, you can run Codex as an Orca worker. The worker shows in the sidebar, and the owner can open it and talk to it. Orca wakes you when the worker finishes, so nothing runs in the background.
+
+1. Build the prompt only. Add `--dry-run --out <dir>` to the usual command, for example `codex-review diff --dry-run --out <dir>`. This writes `<dir>/prompt.md`.
+2. Write `<dir>/brief.md`. Put this paragraph first, then all of `<dir>/prompt.md`:
+
+   > This is a read-only review. Do not edit, commit or push anything. Write your full review to `<dir>/review.md`. Then send `worker_done` with `--report-path <dir>/review.md`, and put your verdict line in its body.
+
+3. Start the worker, then end your turn:
+
+   ```sh
+   "$ORCA_CLI_COMMAND" orchestration worker-start --agent codex --model gpt-6-astra --effort high \
+     --worktree current --spec-file <dir>/brief.md --json
+   ```
+
+4. When Orca wakes you with the `worker_done`, read `<dir>/review.md`, and then do the steps in "Read the result". There is no exit status. Use the verdict line in the review instead.
+
+Orca does not start the worker in a read-only sandbox, as `codex-review` does. Only the brief tells it not to edit. Use the model pin from Model below.
+
 ## Model
 
 The pin is `gpt-6-astra`, checked on 2026-11-05 with codex-cli 0.166. `CODEX_REVIEW_MODEL` or `--model` overrides it.
