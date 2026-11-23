@@ -60,7 +60,7 @@ When Orca lists the PR's worktree, prland does three more things after the merge
 
 - It marks the worktree's card completed, also with `--keep-worktree`. The output shows a `card` line.
 - It removes the worktree with Orca's `worktree rm`, never with `--force`, after the same checks as above. The output says `removed <path> through Orca`.
-- It leaves the worktree in place while Orca shows an agent or a terminal in it or in a child workspace, because `worktree rm` closes them. It reads Orca's list again just before the removal. It also leaves the worktree when it cannot read Orca's list.
+- It leaves the worktree in place while Orca shows an agent or a terminal in it or in a child workspace, because `worktree rm` closes them. It reads Orca's list again for each worktree, before the local checks. It also leaves the worktree when it cannot read Orca's list.
 
 prland does not look for processes outside Orca that work in the worktree, with or without Orca. `wtclean` does.
 

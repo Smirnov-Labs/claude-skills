@@ -67,7 +67,8 @@ cat > "$T/bin/orca" <<'EOF'
 # Fake Orca CLI: logs its arguments to $FAKE/orca.log and answers `worktree ps` from $FAKE/ps.json. `worktree rm
 # --worktree id:R1::<path>` removes that worktree with git. --force, a call without --json, and any command it does not
 # know exit 9. FAKE_ORCA_FAIL=1: every call says Orca is not running. FAKE_ORCA_RM_FAIL=1: `worktree rm` refuses.
-# If $FAKE/ps.next.json exists, `worktree set` makes it the `worktree ps` answer, as if a terminal opened meanwhile.
+# From its second call on, `worktree ps` answers from $FAKE/ps.next.json if it exists, as if Orca changed meanwhile.
+# FAKE_PS2_TOUCH=FILE: from its second call on, `worktree ps` writes FILE before it answers.
 import json
 import os
 import subprocess
@@ -89,11 +90,16 @@ if os.environ.get("FAKE_ORCA_FAIL"):
 if "--force" in args or args[-1:] != ["--json"]:
     sys.exit(9)
 if args[:2] == ["worktree", "ps"]:
-    sys.stdout.write(open(os.path.join(fake, "ps.json")).read())
+    with open(os.path.join(fake, "ps.count"), "a") as count:
+        count.write("x\n")
+    later = len(open(os.path.join(fake, "ps.count")).read().splitlines()) >= 2
+    if later and os.environ.get("FAKE_PS2_TOUCH"):
+        with open(os.environ["FAKE_PS2_TOUCH"], "w") as f:
+            f.write("LOCAL=1\n")
+    nxt = os.path.join(fake, "ps.next.json")
+    sys.stdout.write(open(nxt if later and os.path.exists(nxt) else os.path.join(fake, "ps.json")).read())
     sys.exit(0)
 if args[:3] == ["worktree", "set", "--worktree"]:
-    if os.path.exists(os.path.join(fake, "ps.next.json")):
-        os.replace(os.path.join(fake, "ps.next.json"), os.path.join(fake, "ps.json"))
     reply({"ok": True, "result": {"worktree": {}}})
 if args[:3] == ["worktree", "rm", "--worktree"] and args[3].startswith("id:R1::"):
     if os.environ.get("FAKE_ORCA_RM_FAIL"):
@@ -264,6 +270,10 @@ check "Orca: its card is marked completed, and Orca's list is read again just be
 check "Orca: the branch still goes by the atomic update-ref" '! git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"deleted feat (was ${HEADSHA:0:10})"* ]]'
 setup; cp "$FAKE/ps.json" "$FAKE/ps.next.json"; orca_row "$W"; PS_FILE=$FAKE/ps.next.json orca_row "$W" live=1; FAKE_VERDICT=CLEAN orun 7
 check "Orca: a terminal that opens after the first read keeps it" '[ -d "$W" ] && [ "$(orca_calls)" = "ps set ps " ] && [[ $out == *"Orca shows a terminal in it"* ]]'
+setup; cp "$FAKE/ps.json" "$FAKE/ps.next.json"; PS_FILE=$FAKE/ps.next.json orca_row "$W" live=1; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a worktree that Orca starts to list after the first read, with a terminal, keeps it" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [ "$(orca_calls)" = "ps ps " ] && [[ $out == *"Orca shows a terminal in it"* ]]'
+setup; orca_row "$W"; FAKE_PS2_TOUCH=$W/.env FAKE_VERDICT=CLEAN orun 7
+check "Orca: an ignored .env that appears during the second read keeps it" '[ -e "$W/.env" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && ! grep -q "worktree rm" "$FAKE/orca.log" && [[ $out == *"not build output: .env"* ]]'
 setup; orca_row "$W" agents=1; FAKE_VERDICT=CLEAN orun 7
 check "Orca: an agent in it keeps the worktree and the branch, and the card says completed" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [ "$(orca_calls)" = "ps set ps " ] && [[ $out == *"left in place: Orca shows an agent in it"* ]]'
 setup; orca_row "$W" live=1; WD=$W; FAKE_VERDICT=CLEAN orun
@@ -280,19 +290,19 @@ check "Orca: a child workspace that Orca did not list keeps it" '[ -d "$W" ] && 
 setup; orca_row "$W"; orca_row "$W" id=R2::dup; FAKE_VERDICT=CLEAN orun 7
 check "Orca: a worktree that Orca lists twice stays, and no card is touched" '[ -d "$W" ] && [ "$(orca_calls)" = "ps ps " ] && [[ $out == *"Orca lists it more than once"* ]]'
 setup; orca_row "$W"; FAKE_VERDICT=CLEAN FAKE_ORCA_FAIL=1 orun 7
-check "Orca: an unreadable worktree list keeps it, and the merge still counts" '[ $rc -eq 0 ] && [ -d "$W" ] && [ "$(orca_calls)" = "ps " ] && [[ $out == *"could not be read in full: Orca is not running"* ]]'
+check "Orca: an unreadable worktree list keeps it, and the merge still counts" '[ $rc -eq 0 ] && [ -d "$W" ] && [ "$(orca_calls)" = "ps ps " ] && [[ $out == *"left in place: Orca'"'"'s worktree list could not be read in full: Orca is not running"* ]]'
 setup; orca_row "$W"; FAKE_VERDICT=CLEAN FAKE_ORCA_RM_FAIL=1 orun 7
 check "Orca: a refused worktree rm keeps the worktree and the branch" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"remove failed, left in place: refused"* ]]'
 setup; orca_row "$W"; touch "$W/notes.txt"; FAKE_VERDICT=CLEAN orun 7
-check "Orca: local files keep it before Orca is asked, and the card says completed" '[ -e "$W/notes.txt" ] && [ "$(orca_calls)" = "ps set " ]'
+check "Orca: local files keep it, and the card says completed" '[ -e "$W/notes.txt" ] && [ "$(orca_calls)" = "ps set ps " ] && [[ $out == *"untracked"* ]]'
 setup; orca_row "$W"; FAKE_VERDICT=CLEAN orun 7 --keep-worktree
 check "Orca: --keep-worktree still marks the card completed" '[ -d "$W" ] && [ "$(orca_calls)" = "ps set " ] && [[ $out == *"$W completed in Orca"* ]]'
 setup; orca_row "$W"; FAKE_VERDICT=CLEAN orun 7 --dry-run
 check "Orca: --dry-run changes nothing in Orca" '[ -d "$W" ] && [ "$(orca_calls)" = "ps ps " ] && [[ $out == *"would remove worktree $W through Orca"* ]] && [[ $out == *"would mark the Orca card of $W completed"* ]]'
 setup; orca_row "$W" host=runtime:other; FAKE_VERDICT=CLEAN orun 7
-check "Orca: a worktree that Orca lists only for another host goes through git" '[ ! -d "$W" ] && [ "$(orca_calls)" = "ps " ] && [[ $out == *"removed $W"* ]] && [[ $out != *"through Orca"* ]]'
+check "Orca: a worktree that Orca lists only for another host goes through git" '[ ! -d "$W" ] && [ "$(orca_calls)" = "ps ps " ] && [[ $out == *"removed $W"* ]] && [[ $out != *"through Orca"* ]]'
 setup; FAKE_VERDICT=CLEAN orun 7
-check "Orca: a worktree that Orca does not list goes through git" '[ ! -d "$W" ] && [ "$(orca_calls)" = "ps " ]'
+check "Orca: a worktree that Orca does not list goes through git" '[ ! -d "$W" ] && [ "$(orca_calls)" = "ps ps " ]'
 setup OPEN false true; orca_row "$W"; FAKE_VERDICT=CLEAN orun 7
 check "Orca: a fork PR touches no card" '[ -d "$W" ] && [ ! -e "$FAKE/orca.log" ]'
 

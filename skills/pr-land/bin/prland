@@ -23,7 +23,8 @@ In order:
              With $ORCA_CLI_COMMAND set, a worktree that Orca lists gets its card marked completed, even with
              --keep-worktree. It goes through Orca's worktree rm (no --force) after the same checks, and stays
              while Orca shows an agent or a terminal in it or in a child workspace, because worktree rm closes
-             them. Orca's list is read again just before the removal. Processes outside Orca are not checked.
+             them. Orca's list is read again for each worktree, before the local checks, and decides which of
+             the two removes it. Processes outside Orca are not checked.
   5 sync     the main checkout fast-forwards to origin/<base>, only if it is on <base> with no tracked changes,
              and never over an ignored file the new commits start tracking.
 
@@ -406,8 +407,11 @@ def main():
         say("clean", "skipped: not run from a checkout of %s" % repo)
         return 0
     ref = "refs/heads/" + branch
-    by_path, by_id, orca_why = ({}, {}, None) if p["isCrossRepository"] else orca_rows()
-    orca_cards(main_wt, ref, by_path, a.dry_run)
+    if not p["isCrossRepository"]:
+        by_path, _, orca_why = orca_rows()
+        if orca_why:
+            say("card", "not updated in Orca: " + orca_why)
+        orca_cards(main_wt, ref, by_path, a.dry_run)
     if p["isCrossRepository"]:
         say("clean", "skipped: a fork PR's branch name can match unrelated local work")
     elif a.keep_worktree:
@@ -431,18 +435,17 @@ def main():
                     else "could not drop the registration of %s: %s" % (path, r.stderr.strip()[:160]))
                 keep_branch = keep_branch or r.returncode != 0
                 continue
-            why = local_data(path)
-            if a.allow_ignored and why and why.startswith("ignored files"):
-                why = None
+            # Orca first, read again for each worktree, then the local checks, so that only fast git calls come
+            # between the last check and the removal. Orca removes what it lists, and git removes the rest.
+            rows, ids, why = orca_rows()
+            found = rows.get(os.path.realpath(path), [])
+            why = why or (orca_busy(found, ids) if found else None)
+            if not why:
+                why = local_data(path)
+                if a.allow_ignored and why and why.startswith("ignored files"):
+                    why = None
             if not why and git(path, "rev-parse", "HEAD").stdout.strip() != head:
                 why = "it is not on the PR head %s" % head[:7]
-            found = by_path.get(os.path.realpath(path), [])     # Orca's rows for it: Orca removes what it lists
-            if not why and found:                # a new read, right before the removal: a terminal may have opened
-                fresh, fresh_ids, why = orca_rows()
-                found = fresh.get(os.path.realpath(path), [])
-                why = why or (orca_busy(found, fresh_ids) if found else "Orca stopped listing it while prland ran")
-            elif not why:
-                why = orca_why
             if why:
                 say("worktree", "%s left in place: %s" % (path, why))
                 keep_branch = True
