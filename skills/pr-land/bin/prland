@@ -175,8 +175,9 @@ def cwd_users(path):
     """(pid, name) of each readable process whose working directory is path or inside it, lowest pid first. It reads
     /proc where the host has one (Linux), and asks lsof where it has none (macOS). A process that exited during the
     scan, or that belongs to someone else, cannot be read and is skipped. lsof escapes some characters in the names
-    it prints, so each name counts both as printed and with those escapes undone: a second reading can only add a
-    match. A ToolError means no way to list them: no /proc and no lsof, or an lsof run that fails or lists nothing.
+    it prints, so path is compared in lsof's own form. Two paths that lsof prints alike, such as a folder named with
+    a caret and an A and one named with the control character ^A, both count as in use. A ToolError means no way to
+    list them: no /proc and no lsof, or an lsof run that fails or lists nothing.
     skills/cleaning-merged-worktrees/bin/wtclean and skills/pr-land/bin/prland hold the same function."""
     where = os.path.realpath(path)
 
@@ -208,24 +209,21 @@ def cwd_users(path):
     if not lsof:
         raise ToolError("cannot list processes: there is no %s and no lsof on PATH" % PROC_ROOT)
 
-    def unescaped(name):                               # lsof's escapes undone: \t and the like, \xNN, ^X
-        named, out, i = {b"b": 8, b"f": 12, b"n": 10, b"r": 13, b"t": 9, b"\\": 92}, bytearray(), 0
-        while i < len(name):
-            two, hexa = name[i:i + 2], name[i + 2:i + 4]
-            if two[:1] == b"\\" and two[1:] in named:
-                out.append(named[two[1:]])
-                i += 2
-            elif two == b"\\x" and len(hexa) == 2 and all(c in b"0123456789abcdefABCDEF" for c in hexa):
-                out.append(int(hexa, 16))
-                i += 4
-            elif two[:1] == b"^" and len(two) == 2 and (0x40 <= two[1] <= 0x5f or two[1] == 0x3f):
-                out.append(0x7f if two[1] == 0x3f else two[1] - 0x40)
-                i += 2
-            else:
-                out.append(name[i])
-                i += 1
-        return os.fsdecode(bytes(out))
+    def printed(raw):                                  # where as lsof prints a name: lsof's safestrprt()
+        out = []
+        for ch in where:
+            o = ord(ch)
+            if ch == "\\":
+                out.append("\\\\")
+            elif o < 0x20:
+                out.append({8: "\\b", 9: "\\t", 10: "\\n", 12: "\\f", 13: "\\r"}.get(o, "^" + chr(o + 0x40)))
+            elif o < 0x7f or (raw and o > 0x7f and ch.isprintable() and not 0xdc80 <= o <= 0xdcff):
+                out.append(ch)
+            else:                                      # DEL, or a byte that the locale does not print
+                out.extend("\\x%02x" % b for b in os.fsencode(ch))
+        return "".join(out)
 
+    shown = {printed(True), printed(False)}            # a UTF-8 locale prints a character as it is, C as \xNN
     try:
         r = subprocess.run([lsof, "-w", "-d", "cwd", "-F", "pcn"], capture_output=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -237,8 +235,12 @@ def cwd_users(path):
             listed, pid, comm = True, int(value) if value.isdigit() else None, ""
         elif tag == b"c":
             comm = " ".join(value.decode("utf-8", "replace").split())
-        elif tag == b"n" and pid is not None and (inside(os.fsdecode(value)) or inside(unescaped(value))):
-            users.append((pid, comm or "?"))
+        elif tag == b"n" and pid is not None:
+            name = os.fsdecode(value)
+            if name.endswith(" (deleted)"):
+                name = name[:-len(" (deleted)")]
+            if any(name == s or name.startswith(s + os.sep) for s in shown):
+                users.append((pid, comm or "?"))
     if r.returncode != 0:                              # a partial list could leave out the process that matters
         raise ToolError("cannot list processes: lsof exited %d" % r.returncode)
     if not listed:                                     # it always lists this process, at least

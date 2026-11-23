@@ -328,9 +328,9 @@ PY
 if [ -e "$(dirname "$TOOL")/../../cleaning-merged-worktrees/bin/wtclean" ]; then
   rc=0 out="cwd_users differs"; check "prland and wtclean hold the same process check" 'same_check'
 fi
-# cwd_users() on the lsof path, called directly. lsof can print a control character as \t or ^A, a backslash as \\,
-# and a non-ASCII byte as \xNN, or print any of them as it is. Each name counts both ways, so a busy worktree is found
-# whichever way lsof printed it, and an idle one still goes.
+# cwd_users() on the lsof path, called directly. lsof prints a backslash as \\, a control character as \t or ^A, and
+# DEL as \x7f. It prints a non-ASCII character as it is in a UTF-8 locale and as \xNN otherwise, and every other
+# character, a caret too, as it is. FAKE_LSOF_CWD below is what lsof prints for the busy directory.
 lsof_unit() { PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc python3 - "$TOOL" "$T" <<'PY'
 import os
 import runpy
@@ -351,16 +351,22 @@ def case(label, where, want, cwd="/", mode=""):
         bad.append("%s: got %r" % (label, got))
 
 
-case("a tab, printed as \\t", t + "/wt\ttab", BUSY, cwd=t + "/wt\\ttab/sub")
+case("a tab", t + "/wt\ttab", BUSY, cwd=t + "/wt\\ttab/sub")
 case("a tab, idle", t + "/wt\ttab", [])
-case("a control character, printed as ^A", t + "/wt\x01x", BUSY, cwd=t + "/wt^Ax")
-case("a caret, printed as it is", t + "/wt^Ax", BUSY, cwd=t + "/wt^Ax")
-case("a backslash, printed as it is", t + "/wt\\b", BUSY, cwd=t + "/wt\\b")
-case("a backslash, printed as \\\\", t + "/wt\\b", BUSY, cwd=t + "/wt\\\\b")
+# lsof prints the control character ^A and a literal caret and A alike, so an idle wt<^A>x beside a busy wt^Ax also
+# counts as in use: a false keep, never a miss.
+case("a control character", t + "/wt\x01x", BUSY, cwd=t + "/wt^Ax")
+case("DEL", t + "/wt\x7fx", BUSY, cwd=t + "/wt\\x7fx")
+case("a caret and an A", t + "/wt^Ax", BUSY, cwd=t + "/wt^Ax")
+case("a caret and an A, then a tab", t + "/wt^A\ttab", BUSY, cwd=t + "/wt^A\\ttab")
+case("a caret and an A, then a backslash", t + "/wt^A\\b", BUSY, cwd=t + "/wt^A\\\\b")
+case("a backslash", t + "/wt\\b", BUSY, cwd=t + "/wt\\\\b")
 case("a backslash, idle", t + "/wt\\b", [])
-case("non-ASCII, printed as it is", t + "/José/wt", BUSY, cwd=t + "/José/wt/sub")
-case("non-ASCII in a parent, printed as \\xNN", t + "/José/wt", BUSY, cwd=t + "/Jos\\xc3\\xa9/wt")
-case("non-ASCII in a parent, idle", t + "/José/wt", [], cwd=t + "/Jos\\xc3\\xa9/other")
+case("a backslash and a t, idle, beside a busy tab", t + "/wt\\tx", [], cwd=t + "/wt\\tx")
+case("non-ASCII, UTF-8 locale", t + "/José/wt", BUSY, cwd=t + "/José/wt/sub")
+case("non-ASCII, C locale", t + "/José/wt", BUSY, cwd=t + "/Jos\\xc3\\xa9/wt")
+case("non-ASCII parent, caret and an A", t + "/José/wt^A", BUSY, cwd=t + "/Jos\\xc3\\xa9/wt^A")
+case("non-ASCII parent, idle", t + "/José/wt", [], cwd=t + "/Jos\\xc3\\xa9/other")
 case("an escape in a subdirectory", t + "/plain", BUSY, cwd=t + "/plain/sub\\tdir")
 case("a sibling that only an escape makes look alike", t + "/plain", [], cwd=t + "/plain\\x2dx")
 case("an idle plain path", t + "/plain", [])
