@@ -132,15 +132,15 @@ orca-ide automations create --json --name "Worktree cleanup" \
   --provider claude --extra-agent-args="--model sonnet" \
   --workspace path:<dir> --workspace-mode existing --fresh-session \
   --trigger weekly --day 0 --time 09:00 --timezone <tz> \
-  --precheck '[ "$("$HOME/.local/bin/wtclean" --check 2>&1)" != "wtclean: 0 can go, 0 errors" ]' --precheck-timeout 900 \
+  --precheck '[ "$("$HOME/.local/bin/wtclean" --check 2>&1)" != "wtclean: 0 can go, 0 errors" ]' --precheck-timeout 600 \
   --disabled --prompt "<the prompt above>"
 ```
 
 `--disabled` creates the automation switched off. Run `wtclean` by hand and read its report, then enable the automation in Orca. `--day 0` is Sunday. Change `--day`, `--time` and `--timezone` to suit.
 
-The precheck runs `wtclean --check` before each run. It skips the run when the output is exactly `wtclean: 0 can go, 0 errors`. A missing or broken `wtclean` prints something else, so the run still starts and Claude reports the failure. Orca also skips the run when the precheck itself fails or times out.
+The precheck runs `wtclean --check` before each run. It skips the run when the output is exactly `wtclean: 0 can go, 0 errors`. A missing or broken `wtclean` prints something else, so the run still starts and Claude reports the failure. Orca also skips the run when the precheck itself fails or times out. Orca refuses a `--precheck-timeout` over 600 seconds. `wtclean --check` takes about a minute on a host with 140 worktrees.
 
-After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M merged kept, E errors`, or `wtclean <YYYY-MM-DD>: did not finish`. A nonzero exit also marks the workspace unread. A week the precheck skips leaves the comment as it was.
+After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M merged kept, E errors`, or `wtclean <YYYY-MM-DD>: did not finish`. A week the precheck skips leaves the comment as it was. Orca marks the workspace unread after every run, when the run's agent finishes. So an unread workspace does not mean that the run failed. Read the error count in the comment.
 
 ## Known gaps
 
@@ -154,4 +154,4 @@ After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M mer
 - wtclean ignores fork PRs, so a clone whose `origin` is a fork keeps its worktrees.
 - A tool error stops the run at the first error, and wtclean does not scan the worktrees after it.
 - `git worktree remove` and Orca's `worktree rm` get 10 minutes, and every other call gets 2 minutes. A removal that times out stops the run with an error that names the worktree, and can leave it half deleted. If tracked files are gone, later runs keep it until someone cleans it up by hand.
-- A sidebar comment whose date stops advancing means the weekly run did not finish, or the precheck skipped it. The precheck skips a week when nothing can go, and when it fails or times out. Check `automations runs --id <automation-id>`. A skipped week shows as `skipped_precheck`.
+- A sidebar comment whose date stops advancing means the weekly run did not finish, its agent could not start, or the precheck skipped it. An agent that cannot start, such as Claude that is not logged in on that host, leaves the comment as it was, and Orca still lists the run as `completed`. The precheck skips a week when nothing can go, and when it fails or times out. Check `automations runs --id <automation-id>`. A skipped week shows as `skipped_precheck`.

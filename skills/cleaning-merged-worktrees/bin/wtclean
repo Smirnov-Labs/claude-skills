@@ -312,7 +312,7 @@ def merged_pr(main, repo_slug, branch, head):
 # which sets GIT_OPTIONAL_LOCKS=0, so a look at a worktree never rewrites its index or resets its 24-hour clock. Keep
 # the reason strings as they are: the tests match them.
 DISPOSABLE = re.compile(r"(^|/)(node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|"
-                        r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.cache|\.parcel-cache|coverage|"
+                        r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.nx|\.cache|\.parcel-cache|coverage|"
                         r"\.gradle|[^/]+\.egg-info)(/|\Z)|\.py[co]\Z|(^|/)\.DS_Store\Z")
 
 
