@@ -52,7 +52,7 @@ This section grows as patterns and preferences are discovered during work on thi
 - **After a change to `tp-scan`,** run `tests/tp-scan.sh`. It builds one synthetic repo per pattern in a temp dir, and canary files prove that the scan ran nothing.
 - **After a change to `nonstop`,** run `tests/nonstop.sh`. It runs the Stop hook and the turn-on and turn-off commands from SKILL.md with a temporary HOME and two fake sessions, in bash and, if it is installed, zsh.
 - **After a change to `wtclean`,** run `tests/wtclean.sh`. It uses real git repos in a temp dir, with a fake `gh` and a fake Orca CLI on PATH. A `sleep` inside a worktree plays the busy process, and a fake `lsof` plays macOS.
-- **CI runs every suite on each PR.** `.github/workflows/tests.yml` runs each `tests/*.sh` as its own job on every PR and every push to main. A new suite runs there with no change to the workflow. If a suite needs a tool that the runner lacks, add the tool to the workflow's install step.
+- **CI runs every suite on each PR.** `.github/workflows/tests.yml` runs each `tests/*.sh` as its own job on every PR and every push to main. A new suite runs there with no change to the workflow. If a suite needs a tool that the runner lacks, add the tool to the workflow's install step. CI runs on Ubuntu only, so the macOS run of `tests/skillsync.sh` under `/bin/bash` is still yours to do.
 - **Merges:** `prland <PR> --need sar,ci` (the pr-land skill): squash, with a subject that ends in `(#N)`, then the branch and worktree go. Machines pick up main at their next `skillsync`.
 
 ---
