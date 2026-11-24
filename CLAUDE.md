@@ -36,7 +36,7 @@ This section grows as patterns and preferences are discovered during work on thi
 
 ### Known Gotchas
 - **The working clone can be live.** On an authoring machine, the skillsync source is a symlink to the working clone. Every Claude Code session on that machine loads the files that are checked out. Never switch branches in that clone. Do PR work in a worktree. Inside an Orca terminal (`ORCA_CLI_COMMAND` is set), create it with `"$ORCA_CLI_COMMAND" worktree create --repo path:<working clone> --name <dir> --branch <branch> --base-branch origin/main --json`, and read its path and id from the result. Then close the shell Orca opens there, so the worktree does not look busy later: `"$ORCA_CLI_COMMAND" terminal close --worktree id:<id> --all --json`. If the create fails, say so and use git. When the PR is open, link it to that worktree and set its card to in review, as the watching-pr-bot-reviews skill says, with `--worktree path:<worktree>`. prland marks the card completed. Outside Orca, use `git worktree add -b <branch> /tmp/<dir> origin/main`. Other sessions can have uncommitted edits in the clone. Leave them alone.
-- **`prbots` waits for Codex by default**, and Codex is not enabled here. Use `prbots wait <PR> --need sar --trigger`.
+- **`prbots` waits for Codex by default**, and Codex is not enabled here. Use `prbots wait <PR> --need sar,ci --trigger`.
 - **The review does not run again on push.** `--trigger` or an `@architect-run` comment starts it.
 
 ### Effective Approaches
@@ -52,7 +52,8 @@ This section grows as patterns and preferences are discovered during work on thi
 - **After a change to `tp-scan`,** run `tests/tp-scan.sh`. It builds one synthetic repo per pattern in a temp dir, and canary files prove that the scan ran nothing.
 - **After a change to `nonstop`,** run `tests/nonstop.sh`. It runs the Stop hook and the turn-on and turn-off commands from SKILL.md with a temporary HOME and two fake sessions, in bash and, if it is installed, zsh.
 - **After a change to `wtclean`,** run `tests/wtclean.sh`. It uses real git repos in a temp dir, with a fake `gh` and a fake Orca CLI on PATH. A `sleep` inside a worktree plays the busy process, and a fake `lsof` plays macOS.
-- **Merges:** `prland <PR> --need sar` (the pr-land skill): squash, with a subject that ends in `(#N)`, then the branch and worktree go. Machines pick up main at their next `skillsync`.
+- **CI runs every suite on each PR.** `.github/workflows/tests.yml` runs each `tests/*.sh` as its own job on every PR and every push to main. A new suite runs there with no change to the workflow. If a suite needs a tool that the runner lacks, add the tool to the workflow's install step.
+- **Merges:** `prland <PR> --need sar,ci` (the pr-land skill): squash, with a subject that ends in `(#N)`, then the branch and worktree go. Machines pick up main at their next `skillsync`.
 
 ---
 
