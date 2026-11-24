@@ -1,0 +1,58 @@
+name: Tests
+
+# Runs every tests/*.sh suite as its own job, so a failure names its suite. The suites put fake gh, prbots, codex,
+# Orca CLI and lsof on PATH and serve their own fake APIs, so they reach no network and need no secrets.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash   # an explicit bash runs with -eo pipefail
+
+jobs:
+  list:
+    name: List the suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      suites: ${{ steps.list.outputs.suites }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # Each tests/*.sh, by name. A new suite runs here with no change to this file.
+      - id: list
+        run: |
+          python3 -c 'import glob, json, os; print("suites=" + json.dumps(sorted(os.path.basename(p)[:-3] for p in glob.glob("tests/*.sh"))))' >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+  suite:
+    name: tests/${{ matrix.suite }}.sh
+    needs: list
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.list.outputs.suites) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # prbots needs jq. tests/nonstop.sh runs its zsh checks only when zsh is installed, and its virtualenv check
+      # only when python3 -m venv works. tests/prland.sh runs its real-lsof checks only when lsof is installed.
+      # Installing all four here means that every check runs.
+      - name: Install jq, lsof, zsh and python3-venv
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends jq lsof zsh python3-venv
+      - name: Run tests/${{ matrix.suite }}.sh
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: bash "tests/$SUITE.sh"
