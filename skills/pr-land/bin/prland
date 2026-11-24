@@ -54,6 +54,8 @@ CONFIRM_WAIT = float(os.environ.get("PRLAND_CONFIRM_WAIT", "18"))   # seconds to
 ORCA_TIMEOUT, ORCA_RM_TIMEOUT = 120, 600    # seconds for one Orca CLI call, and for Orca's worktree rm
 PROC_ROOT = os.environ.get("PRLAND_PROC_ROOT", "/proc")     # tests name a missing directory to take the lsof path
 BOTS = {"codex", "sar", "ci", "all"}
+# skills/cleaning-merged-worktrees/bin/wtclean holds the same DISPOSABLE, SDK_KEYS and sdk_paths_only, and
+# tests/prland.sh fails if they differ
 DISPOSABLE = re.compile(r"(^|/)(node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|"
                         r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.nx|\.cache|\.parcel-cache|coverage|"
                         r"\.gradle|\.dart_tool|[^/]+\.egg-info)(/|$)|\.py[co]$|(^|/)\.DS_Store$|"

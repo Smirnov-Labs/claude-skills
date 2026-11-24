@@ -311,7 +311,8 @@ def merged_pr(main, repo_slug, branch, head):
 # DISPOSABLE ends with \Z, not $: a raw name can end in a newline, and $ also matches just before one, so "build\n"
 # would count as build output. And any skip-worktree entry keeps the worktree, whether or not its file exists. Their
 # git calls go through git() above, which sets GIT_OPTIONAL_LOCKS=0, so a look at a worktree never rewrites its index
-# or resets its 24-hour clock. Keep the reason strings as they are: the tests match them.
+# or resets its 24-hour clock. Keep the reason strings as they are: the tests match them. tests/prland.sh fails if
+# DISPOSABLE, SDK_KEYS or sdk_paths_only here differs from prland's, apart from \Z.
 DISPOSABLE = re.compile(r"(^|/)(node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|"
                         r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.nx|\.cache|\.parcel-cache|coverage|"
                         r"\.gradle|\.dart_tool|[^/]+\.egg-info)(/|\Z)|\.py[co]\Z|(^|/)\.DS_Store\Z|"

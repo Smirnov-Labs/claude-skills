@@ -351,8 +351,31 @@ def body(fp):
 sys.exit(0 if body(sys.argv[1]) and body(sys.argv[1]) == body(sys.argv[2]) else 1)
 PY
 }
+same_rules() { python3 - "$(dirname "$TOOL")/../../cleaning-merged-worktrees/bin/wtclean" "$TOOL" <<'PY'
+import re
+import sys
+
+# The build-output rules that prland and wtclean must agree on: DISPOSABLE, SDK_KEYS and sdk_paths_only, as each
+# file spells them. wtclean ends DISPOSABLE's names with \Z where prland ends them with $ (the comment above them in
+# wtclean says why), so in DISPOSABLE a \Z reads as a $ here. not_build_output differs on purpose: wtclean reads git's
+# NUL-separated list.
+PARTS = (r'^DISPOSABLE = re\.compile\(.*?"\)$', r"^SDK_KEYS = \{.*?\}$", r"^def sdk_paths_only\(fp\):\n.*?(?=^def |\Z)")
+
+def rules(fp):
+    text = open(fp).read()
+    found = [re.search(p, text, re.S | re.M) for p in PARTS]
+    if not all(found):
+        return None
+    got = [m.group(0).rstrip() for m in found]
+    return [got[0].replace(r"\Z", "$")] + got[1:]
+
+sys.exit(0 if rules(sys.argv[1]) and rules(sys.argv[1]) == rules(sys.argv[2]) else 1)
+PY
+}
 if [ -e "$(dirname "$TOOL")/../../cleaning-merged-worktrees/bin/wtclean" ]; then
   rc=0 out="cwd_users differs"; check "prland and wtclean hold the same process check" 'same_check'
+  rc=0 out="DISPOSABLE, SDK_KEYS or sdk_paths_only differs"
+  check "prland and wtclean hold the same build-output rules" 'same_rules'
 fi
 # cwd_users() on the lsof path, called directly. It runs lsof with LC_ALL=C, so lsof prints each byte by itself: a
 # backslash as \\, a control character as \t or ^A, DEL and each byte of a non-ASCII character as \xNN, and 0xff as
