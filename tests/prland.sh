@@ -191,6 +191,21 @@ setup() {
   WD=$M
 }
 remote_has_feat() { [ -n "$(git -C "$M" ls-remote origin refs/heads/feat)" ]; }
+# flutter_files DIR: what flutter pub get and flutter build leave in DIR and DIR/app, ignored as Flutter's .gitignore
+# files ignore it, with a local.properties that holds only SDK paths. *.secret is ignored too, for a file to keep.
+flutter_files() {
+  printf '%s\n' '.dart_tool/' '.flutter-plugins-dependencies' 'GeneratedPluginRegistrant.*' 'Generated.xcconfig' \
+    'flutter_export_environment.sh' 'ephemeral/' 'local.properties' '*.secret' >> "$M/.git/info/exclude"
+  mkdir -p "$1/.dart_tool" "$1/app/android/app/src/main/java/io/flutter/plugins" "$1/app/ios/Flutter/ephemeral" \
+    "$1/app/ios/Runner" "$1/app/linux/flutter/ephemeral"
+  echo x > "$1/.dart_tool/package_config.json"; echo x > "$1/app/.flutter-plugins-dependencies"
+  echo x > "$1/app/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java"
+  echo x > "$1/app/ios/Runner/GeneratedPluginRegistrant.h"; echo x > "$1/app/ios/Runner/GeneratedPluginRegistrant.m"
+  echo x > "$1/app/ios/Flutter/Generated.xcconfig"; echo x > "$1/app/ios/Flutter/flutter_export_environment.sh"
+  echo x > "$1/app/ios/Flutter/ephemeral/flutter_lldbinit"; echo x > "$1/app/linux/flutter/ephemeral/.plugin_symlinks"
+  printf '%s\n' '## Written by Android Studio and Flutter' 'sdk.dir=/opt/android-sdk' 'flutter.sdk=/opt/flutter' \
+    > "$1/app/android/local.properties"
+}
 
 setup; FAKE_VERDICT=CLEAN run 7
 check "clean PR: exit 0" '[ $rc -eq 0 ]'
@@ -240,6 +255,15 @@ setup; printf '.nx/\n' >> "$M/.git/info/exclude"; mkdir -p "$W/.nx/cache"; echo 
 check "an Nx cache (.nx) alone does not keep the worktree" '[ ! -d "$W" ]'
 setup; printf '.nx*\n' >> "$M/.git/info/exclude"; echo keep > "$W/.nxrc"; FAKE_VERDICT=CLEAN run 7
 check "an ignored file whose name only starts with .nx keeps the worktree" '[ -e "$W/.nxrc" ]'
+setup; flutter_files "$W"; FAKE_VERDICT=CLEAN run 7
+check "Flutter's generated files and an SDK-only local.properties do not keep the worktree" '[ ! -d "$W" ]'
+NL=$'\n'   # the report line ends at the file name: no folder before it, and nothing after it
+setup; flutter_files "$W"; echo custom.setting=1 >> "$W/app/android/local.properties"; FAKE_VERDICT=CLEAN run 7
+check "a local.properties with any other key keeps the worktree, and the report names only that file" '[ -e "$W/app/android/local.properties" ] && [[ $out == *"left in place: ignored files that are not build output: app/android/local.properties$NL"* ]]'
+setup; flutter_files "$W"; echo keep > "$W/app/android/app/src/main/java/notes.secret"; FAKE_VERDICT=CLEAN run 7
+check "a folder off the list keeps the worktree when it holds a file that is not build output, and the report names the file" '[ -e "$W/app/android/app/src/main/java/notes.secret" ] && [[ $out == *"left in place: ignored files that are not build output: app/android/app/src/main/java/notes.secret$NL"* ]]'
+setup; printf 'private/\n' >> "$M/.git/info/exclude"; mkdir -p "$W/private/keys"; echo k > "$W/private/keys/api.txt"; FAKE_VERDICT=CLEAN run 7
+check "an ignored folder that git names alone keeps the worktree, and the report names the file in it" '[ -e "$W/private/keys/api.txt" ] && [[ $out == *"left in place: ignored files that are not build output: private/keys/api.txt$NL"* ]]'
 setup; echo more >> "$W/a.txt"; git -C "$W" commit -qam extra; FAKE_VERDICT=CLEAN run 7
 check "a local commit past the PR head keeps the worktree" '[ -d "$W" ] && [[ $out == *"not on the PR head"* ]]'
 
@@ -327,8 +351,31 @@ def body(fp):
 sys.exit(0 if body(sys.argv[1]) and body(sys.argv[1]) == body(sys.argv[2]) else 1)
 PY
 }
+same_rules() { python3 - "$(dirname "$TOOL")/../../cleaning-merged-worktrees/bin/wtclean" "$TOOL" <<'PY'
+import re
+import sys
+
+# The build-output rules that prland and wtclean must agree on: DISPOSABLE, SDK_KEYS and sdk_paths_only, as each
+# file spells them. wtclean ends DISPOSABLE's names with \Z where prland ends them with $ (the comment above them in
+# wtclean says why), so in DISPOSABLE a \Z reads as a $ here. not_build_output differs on purpose: wtclean reads git's
+# NUL-separated list.
+PARTS = (r'^DISPOSABLE = re\.compile\(.*?"\)$', r"^SDK_KEYS = \{.*?\}$", r"^def sdk_paths_only\(fp\):\n.*?(?=^def |\Z)")
+
+def rules(fp):
+    text = open(fp).read()
+    found = [re.search(p, text, re.S | re.M) for p in PARTS]
+    if not all(found):
+        return None
+    got = [m.group(0).rstrip() for m in found]
+    return [got[0].replace(r"\Z", "$")] + got[1:]
+
+sys.exit(0 if rules(sys.argv[1]) and rules(sys.argv[1]) == rules(sys.argv[2]) else 1)
+PY
+}
 if [ -e "$(dirname "$TOOL")/../../cleaning-merged-worktrees/bin/wtclean" ]; then
   rc=0 out="cwd_users differs"; check "prland and wtclean hold the same process check" 'same_check'
+  rc=0 out="DISPOSABLE, SDK_KEYS or sdk_paths_only differs"
+  check "prland and wtclean hold the same build-output rules" 'same_rules'
 fi
 # cwd_users() on the lsof path, called directly. It runs lsof with LC_ALL=C, so lsof prints each byte by itself: a
 # backslash as \\, a control character as \t or ^A, DEL and each byte of a non-ASCII character as \xNN, and 0xff as

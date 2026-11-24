@@ -306,15 +306,23 @@ def merged_pr(main, repo_slug, branch, head):
     return "commits not in the pull request", merged[0]
 
 
-# DISPOSABLE and local_data are adapted from skills/pr-land/bin/prland. They differ in three ways. git lists the
-# untracked and ignored files NUL-separated here, so a name made of spaces still counts. DISPOSABLE ends with \Z, not $:
-# a raw name can end in a newline, and $ also matches just before one, so "build\n" would count as build output. And
-# any skip-worktree entry keeps the worktree, whether or not its file exists. Their git calls go through git() above,
-# which sets GIT_OPTIONAL_LOCKS=0, so a look at a worktree never rewrites its index or resets its 24-hour clock. Keep
-# the reason strings as they are: the tests match them.
+# DISPOSABLE, SDK_KEYS, not_build_output and local_data are adapted from skills/pr-land/bin/prland. They differ in three
+# ways. git lists the untracked and ignored files NUL-separated here, so a name made of spaces still counts.
+# DISPOSABLE ends with \Z, not $: a raw name can end in a newline, and $ also matches just before one, so "build\n"
+# would count as build output. And any skip-worktree entry keeps the worktree, whether or not its file exists. Their
+# git calls go through git() above, which sets GIT_OPTIONAL_LOCKS=0, so a look at a worktree never rewrites its index
+# or resets its 24-hour clock. Keep the reason strings as they are: the tests match them. tests/prland.sh fails if
+# DISPOSABLE, SDK_KEYS or sdk_paths_only here differs from prland's, apart from \Z.
 DISPOSABLE = re.compile(r"(^|/)(node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|"
                         r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.nx|\.cache|\.parcel-cache|coverage|"
-                        r"\.gradle|[^/]+\.egg-info)(/|\Z)|\.py[co]\Z|(^|/)\.DS_Store\Z")
+                        r"\.gradle|\.dart_tool|[^/]+\.egg-info)(/|\Z)|\.py[co]\Z|(^|/)\.DS_Store\Z|"
+                        # what flutter pub get and flutter build write next to an app's sources
+                        r"(^|/)(\.flutter-plugins(-dependencies)?|GeneratedPluginRegistrant\.(java|h|m))\Z|"
+                        r"(^|/)Flutter/(Generated\.xcconfig|flutter_export_environment\.sh)\Z|"
+                        r"(^|/)[Ff]lutter/ephemeral(/|\Z)")
+# The keys that Android Studio and Flutter write to an Android project's local.properties, and write again
+SDK_KEYS = {"sdk.dir", "ndk.dir", "cmake.dir", "flutter.sdk", "flutter.buildMode", "flutter.versionName",
+            "flutter.versionCode"}
 
 
 def nul_list(text):
@@ -355,11 +363,45 @@ def local_data(path):
     loose = nul_list(untracked.stdout)
     if loose:
         return "%d untracked files" % len(loose)
-    keep = [p for p in nul_list(ignored.stdout) if not DISPOSABLE.search(p.rstrip("/"))]
+    keep = []
+    for p in nul_list(ignored.stdout):   # git can list a folder and its files, so a file can come up more than once
+        keep += [f for f in not_build_output(path, p) if f not in keep]
     if keep:
         return "ignored files that are not build output: %s%s" % (", ".join(printable(p) for p in keep[:4]),
                                                                   " ..." if len(keep) > 4 else "")
     return None
+
+
+def sdk_paths_only(fp):
+    """True when a local.properties holds only keys in SDK_KEYS: paths on this machine, and build values that the next
+    build writes again. Any other key, an API key for one, keeps the worktree. Fails closed."""
+    if not os.path.isfile(fp):   # a FIFO or a socket would block open()
+        return False
+    try:
+        with open(fp, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return False
+    keys = [ln.split("=", 1)[0].strip() for ln in lines if ln.strip() and not ln.lstrip().startswith(("#", "!"))]
+    return bool(keys) and all(k in SDK_KEYS for k in keys)
+
+
+def not_build_output(path, name):
+    """The files under a name from git's ignored list that are not build or cache output, or [] when all of it is. git
+    names the untracked folders that hold only ignored files, such as the one around GeneratedPluginRegistrant.java,
+    and a folder that an ignore rule matches comes alone. So a folder that is not on the list is listed again, and the
+    files in it that do not count are named, not the folder. The pathspec is literal, so a folder named like a glob
+    pattern matches only itself. A folder that git cannot list, or lists as empty, is named itself. Fails closed."""
+    bare = name.rstrip("/")
+    if DISPOSABLE.search(bare):
+        return []
+    if not name.endswith("/"):
+        sdk_only = os.path.basename(bare) == "local.properties" and sdk_paths_only(os.path.join(path, bare))
+        return [] if sdk_only else [name]
+    inside = git(path, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", ":(literal)" + name)
+    files = nul_list(inside.stdout) if inside.returncode == 0 else []
+    # a name in it that ends in / is a nested repository, and counts as kept
+    return [f for f in files if f.endswith("/") or not_build_output(path, f)] if files else [name]
 
 
 def has_submodules(path):
