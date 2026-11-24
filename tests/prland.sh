@@ -117,7 +117,8 @@ if args[:3] == ["worktree", "rm", "--worktree"] and args[3].startswith("id:R1::"
 print("fake orca: unexpected: " + " ".join(args), file=sys.stderr)
 sys.exit(9)
 EOF
-# A fake lsof, on PATH only for the tests that name $T/lsofbin. It logs its arguments to $FAKE/lsof.log.
+# A fake lsof, on PATH only for the tests that name $T/lsofbin. It logs its arguments to $FAKE/lsof.log. Without
+# LC_ALL=C it exits 3 and prints nothing, so a test that needs its list also proves the tool sets the C locale.
 # FAKE_LSOF=fail: it exits 1 and prints nothing. FAKE_LSOF=partial: it prints process 1, then exits 1. FAKE_LSOF=empty:
 # it prints nothing and exits 0. Otherwise it prints, in the form of lsof -F, process 1 working in / and process 4242
 # ("fake  proc") working in $FAKE_LSOF_CWD, each with the f line that macOS's lsof adds.
@@ -125,6 +126,7 @@ mkdir -p "$T/lsofbin"
 cat > "$T/lsofbin/lsof" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE/lsof.log"
+[ "${LC_ALL-}" = C ] || { echo "fake lsof: LC_ALL is not C" >&2; exit 3; }
 case "${FAKE_LSOF:-}" in
   fail) exit 1 ;;
   partial) printf 'p1\ncinit\nfcwd\nn/\n'; exit 1 ;;
@@ -328,9 +330,10 @@ PY
 if [ -e "$(dirname "$TOOL")/../../cleaning-merged-worktrees/bin/wtclean" ]; then
   rc=0 out="cwd_users differs"; check "prland and wtclean hold the same process check" 'same_check'
 fi
-# cwd_users() on the lsof path, called directly. lsof prints a backslash as \\, a control character as \t or ^A, and
-# DEL as \x7f. It prints a non-ASCII character as it is in a UTF-8 locale and as \xNN otherwise, and every other
-# character, a caret too, as it is. FAKE_LSOF_CWD below is what lsof prints for the busy directory.
+# cwd_users() on the lsof path, called directly. It runs lsof with LC_ALL=C, so lsof prints each byte by itself: a
+# backslash as \\, a control character as \t or ^A, DEL and each byte of a non-ASCII character as \xNN, and 0xff as
+# \xff where char is signed (macOS) or ^? where it is not. Every other byte, a caret too, prints as it is.
+# FAKE_LSOF_CWD below is what lsof prints for the busy directory.
 lsof_unit() { PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc python3 - "$TOOL" "$T" <<'PY'
 import os
 import runpy
@@ -363,8 +366,13 @@ case("a caret and an A, then a backslash", t + "/wt^A\\b", BUSY, cwd=t + "/wt^A\
 case("a backslash", t + "/wt\\b", BUSY, cwd=t + "/wt\\\\b")
 case("a backslash, idle", t + "/wt\\b", [])
 case("a backslash and a t, idle, beside a busy tab", t + "/wt\\tx", [], cwd=t + "/wt\\tx")
-case("non-ASCII, UTF-8 locale", t + "/José/wt", BUSY, cwd=t + "/José/wt/sub")
-case("non-ASCII, C locale", t + "/José/wt", BUSY, cwd=t + "/Jos\\xc3\\xa9/wt")
+case("non-ASCII", t + "/José/wt", BUSY, cwd=t + "/Jos\\xc3\\xa9/wt/sub")
+case("a no-break space", t + "/wt\u00a0x", BUSY, cwd=t + "/wt\\xc2\\xa0x")
+case("a no-break space, idle", t + "/wt\u00a0x", [], cwd=t + "/wt\\xc2\\xa0y")
+case("non-ASCII, a no-break space, a caret and an A, a tab", t + "/José/wt\u00a0^A\tz", BUSY,
+     cwd=t + "/Jos\\xc3\\xa9/wt\\xc2\\xa0^A\\tz")
+case("a byte that is not UTF-8, signed char", t + "/wt" + os.fsdecode(b"\xff") + "x", BUSY, cwd=t + "/wt\\xffx")
+case("a byte that is not UTF-8, unsigned char", t + "/wt" + os.fsdecode(b"\xff") + "x", BUSY, cwd=t + "/wt^?x")
 case("non-ASCII parent, caret and an A", t + "/José/wt^A", BUSY, cwd=t + "/Jos\\xc3\\xa9/wt^A")
 case("non-ASCII parent, idle", t + "/José/wt", [], cwd=t + "/Jos\\xc3\\xa9/other")
 case("an escape in a subdirectory", t + "/plain", BUSY, cwd=t + "/plain/sub\\tdir")
@@ -378,6 +386,38 @@ PY
 }
 out=$(lsof_unit 2>&1); rc=$?
 check "cwd_users on the lsof path: escaped paths, partial and empty lists" '[ $rc -eq 0 ]'
+# The real lsof, if installed, on a directory named with an e-acute and a no-break space, which lsof prints as \xNN
+# in the C locale. A sleep that Python starts works in it, and only that PID is killed.
+real_lsof_unit() { PRLAND_PROC_ROOT=$T/noproc python3 - "$TOOL" "$T" <<'PY'
+import os
+import runpy
+import subprocess
+import sys
+
+tool, t = sys.argv[1], os.path.realpath(sys.argv[2])
+g = runpy.run_path(tool, run_name="real_lsof_unit")
+busy, idle = os.path.join(t, "Jos\u00e9\u00a0wt"), os.path.join(t, "Jos\u00e9\u00a0wt2")
+os.makedirs(busy, exist_ok=True)
+os.makedirs(idle, exist_ok=True)
+p = subprocess.Popen(["sleep", "300"], cwd=busy)
+try:
+    got, other = g["cwd_users"](busy), g["cwd_users"](idle)
+finally:
+    p.kill()
+    p.wait()
+bad = []
+if (p.pid, "sleep") not in got:
+    bad.append("busy: got %r, want pid %d" % (got, p.pid))
+if any(pid == p.pid for pid, _ in other):
+    bad.append("idle: got %r" % other)
+print("\n".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+if command -v lsof >/dev/null; then
+  out=$(real_lsof_unit 2>&1); rc=$?
+  check "the real lsof finds a process in a directory named with non-ASCII characters" '[ $rc -eq 0 ]'
+fi
 
 # Inside Orca ($ORCA_CLI_COMMAND set). orca_calls prints the worktree ps, set and rm calls, in order, on one line.
 orca_calls() { grep -o -E "^worktree (ps|set|rm)" "$FAKE/orca.log" 2>/dev/null | sed 's/^worktree //' | tr '\n' ' '; }

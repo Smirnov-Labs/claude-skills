@@ -189,7 +189,8 @@ if args[:2] == ["worktree", "rm"] and "--worktree" in args[:-1] and args[args.in
 print("fake orca: unexpected: " + " ".join(args), file=sys.stderr)
 sys.exit(9)
 EOF
-# A fake lsof, on PATH only for the tests that name $T/lsofbin. It logs its arguments to $FAKE/lsof.log.
+# A fake lsof, on PATH only for the tests that name $T/lsofbin. It logs its arguments to $FAKE/lsof.log. Without
+# LC_ALL=C it exits 3 and prints nothing, so a test that needs its list also proves the tool sets the C locale.
 # FAKE_LSOF=fail: it exits 1 and prints nothing. FAKE_LSOF=partial: it prints process 1, then exits 1. FAKE_LSOF=empty:
 # it prints nothing and exits 0. Otherwise it prints, in the form of lsof -F, process 1 working in / and process 4242
 # ("fake  proc") working in $FAKE_LSOF_CWD, each with the f line that macOS's lsof adds.
@@ -197,6 +198,7 @@ mkdir -p "$T/lsofbin"
 cat > "$T/lsofbin/lsof" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE/lsof.log"
+[ "${LC_ALL-}" = C ] || { echo "fake lsof: LC_ALL is not C" >&2; exit 3; }
 case "${FAKE_LSOF:-}" in
   fail) exit 1 ;;
   partial) printf 'p1\ncinit\nfcwd\nn/\n'; exit 1 ;;
