@@ -257,10 +257,13 @@ setup; printf '.nx*\n' >> "$M/.git/info/exclude"; echo keep > "$W/.nxrc"; FAKE_V
 check "an ignored file whose name only starts with .nx keeps the worktree" '[ -e "$W/.nxrc" ]'
 setup; flutter_files "$W"; FAKE_VERDICT=CLEAN run 7
 check "Flutter's generated files and an SDK-only local.properties do not keep the worktree" '[ ! -d "$W" ]'
+NL=$'\n'   # the report line ends at the file name: no folder before it, and nothing after it
 setup; flutter_files "$W"; echo custom.setting=1 >> "$W/app/android/local.properties"; FAKE_VERDICT=CLEAN run 7
-check "a local.properties with any other key keeps the worktree" '[ -e "$W/app/android/local.properties" ] && [[ $out == *"app/android/local.properties"* ]]'
+check "a local.properties with any other key keeps the worktree, and the report names only that file" '[ -e "$W/app/android/local.properties" ] && [[ $out == *"left in place: ignored files that are not build output: app/android/local.properties$NL"* ]]'
 setup; flutter_files "$W"; echo keep > "$W/app/android/app/src/main/java/notes.secret"; FAKE_VERDICT=CLEAN run 7
-check "a folder off the list keeps the worktree when it holds a file that is not build output" '[ -e "$W/app/android/app/src/main/java/notes.secret" ]'
+check "a folder off the list keeps the worktree when it holds a file that is not build output, and the report names the file" '[ -e "$W/app/android/app/src/main/java/notes.secret" ] && [[ $out == *"left in place: ignored files that are not build output: app/android/app/src/main/java/notes.secret$NL"* ]]'
+setup; printf 'private/\n' >> "$M/.git/info/exclude"; mkdir -p "$W/private/keys"; echo k > "$W/private/keys/api.txt"; FAKE_VERDICT=CLEAN run 7
+check "an ignored folder that git names alone keeps the worktree, and the report names the file in it" '[ -e "$W/private/keys/api.txt" ] && [[ $out == *"left in place: ignored files that are not build output: private/keys/api.txt$NL"* ]]'
 setup; echo more >> "$W/a.txt"; git -C "$W" commit -qam extra; FAKE_VERDICT=CLEAN run 7
 check "a local commit past the PR head keeps the worktree" '[ -d "$W" ] && [[ $out == *"not on the PR head"* ]]'
 

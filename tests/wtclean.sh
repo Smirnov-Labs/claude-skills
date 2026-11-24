@@ -449,9 +449,11 @@ check "an ignored file whose name only starts with .nx keeps it" '[[ $out == *"w
 setup; mkwt wt-fl feat/fl; pr feat/fl MERGED; flutter_files "$W"; age "$W"; run
 check "Flutter's generated files and an SDK-only local.properties do not keep it" '[[ $out == *"would remove  $T/r/wt-fl  feat/fl"* ]]'
 setup; mkwt wt-flk feat/flk; pr feat/flk MERGED; flutter_files "$W"; echo custom.setting=1 >> "$W/app/android/local.properties"; age "$W"; run
-check "a local.properties with any other key keeps it" '[[ $out == *"wt-flk  feat/flk: local files: ignored files that are not build output: "*"app/android/local.properties"*"(merged #1)"* ]]'
+check "a local.properties with any other key keeps it, and the report names only that file" '[[ $out == *"wt-flk  feat/flk: local files: ignored files that are not build output: app/android/local.properties (merged #1)"* ]]'
 setup; mkwt wt-flj feat/flj; pr feat/flj MERGED; flutter_files "$W"; echo keep > "$W/app/android/app/src/main/java/notes.secret"; age "$W"; run
-check "a folder off the list keeps it when it holds a file that is not build output" '[[ $out == *"wt-flj  feat/flj: local files: ignored files that are not build output: app/"*"(merged #1)"* ]]'
+check "a folder off the list keeps it when it holds a file that is not build output, and the report names the file" '[[ $out == *"wt-flj  feat/flj: local files: ignored files that are not build output: app/android/app/src/main/java/notes.secret (merged #1)"* ]]'
+setup; mkwt wt-fold feat/fold; pr feat/fold MERGED; printf 'private/\n' >> "$M/.git/info/exclude"; mkdir -p "$W/private/keys"; echo k > "$W/private/keys/api.txt"; age "$W"; run
+check "an ignored folder that git names alone keeps it, and the report names the file in it" '[[ $out == *"wt-fold  feat/fold: local files: ignored files that are not build output: private/keys/api.txt (merged #1)"* ]]'
 setup; git init -q -b main "$T/r/subsrc"; echo s > "$T/r/subsrc/s.txt"; git -C "$T/r/subsrc" add -A; git -C "$T/r/subsrc" commit -qm s
 mkwt wt-sub feat/sub; git -C "$W" -c protocol.file.allow=always submodule add -q "$T/r/subsrc" sub; git -C "$W" commit -qm sub; git -C "$W" push -q
 pr feat/sub MERGED; age "$W"; run

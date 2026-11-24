@@ -306,7 +306,7 @@ def merged_pr(main, repo_slug, branch, head):
     return "commits not in the pull request", merged[0]
 
 
-# DISPOSABLE, SDK_KEYS, build_output and local_data are adapted from skills/pr-land/bin/prland. They differ in three
+# DISPOSABLE, SDK_KEYS, not_build_output and local_data are adapted from skills/pr-land/bin/prland. They differ in three
 # ways. git lists the untracked and ignored files NUL-separated here, so a name made of spaces still counts.
 # DISPOSABLE ends with \Z, not $: a raw name can end in a newline, and $ also matches just before one, so "build\n"
 # would count as build output. And any skip-worktree entry keeps the worktree, whether or not its file exists. Their
@@ -362,7 +362,9 @@ def local_data(path):
     loose = nul_list(untracked.stdout)
     if loose:
         return "%d untracked files" % len(loose)
-    keep = [p for p in nul_list(ignored.stdout) if not build_output(path, p)]
+    keep = []
+    for p in nul_list(ignored.stdout):   # git can list a folder and its files, so a file can come up more than once
+        keep += [f for f in not_build_output(path, p) if f not in keep]
     if keep:
         return "ignored files that are not build output: %s%s" % (", ".join(printable(p) for p in keep[:4]),
                                                                   " ..." if len(keep) > 4 else "")
@@ -383,19 +385,22 @@ def sdk_paths_only(fp):
     return bool(keys) and all(k in SDK_KEYS for k in keys)
 
 
-def build_output(path, name):
-    """True when a name from git's ignored list is build or cache output. A folder that is not on the list counts when
-    git lists files inside it and each one counts: git names the untracked folders that hold only ignored files, such
-    as the one around GeneratedPluginRegistrant.java. The pathspec is literal, so a folder named like a glob pattern
-    matches only itself. Fails closed."""
+def not_build_output(path, name):
+    """The files under a name from git's ignored list that are not build or cache output, or [] when all of it is. git
+    names the untracked folders that hold only ignored files, such as the one around GeneratedPluginRegistrant.java,
+    and a folder that an ignore rule matches comes alone. So a folder that is not on the list is listed again, and the
+    files in it that do not count are named, not the folder. The pathspec is literal, so a folder named like a glob
+    pattern matches only itself. A folder that git cannot list, or lists as empty, is named itself. Fails closed."""
     bare = name.rstrip("/")
     if DISPOSABLE.search(bare):
-        return True
-    if name.endswith("/"):
-        inside = git(path, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", ":(literal)" + name)
-        files = nul_list(inside.stdout) if inside.returncode == 0 else []
-        return bool(files) and all(not f.endswith("/") and build_output(path, f) for f in files)
-    return os.path.basename(bare) == "local.properties" and sdk_paths_only(os.path.join(path, bare))
+        return []
+    if not name.endswith("/"):
+        sdk_only = os.path.basename(bare) == "local.properties" and sdk_paths_only(os.path.join(path, bare))
+        return [] if sdk_only else [name]
+    inside = git(path, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", ":(literal)" + name)
+    files = nul_list(inside.stdout) if inside.returncode == 0 else []
+    # a name in it that ends in / is a nested repository, and counts as kept
+    return [f for f in files if f.endswith("/") or not_build_output(path, f)] if files else [name]
 
 
 def has_submodules(path):
