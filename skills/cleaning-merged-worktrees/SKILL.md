@@ -9,7 +9,7 @@ description: Use when clearing out git worktrees whose pull request has merged, 
 
 ## Run it
 
-`wtclean` is on PATH where skillsync installed this skill. Otherwise call it by its full path, `<this skill's base directory>/bin/wtclean`. It needs `gh`, signed in to GitHub, and git 2.31 or newer. With an older git it stops with an error. It adds `~/.local/bin` to PATH, so it finds `gh` there under an Orca server too.
+`wtclean` is on PATH where skillsync installed this skill. Otherwise call it by its full path, `<this skill's base directory>/bin/wtclean`. It needs `gh`, signed in to GitHub, and git 2.31 or newer. With an older git it stops with an error. On a host without `/proc`, such as macOS, it also needs `lsof`. It adds `~/.local/bin` to PATH, so it finds `gh` there under an Orca server too.
 
 | Command | What it does | Exit codes |
 |---|---|---|
@@ -40,13 +40,14 @@ For each worktree that can go, `--apply` does this:
 2. It removes the worktree with Orca's `worktree rm` if Orca lists it, and with `git worktree remove` if not. A worktree that git refuses to remove stays.
 3. It deletes the local branch, but only when the branch is at the PR head and no other worktree has it checked out.
 
-Orca's `worktree rm` answers only after the directory and git's entry are gone, and wtclean checks both anyway. With the Orca 1.4.256 desktop app, the child workspaces of a removed parent stay, as top-level workspaces.
+Orca's `worktree rm` answers only after the directory and git's entry are gone, and wtclean checks both anyway. With Orca 1.4.256 and 1.4.267, the child workspaces of a removed parent stay, as top-level workspaces. Orca 1.4.267's `worktree rm` also keeps the local branch.
 
 ## What it never does
 
 This list covers only the commands that wtclean runs itself. On an older Orca server, Orca's `worktree rm` can do more, as Known gaps says.
 
 - Use `--force`. Neither `git worktree remove` nor Orca's `worktree rm` gets it.
+- Run a repository's Orca archive hooks. Orca's `worktree rm` gets no `--run-hooks`, so Orca skips them.
 - Run `git worktree prune`.
 - Delete a remote branch.
 - Delete a local branch that is not at the PR head.
@@ -108,6 +109,10 @@ A `kept` line gives one reason. The first failing check names it, in this order:
 
 Tell the user what wtclean removed, and why it kept each worktree that has a merged PR. Do not clear a reason yourself by discarding files or stopping an agent. Ask the owner.
 
+## Orca's own cleanup rules
+
+Orca has cleanup rules of its own, which you set in Orca settings. wtclean does not read or change them. `"$ORCA_CLI_COMMAND" workspace cleanup preview --json` lists what they can remove now. It removes nothing, and `rows[].evaluation` says why each other workspace stays. Orca's rules are not wtclean's six conditions, so read that preview before you turn them on beside wtclean.
+
 ## Weekly Orca automation
 
 An Orca automation can run `wtclean --apply` each week and post the result as a workspace comment. The run needs a folder workspace: an empty directory that Orca lists as a workspace, not a git worktree. Make an empty directory `<dir>` and add it to Orca first, with `orca-ide repo add --path <dir> --kind folder --json`. Its sidebar comment shows the last result.
@@ -148,7 +153,7 @@ After a run, the workspace comment reads `wtclean <YYYY-MM-DD>: R removed, M mer
 - wtclean does not see a checkout of a repository that it does not scan, when that checkout lies inside a worktree's build or cache folder. The checkout goes with the worktree.
 - On an older Orca server, one that cannot be told to keep the branch, Orca's `worktree rm` follows Orca's own branch rule. It can delete a merged local branch, and Orca's code suggests that it can also prune stale worktree entries. wtclean's branch rule and its promise never to prune cover only the commands that wtclean runs.
 - Only the 24-hour check protects a worktree that an idle agent in another workspace used through `git -C`.
-- The process check reads `/proc`, so it fails on macOS, which has none. The first worktree that reaches the process check stops the run with exit 2, so wtclean removes nothing there.
+- The process check reads `/proc`. Where there is no `/proc`, as on macOS, it asks `lsof`. With neither, the first worktree that reaches the process check stops the run with exit 2, so wtclean removes nothing. A failed `lsof` run does the same. prland runs the same check.
 - The process check skips other users' processes, and same-user processes it cannot read.
 - The process check compares real paths, so it does not see a process that works in the worktree through a bind mount.
 - wtclean ignores fork PRs, so a clone whose `origin` is a fork keeps its worktrees.

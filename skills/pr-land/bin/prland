@@ -17,13 +17,20 @@ In order:
              landed after the merge survives, and no git URL rewrite can redirect it.
   4 clean    only the PR's own worktree and branch, never a fork PR's. The worktree goes (git worktree remove,
              no --force) only when it sits on the PR head with no tracked changes, no untracked files and no
-             ignored files except build and cache output (node_modules, .venv, __pycache__, dist, ...).
+             ignored files except build and cache output (node_modules, .venv, __pycache__, dist, ...), and
+             when no process works in it (read from /proc, or from lsof where there is no /proc, as on macOS).
              The branch goes only if it still points at the PR head (an atomic update-ref), and its SHA is
              printed. A PR worktree missing from disk loses its registration; other worktrees are not pruned.
+             With $ORCA_CLI_COMMAND set, a worktree that Orca lists gets its card marked completed, even with
+             --keep-worktree. It goes through Orca's worktree rm (no --force) after the same checks, and stays
+             while Orca shows an agent or a terminal in it or in a child workspace, because worktree rm closes
+             them. Orca's list is read again for each worktree, before the other checks, and decides which of
+             the two removes it.
   5 sync     the main checkout fast-forwards to origin/<base>, only if it is on <base> with no tracked changes,
              and never over an ignored file the new commits start tracking.
 
-An already-merged PR skips 1 and 2. Run it from any checkout of the repo to get steps 4 and 5.
+An already-merged PR skips 1 and 2. Run it from any checkout of the repo to get steps 4 and 5. Run from inside
+the PR's worktree, it keeps that worktree, because your shell works in it.
 
 exit  0  merged (cleanup steps it skipped say why)
       1  the gate said no: not CLEAN, a draft, closed, or a verdict for another head
@@ -44,6 +51,8 @@ import time
 PR_FIELDS = ("number,title,state,isDraft,headRefName,headRefOid,baseRefName,url,isCrossRepository,mergeCommit,"
              "autoMergeRequest")
 CONFIRM_WAIT = float(os.environ.get("PRLAND_CONFIRM_WAIT", "18"))   # seconds to wait for MERGED
+ORCA_TIMEOUT, ORCA_RM_TIMEOUT = 120, 600    # seconds for one Orca CLI call, and for Orca's worktree rm
+PROC_ROOT = os.environ.get("PRLAND_PROC_ROOT", "/proc")     # tests name a missing directory to take the lsof path
 BOTS = {"codex", "sar", "ci", "all"}
 DISPOSABLE = re.compile(r"(^|/)(node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|"
                         r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.nx|\.cache|\.parcel-cache|coverage|"
@@ -53,6 +62,10 @@ DISPOSABLE = re.compile(r"(^|/)(node_modules|\.venv|venv|__pycache__|\.pytest_ca
 def die(msg, code=3):
     print("prland: " + msg, file=sys.stderr)
     sys.exit(code)
+
+
+class ToolError(Exception):
+    """cwd_users() could not list the processes. The worktree then stays, with this as the reason."""
 
 
 def run(cmd, cwd=None):
@@ -156,6 +169,161 @@ def local_data(path):
     if keep:
         return "ignored files that are not build output: %s%s" % (", ".join(keep[:4]), " ..." if len(keep) > 4 else "")
     return None
+
+
+def cwd_users(path):
+    """(pid, name) of each readable process whose working directory is path or inside it, lowest pid first. It reads
+    /proc where the host has one (Linux), and asks lsof where it has none (macOS). A process that exited during the
+    scan, or that belongs to someone else, cannot be read and is skipped. lsof escapes some bytes in the names it
+    prints. It runs in the C locale, where that form depends on the bytes alone, and path is compared in that form.
+    Two paths that lsof prints alike, such as a folder named with a caret and an A and one named with the control
+    character ^A, both count as in use. A ToolError means no way to list them: no /proc and no lsof, or an lsof run
+    that fails or lists nothing.
+    skills/cleaning-merged-worktrees/bin/wtclean and skills/pr-land/bin/prland hold the same function."""
+    where = os.path.realpath(path)
+
+    def inside(cwd):
+        if cwd.endswith(" (deleted)"):                 # the kernel's mark for a directory removed under the process
+            cwd = cwd[:-len(" (deleted)")]
+        return cwd == where or cwd.startswith(where + os.sep)
+
+    users = []
+    if os.path.isdir(PROC_ROOT):
+        try:
+            pids = sorted(int(n) for n in os.listdir(PROC_ROOT) if n.isdigit())
+        except OSError as e:
+            raise ToolError("cannot list processes: %s" % (e.strerror or e))
+        for pid in pids:
+            try:
+                if not inside(os.readlink(os.path.join(PROC_ROOT, str(pid), "cwd"))):
+                    continue
+            except OSError:
+                continue
+            try:
+                with open(os.path.join(PROC_ROOT, str(pid), "comm"), errors="replace") as f:
+                    comm = " ".join(f.read().split())  # one line, whatever the process named itself
+            except OSError:
+                comm = ""
+            users.append((pid, comm or "?"))
+        return users
+    lsof = shutil.which("lsof")
+    if not lsof:
+        raise ToolError("cannot list processes: there is no %s and no lsof on PATH" % PROC_ROOT)
+
+    def printed(ff):                                   # where as lsof prints a name in the C locale: safestrprt()
+        out = b""
+        for b in os.fsencode(where):
+            if b == 0x5c:                              # a backslash
+                out += b"\\\\"
+            elif 0x20 <= b < 0x7f:
+                out += bytes([b])
+            elif b < 0x20:                             # a control character: \t and the like, or ^A
+                out += {8: b"\\b", 9: b"\\t", 10: b"\\n", 12: b"\\f", 13: b"\\r"}.get(b, b"^" + bytes([b + 0x40]))
+            elif b == 0xff:
+                out += ff
+            else:                                      # DEL, and each byte of a non-ASCII character
+                out += b"\\x%02x" % b
+        return out
+
+    shown = {printed(b"\\xff"), printed(b"^?")}       # 0xff is \xff where char is signed, as on macOS, and ^? if not
+    try:                                               # LC_ALL=C: no locale prints a non-ASCII character as it is
+        r = subprocess.run([lsof, "-w", "-d", "cwd", "-F", "pcn"], capture_output=True, timeout=120,
+                           env=dict(os.environ, LC_ALL="C"))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise ToolError("cannot list processes: lsof did not finish (%s)" % e.__class__.__name__)
+    listed, pid, comm = False, None, ""
+    for line in r.stdout.split(b"\n"):               # per process: p<pid>, c<command>, then n<working directory>
+        tag, value = line[:1], line[1:]
+        if tag == b"p":
+            listed, pid, comm = True, int(value) if value.isdigit() else None, ""
+        elif tag == b"c":
+            comm = " ".join(value.decode("utf-8", "replace").split())
+        elif tag == b"n" and pid is not None:
+            if value.endswith(b" (deleted)"):
+                value = value[:-len(b" (deleted)")]
+            if any(value == s or value.startswith(s + b"/") for s in shown):
+                users.append((pid, comm or "?"))
+    if r.returncode != 0:                              # a partial list could leave out the process that matters
+        raise ToolError("cannot list processes: lsof exited %d" % r.returncode)
+    if not listed:                                     # it always lists this process, at least
+        raise ToolError("cannot list processes: lsof listed none")
+    return sorted(users)
+
+
+def orca(*args, timeout=ORCA_TIMEOUT):
+    """One $ORCA_CLI_COMMAND call with --json: (its result, None), or (None, why it failed)."""
+    try:
+        r = subprocess.run([os.environ["ORCA_CLI_COMMAND"]] + list(args) + ["--json"], capture_output=True,
+                           text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, "the Orca CLI did not answer (%s)" % e.__class__.__name__
+    try:
+        reply = json.loads(r.stdout)
+    except ValueError:
+        reply = None
+    if r.returncode == 0 and isinstance(reply, dict) and reply.get("ok") is True and isinstance(reply.get("result"), dict):
+        return reply["result"], None
+    error = reply.get("error") if isinstance(reply, dict) else None
+    why = (error.get("message") if isinstance(error, dict) else None) or r.stderr or r.stdout or "exit %d" % r.returncode
+    return None, " ".join(str(why).split())[:200]
+
+
+def orca_rows():
+    """This host's Orca workspaces as ({real path: [rows]}, {worktreeId: row}, None), or ({}, {}, why) when Orca's
+    list cannot be read in full. Without $ORCA_CLI_COMMAND there are none, and nothing is wrong."""
+    if not os.environ.get("ORCA_CLI_COMMAND"):
+        return {}, {}, None
+    ps, why = orca("worktree", "ps", "--limit", "100000")
+    listed = ps.get("worktrees") if ps else None
+    if why or not isinstance(listed, list) or ps.get("truncated") is not False:
+        return {}, {}, "Orca's worktree list could not be read in full" + (": " + why if why else "")
+    by_path, by_id = {}, {}
+    for row in listed:
+        if isinstance(row, dict) and isinstance(row.get("path"), str) and row.get("hostId", "local") == "local":
+            by_path.setdefault(os.path.realpath(row["path"]), []).append(row)
+            by_id[row.get("worktreeId")] = row
+    return by_path, by_id, None
+
+
+def orca_busy(found, by_id):
+    """Why Orca's worktree rm must not take this worktree, or None. found is Orca's rows for its path. An agent or a
+    terminal in it, or in any of its child workspaces and theirs, keeps it, and so does a row Orca cannot vouch for."""
+    if len(found) > 1:
+        return "Orca lists it more than once"
+    todo, seen = [(found[0], "it")], set()
+    while todo:
+        row, where = todo.pop()
+        counts = [row.get(k) for k in ("liveTerminalCount", "unverifiableTerminalCount")]
+        if not (isinstance(row.get("worktreeId"), str) and isinstance(row.get("agents"), list) and
+                all(type(c) is int for c in counts) and isinstance(row.get("hasAttachedPty"), bool) and
+                isinstance(row.get("childWorktreeIds"), list)):
+            return "Orca's row for %s lacks a field" % where
+        if row["agents"]:
+            return "Orca shows an agent in " + where
+        if any(counts) or row["hasAttachedPty"]:
+            return "Orca shows a terminal in " + where
+        for child in row["childWorktreeIds"]:
+            if child not in seen:
+                seen.add(child)
+                if not isinstance(by_id.get(child), dict):
+                    return "a child workspace that Orca did not list"
+                todo.append((by_id[child], "a child workspace"))
+    return None
+
+
+def orca_cards(main_wt, ref, by_path, dry_run):
+    """Mark the Orca card of each linked worktree on the PR branch completed. This comes before any removal, so a
+    worktree that stays shows the merge in Orca. A card that cannot be marked is reported and changes nothing else."""
+    for w in worktrees(main_wt) if by_path else []:
+        path = w["worktree"]
+        found = by_path.get(os.path.realpath(path), [])
+        if w.get("branch") != ref or path == main_wt or len(found) != 1 or not isinstance(found[0].get("worktreeId"), str):
+            continue
+        if dry_run:
+            say("dry-run", "would mark the Orca card of %s completed" % path)
+            continue
+        _, why = orca("worktree", "set", "--worktree", "id:" + found[0]["worktreeId"], "--workspace-status", "completed")
+        say("card", "%s %s" % (path, "completed in Orca" if not why else "not updated in Orca: " + why))
 
 
 def main():
@@ -325,6 +493,11 @@ def main():
         say("clean", "skipped: not run from a checkout of %s" % repo)
         return 0
     ref = "refs/heads/" + branch
+    if not p["isCrossRepository"]:
+        by_path, _, orca_why = orca_rows()
+        if orca_why:
+            say("card", "not updated in Orca: " + orca_why)
+        orca_cards(main_wt, ref, by_path, a.dry_run)
     if p["isCrossRepository"]:
         say("clean", "skipped: a fork PR's branch name can match unrelated local work")
     elif a.keep_worktree:
@@ -348,25 +521,42 @@ def main():
                     else "could not drop the registration of %s: %s" % (path, r.stderr.strip()[:160]))
                 keep_branch = keep_branch or r.returncode != 0
                 continue
-            why = local_data(path)
-            if a.allow_ignored and why and why.startswith("ignored files"):
-                why = None
+            # Orca first, read again for each worktree, then the processes, then the local checks, so that only
+            # fast git calls come between the last check and the removal. Orca removes what it lists, git the rest.
+            rows, ids, why = orca_rows()
+            found = rows.get(os.path.realpath(path), [])
+            why = why or (orca_busy(found, ids) if found else None)
+            if not why:
+                try:
+                    users = cwd_users(path)
+                except ToolError as e:
+                    users, why = [], str(e)
+                if users:
+                    why = "process %d (%s) works in it" % users[0]
+            if not why:
+                why = local_data(path)
+                if a.allow_ignored and why and why.startswith("ignored files"):
+                    why = None
             if not why and git(path, "rev-parse", "HEAD").stdout.strip() != head:
                 why = "it is not on the PR head %s" % head[:7]
             if why:
                 say("worktree", "%s left in place: %s" % (path, why))
                 keep_branch = True
             elif a.dry_run:
-                say("dry-run", "would remove worktree " + path)
+                say("dry-run", "would remove worktree %s%s" % (path, " through Orca" if found else ""))
             else:
-                r = git(main_wt, "worktree", "remove", path)
-                if r.returncode != 0:
-                    say("worktree", "remove failed, left in place: " + r.stderr.strip()[:200])
+                if found:
+                    _, err = orca("worktree", "rm", "--worktree", "id:" + found[0]["worktreeId"], timeout=ORCA_RM_TIMEOUT)
+                    ok = not os.path.lexists(path) and all(x["worktree"] != path for x in worktrees(main_wt))
+                    detail = err or "Orca said it removed it, but it is still on disk or in git's worktree list"
+                else:
+                    r = git(main_wt, "worktree", "remove", path)
+                    ok, detail = r.returncode == 0, r.stderr.strip()[:200]
+                if not ok:
+                    say("worktree", "remove failed, left in place: " + detail)
                     keep_branch = True
                 else:
-                    say("worktree", "removed " + path)
-                    if here == path or here.startswith(path + os.sep):
-                        say("note", "your shell was inside it: cd %s" % main_wt)
+                    say("worktree", "removed %s%s" % (path, " through Orca" if found else ""))
         tip = git(main_wt, "rev-parse", "--verify", "--quiet", ref).stdout.strip()
         if not tip:
             pass
