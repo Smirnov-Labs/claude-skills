@@ -116,7 +116,7 @@ When voice is appropriate, avoid uniform sentence structures, bloodless neutrali
 **Before:**
 > Additionally, a distinctive feature of Somali cuisine is the incorporation of camel meat. An enduring testament to Italian colonial influence is the widespread adoption of pasta in the local culinary landscape, showcasing how these dishes have integrated into the traditional diet.
 **After:**
-> Somali cuisine also includes camel meat, which is considered a delicacy. Pasta dishes, introduced during Italian colonization, remain common, especially in the south.
+> Somali cuisine also includes camel meat. Pasta dishes, introduced during Italian colonization, remain common.
 
 ### 8. Avoidance of "is"/"are" (Copula Avoidance)
 
@@ -125,7 +125,7 @@ When voice is appropriate, avoid uniform sentence structures, bloodless neutrali
 **Before:**
 > Gallery 825 serves as LAAA's exhibition space for contemporary art. The gallery features four separate spaces and boasts over 3,000 square feet.
 **After:**
-> Gallery 825 is LAAA's exhibition space for contemporary art. The gallery has four rooms totaling 3,000 square feet.
+> Gallery 825 is LAAA's exhibition space for contemporary art. The gallery has four separate spaces and over 3,000 square feet.
 
 ### 9. Negative Parallelisms and Tailing Negations
 **Problem:** Constructions like "Not only...but..." or "It's not just about..., it's..." are overused. So are clipped tailing-negation fragments such as "no guessing" or "no wasted motion" tacked onto the end of a sentence instead of written as a real clause.
@@ -143,7 +143,7 @@ When voice is appropriate, avoid uniform sentence structures, bloodless neutrali
 **Before:**
 > The event features keynote sessions, panel discussions, and networking opportunities. Attendees can expect innovation, inspiration, and industry insights.
 **After:**
-> The event includes talks and panels. There's also time for informal networking between sessions.
+> The event includes talks and panels. There's also time for networking.
 
 ### 11. Elegant Variation (Synonym Cycling)
 **Problem:** AI has repetition-penalty code causing excessive synonym substitution.
@@ -157,7 +157,7 @@ When voice is appropriate, avoid uniform sentence structures, bloodless neutrali
 **Before:**
 > Our journey through the universe has taken us from the singularity of the Big Bang to the grand cosmic web, from the birth and death of stars to the enigmatic dance of dark matter.
 **After:**
-> The book covers the Big Bang, star formation, and current theories about dark matter.
+> It covers the Big Bang, the cosmic web, the birth and death of stars, and dark matter.
 
 ### 13. Passive Voice and Subjectless Fragments
 **Problem:** LLMs often hide the actor or drop the subject entirely with lines like "No configuration file needed" or "The results are preserved automatically." Rewrite these when active voice makes the sentence clearer and more direct.
@@ -196,7 +196,7 @@ Before returning the final rewrite, scan it for `—` and `–`. Any hit means t
 > - **Performance:** Performance has been enhanced through optimized algorithms.
 > - **Security:** Security has been strengthened with end-to-end encryption.
 **After:**
-> The update improves the interface, speeds up load times through optimized algorithms, and adds end-to-end encryption.
+> The update improves the interface, speeds things up with optimized algorithms, and adds end-to-end encryption.
 
 ### 17. Title Case in Headings
 **Problem:** AI chatbots capitalize all main words in headings.
@@ -212,7 +212,7 @@ Before returning the final rewrite, scan it for `—` and `–`. Any hit means t
 > 💡 **Key Insight:** Users prefer simplicity
 > ✅ **Next Steps:** Schedule follow-up meeting
 **After:**
-> The product launches in Q3. User research showed a preference for simplicity. Next step: schedule a follow-up meeting.
+> The product launches in Q3. Users prefer simplicity. Next step: schedule a follow-up meeting.
 
 ### 19. Curly Quotation Marks
 **Problem:** ChatGPT uses curly quotes (“...”) instead of straight quotes ("...").
@@ -228,7 +228,7 @@ Before returning the final rewrite, scan it for `—` and `–`. Any hit means t
 **Words to watch:** I hope this helps, Of course!, Certainly!, You're absolutely right!, Would you like..., Want me to...?, Want me to give examples?, Should I continue?, let me know, here is a...
 **Problem:** Text meant as chatbot correspondence gets pasted as content.
 **Before:**
-> Here is an overview of the French Revolution. I hope this helps! Let me know if you'd like me to expand on any section.
+> Here is an overview of the French Revolution. It began in 1789 when financial crisis and food shortages led to widespread unrest. I hope this helps! Let me know if you'd like me to expand on any section.
 **After:**
 > The French Revolution began in 1789 when financial crisis and food shortages led to widespread unrest.
 
@@ -301,7 +301,7 @@ Before returning the final rewrite, scan it for `—` and `–`. Any hit means t
 **Phrases to watch:** Let's dive in, let's explore, let's break this down, here's what you need to know, now let's look at, without further ado
 **Problem:** LLMs announce what they are about to do instead of doing it. This meta-commentary slows the writing down and gives it a tutorial-script feel.
 **Before:**
-> Let's dive into how caching works in Next.js. Here's what you need to know.
+> Let's dive into how caching works in Next.js. Here's what you need to know: it caches data at multiple layers, including request memoization, the data cache, and the router cache.
 **After:**
 > Next.js caches data at multiple layers, including request memoization, the data cache, and the router cache.
 
@@ -323,7 +323,7 @@ Before returning the final rewrite, scan it for `—` and `–`. Any hit means t
 ### 30. Diff-Anchored Writing
 **Problem:** Documentation or comments written as if narrating a change rather than describing the thing as it is. Unless the document is inherently version-scoped (changelogs, release notes, migration guides), it should read coherently without knowing what changed in the last commit.
 **Before:**
-> This function was added to replace the previous approach of iterating through all items, which caused O(n²) performance.
+> This function was added to replace the previous approach of iterating through all items, which caused O(n²) performance. It now uses a hash map for O(1) lookups.
 **After:**
 > This function uses a hash map for O(1) lookups, avoiding the O(n²) cost of naive iteration.
 
