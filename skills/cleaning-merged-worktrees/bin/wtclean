@@ -1,0 +1,810 @@
+#!/usr/bin/env python3
+"""wtclean: remove git worktrees whose pull request merged and that hold nothing local.
+
+  wtclean [--apply | --check] [--repo PATH]...
+
+  (no flag)  dry run: print what it would remove and what it keeps, with one reason for each worktree
+  --apply    remove them, then print the same report with what happened
+  --check    print one line of counts and nothing else, for a precheck
+  --repo     also scan the repository at PATH (repeatable)
+
+It scans the git repositories Orca has registered on this host, plus each --repo. Without Orca it scans each
+--repo, or else the repository it runs in. The Orca CLI is $ORCA_CLI_COMMAND, else orca-ide on PATH. If Orca looks
+installed (ORCA_USER_DATA_PATH is set, or ~/.config/orca exists) but neither is found, it stops with an error.
+It appends ~/.local/bin to PATH, so gh is found even under an Orca server. It needs git 2.31 or newer, and an older git
+is an error. It drops GIT_DIR and git's other repository-local variables before it runs a command.
+
+A linked worktree goes only when all six conditions hold:
+  1  it has a branch, is not locked, and is not an agent worktree (an agent-* directory or worktree-agent-* branch)
+  2  GitHub has a merged pull request from that branch into the same repository, and no open one
+  3  HEAD is that pull request's head commit or an ancestor of it, so every commit is on GitHub
+  4  it holds nothing local: no changed tracked file, no untracked file, no ignored file except build output
+  5  nothing uses it: no Orca agent or terminal, no child workspace with an agent, no process working inside it
+  6  nobody touched it for 24 hours: its git index and HEAD log are more than a day old
+An initialized submodule also keeps a worktree: git will not remove one without --force. So does a sparse checkout,
+whose skip-worktree entries count as local files. Orca listing the worktree twice keeps it too, and so does a child
+workspace that Orca does not list. Another checkout or an Orca workspace inside the worktree keeps it as well, because
+removing the worktree deletes it. The checkout can belong to any scanned repository, and the workspace can be idle. A
+folder above the worktree does not count.
+Every other worktree stays, with its reason. A problem with one worktree is a reason to keep it, not an error.
+--apply checks conditions 4 to 6, and what lies inside the worktree, again just before each removal, and a worktree that
+fails that check stays. It removes a worktree that Orca lists with Orca's worktree rm, and any other with git worktree
+remove. A worktree that git refuses to remove stays too.
+Errors are failures of gh, the Orca CLI, git worktree list or wtclean itself, and the run stops at the first one. Orca's
+worktree list is an error when it looks cut off or is for another host. It is also an error when any field that a row
+needs is missing or unusable. So is a failure of Orca's worktree rm, which can mean that Orca is down. An error during a
+removal names the worktree, which can be half deleted. Earlier removals stay done, and the report lists them.
+No removal uses --force. wtclean never runs git worktree prune and never deletes a remote branch. It deletes the local
+branch only when the branch is at the pull request head. The report says what became of the branch.
+
+Report:
+  skip  <path>: not a git repository     an Orca repository that is missing or bare; not an error
+  repo <main checkout> (<owner/repo> | no GitHub remote)
+    would remove  <path>  <branch>  #<pull request>
+    removed       <path>  <branch>  #<pull request>; <what happened to the branch>
+    kept          <path>  <branch>: <reason>[ (merged #<pull request>)]
+    error         <where>: <message>
+  wtclean: <n> to remove, <k> kept (<m> merged), <e> errors
+Each would remove or removed line prints at once, so a run that is stopped still shows what it removed. A repository's
+kept lines print after its last one.
+--apply ends with "<n> removed". --check prints only "wtclean: <n> can go, <e> errors". A usage error prints
+"wtclean: usage error: <message>" to stderr in every mode.
+
+exit  0  done (--check: something can go, or something failed)
+      1  --check only: nothing to do
+      2  an error: a tool failed, or wtclean crashed
+      3  usage error
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+# https://github.com/o/r(.git), git@github.com:o/r(.git) and ssh://git@github.com/o/r(.git)
+GITHUB_REMOTE = re.compile(r"^(?:(?:https?|git|ssh)://(?:[^@/]+@)?github\.com(?::\d+)?/|git@github\.com:)"
+                           r"([\w.-]+/[\w.-]+?)(?:\.git)?/?$", re.IGNORECASE)
+DAY = 86400     # seconds
+PR_LIMIT = 100  # pull requests that one gh pr list reads for a branch
+TIMEOUT = 120   # seconds that a call to git, gh or the Orca CLI gets
+REMOVE_TIMEOUT = 600    # seconds for a removal: deleting a large worktree can take minutes
+PROC_ROOT = os.environ.get("WTCLEAN_PROC_ROOT", "/proc")    # tests name a missing directory to take the lsof path
+# git's repository-local variables, as `git rev-parse --local-env-vars` prints them (git 2.56). A git hook or a dotfiles
+# setup can export them, and GIT_DIR then points every git call at one repository, so run() drops them all.
+LOCAL_GIT_VARS = frozenset((
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR"))
+
+
+class ToolError(Exception):
+    """A failure of gh, the Orca CLI or the environment. It stops the run and counts as an error."""
+
+
+class UsageError(Exception):
+    """A bad command line, or no repository to scan. Exit 3."""
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise UsageError(message)
+
+
+QUIET = False       # --check sets it. say() then prints nothing, and main() prints the one line of counts itself.
+
+
+def say(text):
+    if not QUIET:
+        print(text, flush=True)
+
+
+def report_line(tag, text):
+    return "  %-14s%s" % (tag, text)
+
+
+def run(cmd, cwd=None, timeout=TIMEOUT):
+    """Run cmd and capture its output. GIT_OPTIONAL_LOCKS=0 keeps git's status polling from rewriting an index, and
+    git's repository-local variables (LOCAL_GIT_VARS) stay out of the environment."""
+    env = {name: value for name, value in os.environ.items() if name not in LOCAL_GIT_VARS}
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    try:
+        return subprocess.run(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise ToolError("%s did not finish in %d seconds" % (cmd[0], timeout))
+    except OSError as e:
+        raise ToolError("cannot run %s: %s" % (cmd[0], e.strerror or e))
+
+
+def git(where, *args, timeout=TIMEOUT):
+    return run(["git", "-C", where] + list(args), timeout=timeout)
+
+
+def check_git():
+    """Stop with a ToolError unless git is 2.31 or newer. An older git prints --path-format=absolute back as its own
+    line, so the 24-hour and submodule checks would read the wrong paths and could let a worktree go."""
+    version = run(["git", "--version"]).stdout.strip()
+    m = re.match(r"git version (\d+)\.(\d+)", version)
+    if not m or (int(m.group(1)), int(m.group(2))) < (2, 31):
+        raise ToolError("wtclean needs git 2.31 or newer, and git --version says: %s" % (version or "nothing"))
+
+
+def orca_cli():
+    """The Orca CLI: $ORCA_CLI_COMMAND, else orca-ide on PATH. None when Orca is not in use on this host."""
+    cli = os.environ.get("ORCA_CLI_COMMAND") or shutil.which("orca-ide")
+    if not cli and (os.environ.get("ORCA_USER_DATA_PATH") or os.path.exists(os.path.expanduser("~/.config/orca"))):
+        raise ToolError("Orca looks installed (ORCA_USER_DATA_PATH is set or ~/.config/orca exists), but no Orca CLI "
+                        "was found: set ORCA_CLI_COMMAND or put orca-ide on PATH")
+    return cli
+
+
+def orca(cli, *args, timeout=TIMEOUT):
+    """Run one Orca CLI command with --json and return its `result`. Orca's own error text becomes the ToolError."""
+    r = run([cli] + list(args) + ["--json"], timeout=timeout)
+    try:
+        reply = json.loads(r.stdout)
+    except ValueError:
+        reply = None
+    if not isinstance(reply, dict):
+        reply = {}
+    if r.returncode == 0 and reply.get("ok") is True and isinstance(reply.get("result"), dict):
+        return reply["result"]
+    error = reply.get("error")
+    message = error.get("message") if isinstance(error, dict) else None
+    if not message:
+        detail = " ".join((r.stderr or r.stdout).split())[:200]
+        message = "Orca CLI gave an unexpected answer to '%s' (exit %d)%s" % (" ".join(args), r.returncode,
+                                                                            ": " + detail if detail else "")
+    raise ToolError(str(message))
+
+
+def parse_worktrees(text):
+    """git worktree list --porcelain output as dicts, the main checkout first. The parser is the one in
+    skills/pr-land/bin/prland."""
+    out, cur = [], {}
+    for line in text.splitlines() + [""]:
+        if not line.strip():
+            if cur:
+                out.append(cur)
+            cur = {}
+            continue
+        key, _, val = line.partition(" ")
+        cur[key] = val if val else True
+    return out
+
+
+def worktrees(main):
+    """The worktrees of the repository at main, the main checkout first. A git worktree list that fails is a ToolError,
+    even when git printed part of the list first: a worktree that it leaves out can hold the branch, or lie inside a
+    worktree that goes."""
+    r = git(main, "worktree", "list", "--porcelain")
+    if r.returncode != 0:
+        detail = " ".join(r.stderr.split())[:200]
+        raise ToolError("git worktree list failed in %s (exit %d)%s" % (main, r.returncode,
+                                                                       ": " + detail if detail else ""))
+    return parse_worktrees(r.stdout)
+
+
+def main_checkout(path):
+    """Real path of the main checkout of the repository that holds path, or None if there is none or it is bare. It
+    reads git's list even when git fails: no record means no repository, and a repository whose list breaks after its
+    main checkout is still scanned, where the strict reads of worktrees() report the failure as an error."""
+    if not isinstance(path, str) or not os.path.isdir(path):    # git -C "" would quietly mean the current directory
+        return None
+    first = (parse_worktrees(git(path, "worktree", "list", "--porcelain").stdout) or [{}])[0]
+    if not first.get("worktree") or first.get("bare"):
+        return None
+    return os.path.realpath(first["worktree"])
+
+
+def checkout_paths(main):
+    """The real path of every checkout of the repository at main: the main checkout and each linked worktree.
+    worktrees() raises when git fails. git always lists the main checkout, so an empty answer is a ToolError too: a
+    checkout it does not show could lie inside a worktree that goes."""
+    listed = worktrees(main)
+    if not listed:
+        raise ToolError("git could not list the worktrees of %s" % main)
+    return [os.path.realpath(w["worktree"]) for w in listed]
+
+
+def repos(cli, extra):
+    """Main-checkout real paths to scan, each once, in order: Orca's git repositories, then each --repo.
+    Without an Orca CLI and without --repo, the repository that holds the working directory."""
+    named = []
+    for path in extra:
+        top = main_checkout(path)
+        if not top:
+            raise UsageError("--repo %s is not a git repository, or it is a bare one" % path)
+        named.append(top)
+    if not cli and not extra:
+        top = main_checkout(os.getcwd())
+        if not top:
+            raise UsageError("not inside a git repository: run wtclean in one, or pass --repo PATH")
+        named.append(top)
+    found = []
+    if cli:
+        listed = orca(cli, "repo", "list").get("repos")
+        if not isinstance(listed, list):
+            raise ToolError("Orca's repo list has no repos array")
+        for row in listed:
+            if not isinstance(row, dict) or row.get("kind") != "git":
+                continue
+            top = main_checkout(row.get("path"))
+            if top:
+                found.append(top)
+            else:
+                say("skip  %s: not a git repository" % row.get("path"))
+    return list(dict.fromkeys(found + named))
+
+
+def slug(url):
+    """owner/repo for a github.com remote URL, else None. Pass the raw remote.origin.url: `git remote get-url`
+    applies url.<base>.insteadOf, and the raw value is what names the repository."""
+    m = GITHUB_REMOTE.match(url.strip())
+    return m.group(1) if m else None
+
+
+def branch_of(wt):
+    """The short branch name of a worktree record, or None when HEAD is detached."""
+    ref = wt.get("branch")
+    if not isinstance(ref, str):
+        return None
+    return ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+
+
+def gh_answer(r, what):
+    """The JSON that a finished gh run printed. A failed run, or output that is not JSON, is a ToolError."""
+    if r.returncode == 0:
+        try:
+            return json.loads(r.stdout)
+        except ValueError:
+            pass
+    detail = " ".join((r.stderr or r.stdout).split())[:200]
+    raise ToolError("%s gave an unexpected answer (exit %d)%s" % (what, r.returncode, ": " + detail if detail else ""))
+
+
+def contains(main, repo_slug, head, pr_head):
+    """True when head is a pull request's head commit pr_head, or an ancestor of it. Git answers when it has
+    pr_head. If not, GitHub's compare API does: HTTP 404 means GitHub has never seen head, so it is not in the PR."""
+    if head == pr_head:
+        return True
+    if git(main, "cat-file", "-e", pr_head + "^{commit}").returncode == 0:
+        return git(main, "merge-base", "--is-ancestor", head, pr_head).returncode == 0
+    r = run(["gh", "api", "repos/%s/compare/%s...%s" % (repo_slug, head, pr_head)], cwd="/")
+    if r.returncode != 0 and "HTTP 404" in r.stderr:
+        return False
+    answer = gh_answer(r, "gh api compare %s...%s" % (head[:10], pr_head[:10]))
+    return isinstance(answer, dict) and answer.get("behind_by") == 0     # no commit of head is missing from pr_head
+
+
+def merged_pr(main, repo_slug, branch, head):
+    """Check the branch's pull requests into this repository (not from forks) against the worktree's HEAD.
+    Returns (None, pr) when a merged one holds head and none is open. Otherwise (reason, pr): pr is the newest
+    merged one if head is in none of them, else None. A list as long as PR_LIMIT may have left an open one out, so it
+    keeps the worktree."""
+    r = run(["gh", "pr", "list", "-R", repo_slug, "--head", branch, "--state", "all", "--limit", str(PR_LIMIT),
+             "--json", "number,state,headRefOid,isCrossRepository,url,mergedAt"], cwd="/")
+    prs = gh_answer(r, "gh pr list for %s" % branch)
+    if not isinstance(prs, list) or not all(isinstance(p, dict) for p in prs):
+        raise ToolError("gh pr list for %s did not give a list of pull requests" % branch)
+    if len(prs) >= PR_LIMIT:
+        return "too many pull requests from this branch to check them all", None
+    prs = [p for p in prs if not p.get("isCrossRepository")]
+    for p in prs:
+        if p.get("state") == "OPEN":
+            return "open pull request #%s" % p["number"], None
+    merged = sorted((p for p in prs if p.get("state") == "MERGED"), key=lambda p: p.get("mergedAt") or "",
+                    reverse=True)
+    if not merged:
+        return "no merged pull request", None
+    for p in merged:
+        if contains(main, repo_slug, head, p["headRefOid"]):
+            return None, p
+    return "commits not in the pull request", merged[0]
+
+
+# DISPOSABLE, SDK_KEYS, not_build_output and local_data are adapted from skills/pr-land/bin/prland. They differ in three
+# ways. git lists the untracked and ignored files NUL-separated here, so a name made of spaces still counts.
+# DISPOSABLE ends with \Z, not $: a raw name can end in a newline, and $ also matches just before one, so "build\n"
+# would count as build output. And any skip-worktree entry keeps the worktree, whether or not its file exists. Their
+# git calls go through git() above, which sets GIT_OPTIONAL_LOCKS=0, so a look at a worktree never rewrites its index
+# or resets its 24-hour clock. Keep the reason strings as they are: the tests match them. tests/prland.sh fails if
+# DISPOSABLE, SDK_KEYS or sdk_paths_only here differs from prland's, apart from \Z.
+DISPOSABLE = re.compile(r"(^|/)(node_modules|\.venv|venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|"
+                        r"\.tox|\.nox|dist|build|target|\.next|\.nuxt|\.turbo|\.nx|\.cache|\.parcel-cache|coverage|"
+                        r"\.gradle|\.dart_tool|[^/]+\.egg-info)(/|\Z)|\.py[co]\Z|(^|/)\.DS_Store\Z|"
+                        # what flutter pub get and flutter build write next to an app's sources
+                        r"(^|/)(\.flutter-plugins(-dependencies)?|GeneratedPluginRegistrant\.(java|h|m))\Z|"
+                        r"(^|/)Flutter/(Generated\.xcconfig|flutter_export_environment\.sh)\Z|"
+                        r"(^|/)[Ff]lutter/ephemeral(/|\Z)")
+# The keys that Android Studio and Flutter write to an Android project's local.properties, and write again
+SDK_KEYS = {"sdk.dir", "ndk.dir", "cmake.dir", "flutter.sdk", "flutter.buildMode", "flutter.versionName",
+            "flutter.versionCode"}
+
+
+def nul_list(text):
+    """The names in git's -z output, exactly as git gives them. Only the empty string after the final NUL goes."""
+    names = text.split("\0")
+    if names[-1] == "":
+        names.pop()
+    return names
+
+
+def printable(name):
+    """A file name for the report, on one line: a newline or another control character shows as its escape code."""
+    return "".join(c if c.isprintable() else repr(c)[1:-1] for c in name)
+
+
+def local_data(path):
+    """Why removing this worktree would lose data, or None. Config-independent, and fails closed."""
+    tracked = git(path, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none")
+    untracked = git(path, "ls-files", "-z", "--others", "--exclude-standard")
+    ignored = git(path, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")
+    if tracked.returncode or untracked.returncode or ignored.returncode:
+        return "git could not inspect it"
+    if tracked.stdout.strip():
+        return "%d changed tracked files" % len(tracked.stdout.splitlines())
+    flags = git(path, "ls-files", "-v", "-z")
+    if flags.returncode:
+        return "git could not read its index flags"
+    hidden = []
+    for entry in flags.stdout.split("\0"):
+        tag, _, name = entry.partition(" ")
+        # assume-unchanged (a lowercase tag) and skip-worktree (S) hide edits from git status. A skip-worktree entry
+        # counts whether or not its file exists: a sparse checkout's state is local too.
+        if tag[:1].islower() or tag == "S":
+            hidden.append(name)
+    if hidden:
+        return ("%d tracked files are marked assume-unchanged or skip-worktree, so status cannot vouch for them"
+                % len(hidden))
+    loose = nul_list(untracked.stdout)
+    if loose:
+        return "%d untracked files" % len(loose)
+    keep = []
+    for p in nul_list(ignored.stdout):   # git can list a folder and its files, so a file can come up more than once
+        keep += [f for f in not_build_output(path, p) if f not in keep]
+    if keep:
+        return "ignored files that are not build output: %s%s" % (", ".join(printable(p) for p in keep[:4]),
+                                                                  " ..." if len(keep) > 4 else "")
+    return None
+
+
+def sdk_paths_only(fp):
+    """True when a local.properties holds only keys in SDK_KEYS: paths on this machine, and build values that the next
+    build writes again. Any other key, an API key for one, keeps the worktree. Fails closed."""
+    if not os.path.isfile(fp):   # a FIFO or a socket would block open()
+        return False
+    try:
+        with open(fp, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return False
+    keys = [ln.split("=", 1)[0].strip() for ln in lines if ln.strip() and not ln.lstrip().startswith(("#", "!"))]
+    return bool(keys) and all(k in SDK_KEYS for k in keys)
+
+
+def not_build_output(path, name):
+    """The files under a name from git's ignored list that are not build or cache output, or [] when all of it is. git
+    names the untracked folders that hold only ignored files, such as the one around GeneratedPluginRegistrant.java,
+    and a folder that an ignore rule matches comes alone. So a folder that is not on the list is listed again, and the
+    files in it that do not count are named, not the folder. The pathspec is literal, so a folder named like a glob
+    pattern matches only itself. A folder that git cannot list, or lists as empty, is named itself. Fails closed."""
+    bare = name.rstrip("/")
+    if DISPOSABLE.search(bare):
+        return []
+    if not name.endswith("/"):
+        sdk_only = os.path.basename(bare) == "local.properties" and sdk_paths_only(os.path.join(path, bare))
+        return [] if sdk_only else [name]
+    inside = git(path, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", ":(literal)" + name)
+    files = nul_list(inside.stdout) if inside.returncode == 0 else []
+    # a name in it that ends in / is a nested repository, and counts as kept
+    return [f for f in files if f.endswith("/") or not_build_output(path, f)] if files else [name]
+
+
+def has_submodules(path):
+    """True when git would refuse `worktree remove` over submodules: the worktree's git directory has a modules
+    directory, or a gitlink (mode 160000) in its index has a .git inside its directory. Fails closed."""
+    r = git(path, "rev-parse", "--path-format=absolute", "--git-path", "modules")
+    if r.returncode or os.path.isdir(r.stdout.strip()):
+        return True
+    r = git(path, "ls-files", "--stage", "-z")
+    if r.returncode:
+        return True
+    for entry in r.stdout.split("\0"):
+        meta, _, name = entry.partition("\t")
+        if meta.startswith("160000 ") and os.path.lexists(os.path.join(path, name, ".git")):
+            return True
+    return False
+
+
+def is_count(value):
+    """True for a whole number of zero or more. A bool is not one, though Python counts it as an int."""
+    return type(value) is int and value >= 0
+
+
+# The fields of an Orca worktree row that decide use, each with a test for a usable value. A null or wrongly typed one
+# is as bad as a missing one: a null agents list or a null hasAttachedPty would read as nothing in use.
+ROW_FIELDS = {
+    "path": lambda v: isinstance(v, str) and os.path.isabs(v),
+    "worktreeId": lambda v: isinstance(v, str) and v != "",
+    "agents": lambda v: isinstance(v, list),
+    "liveTerminalCount": is_count,
+    "unverifiableTerminalCount": is_count,
+    "hasAttachedPty": lambda v: isinstance(v, bool),
+    "childWorktreeIds": lambda v: isinstance(v, list) and all(isinstance(c, str) for c in v),
+}
+
+
+def orca_rows(cli):
+    """Orca's worktree rows as {"by_path": {real path: [rows]}, "by_id": {worktreeId: row}}, both empty without Orca.
+    A list that may be partial or from another host is a ToolError, because a worktree it does not show would read as
+    unused. So is a row that lacks a usable value for any field in ROW_FIELDS."""
+    rows = {"by_path": {}, "by_id": {}}
+    if not cli:
+        return rows
+    ps = orca(cli, "worktree", "ps", "--limit", "100000")
+    listed = ps.get("worktrees")
+    if not isinstance(listed, list):
+        raise ToolError("Orca's worktree list has no worktrees array")
+    if ps.get("truncated") is not False:
+        raise ToolError("Orca's worktree list is truncated, or does not say that it is complete")
+    total = ps.get("totalCount")
+    if not is_count(total) or total != len(listed):
+        raise ToolError("Orca's worktree list does not add up (rows: %d, totalCount: %s)" % (len(listed), total))
+    scope = ps.get("hostScope")
+    hosts = scope.get("hostIds") if isinstance(scope, dict) else None
+    if hosts != ["local"]:
+        raise ToolError("Orca's worktree list is not for this host alone (hostIds: %s)" % json.dumps(hosts))
+    for row in listed:
+        bad = [name for name, usable in ROW_FIELDS.items() if not isinstance(row, dict) or not usable(row.get(name))]
+        if bad:
+            raise ToolError("Orca's worktree list has a row with a missing or unusable field: %s" % ", ".join(bad))
+        rows["by_path"].setdefault(os.path.realpath(row["path"]), []).append(row)
+        rows["by_id"][row["worktreeId"]] = row
+    return rows
+
+
+def cwd_users(path):
+    """(pid, name) of each readable process whose working directory is path or inside it, lowest pid first. It reads
+    /proc where the host has one (Linux), and asks lsof where it has none (macOS). A process that exited during the
+    scan, or that belongs to someone else, cannot be read and is skipped. lsof escapes some bytes in the names it
+    prints. It runs in the C locale, where that form depends on the bytes alone, and path is compared in that form.
+    Two paths that lsof prints alike, such as a folder named with a caret and an A and one named with the control
+    character ^A, both count as in use. A ToolError means no way to list them: no /proc and no lsof, or an lsof run
+    that fails or lists nothing.
+    skills/cleaning-merged-worktrees/bin/wtclean and skills/pr-land/bin/prland hold the same function."""
+    where = os.path.realpath(path)
+
+    def inside(cwd):
+        if cwd.endswith(" (deleted)"):                 # the kernel's mark for a directory removed under the process
+            cwd = cwd[:-len(" (deleted)")]
+        return cwd == where or cwd.startswith(where + os.sep)
+
+    users = []
+    if os.path.isdir(PROC_ROOT):
+        try:
+            pids = sorted(int(n) for n in os.listdir(PROC_ROOT) if n.isdigit())
+        except OSError as e:
+            raise ToolError("cannot list processes: %s" % (e.strerror or e))
+        for pid in pids:
+            try:
+                if not inside(os.readlink(os.path.join(PROC_ROOT, str(pid), "cwd"))):
+                    continue
+            except OSError:
+                continue
+            try:
+                with open(os.path.join(PROC_ROOT, str(pid), "comm"), errors="replace") as f:
+                    comm = " ".join(f.read().split())  # one line, whatever the process named itself
+            except OSError:
+                comm = ""
+            users.append((pid, comm or "?"))
+        return users
+    lsof = shutil.which("lsof")
+    if not lsof:
+        raise ToolError("cannot list processes: there is no %s and no lsof on PATH" % PROC_ROOT)
+
+    def printed(ff):                                   # where as lsof prints a name in the C locale: safestrprt()
+        out = b""
+        for b in os.fsencode(where):
+            if b == 0x5c:                              # a backslash
+                out += b"\\\\"
+            elif 0x20 <= b < 0x7f:
+                out += bytes([b])
+            elif b < 0x20:                             # a control character: \t and the like, or ^A
+                out += {8: b"\\b", 9: b"\\t", 10: b"\\n", 12: b"\\f", 13: b"\\r"}.get(b, b"^" + bytes([b + 0x40]))
+            elif b == 0xff:
+                out += ff
+            else:                                      # DEL, and each byte of a non-ASCII character
+                out += b"\\x%02x" % b
+        return out
+
+    shown = {printed(b"\\xff"), printed(b"^?")}       # 0xff is \xff where char is signed, as on macOS, and ^? if not
+    try:                                               # LC_ALL=C: no locale prints a non-ASCII character as it is
+        r = subprocess.run([lsof, "-w", "-d", "cwd", "-F", "pcn"], capture_output=True, timeout=120,
+                           env=dict(os.environ, LC_ALL="C"))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise ToolError("cannot list processes: lsof did not finish (%s)" % e.__class__.__name__)
+    listed, pid, comm = False, None, ""
+    for line in r.stdout.split(b"\n"):               # per process: p<pid>, c<command>, then n<working directory>
+        tag, value = line[:1], line[1:]
+        if tag == b"p":
+            listed, pid, comm = True, int(value) if value.isdigit() else None, ""
+        elif tag == b"c":
+            comm = " ".join(value.decode("utf-8", "replace").split())
+        elif tag == b"n" and pid is not None:
+            if value.endswith(b" (deleted)"):
+                value = value[:-len(b" (deleted)")]
+            if any(value == s or value.startswith(s + b"/") for s in shown):
+                users.append((pid, comm or "?"))
+    if r.returncode != 0:                              # a partial list could leave out the process that matters
+        raise ToolError("cannot list processes: lsof exited %d" % r.returncode)
+    if not listed:                                     # it always lists this process, at least
+        raise ToolError("cannot list processes: lsof listed none")
+    return sorted(users)
+
+
+def busy(path, rows):
+    """Why something uses the worktree at path, or None. Orca's row for it comes first: an agent in any state, a live,
+    unverifiable or attached terminal, a child workspace with an agent or one Orca did not list. Then any process whose
+    working directory is inside it. A path that Orca lists twice stays, because Orca's view of it is in doubt."""
+    found = rows["by_path"].get(os.path.realpath(path), [])
+    if len(found) > 1:
+        return "Orca lists it more than once"
+    if found:
+        row = found[0]
+        if row["agents"]:
+            return "in use: %d agents in Orca" % len(row["agents"])
+        if row["liveTerminalCount"] > 0:
+            return "in use: %d live terminals" % row["liveTerminalCount"]
+        if row["unverifiableTerminalCount"] > 0:
+            return "in use: terminals Orca cannot verify"
+        if row["hasAttachedPty"]:
+            return "in use: a terminal is attached"
+        for child in row["childWorktreeIds"]:
+            kid = rows["by_id"].get(child)
+            if kid is None:
+                return "in use: a child workspace Orca did not list"
+            if kid["agents"]:
+                return "in use: a child workspace has an agent"
+    users = cwd_users(path)
+    if users:
+        pid, comm = users[0]
+        return "in use: process %d (%s) works in it" % (pid, comm)
+    return None
+
+
+def mtime(path):
+    """The modification time of path in epoch seconds, or None when it cannot be read."""
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return None
+
+
+def last_touched(path):
+    """Epoch seconds of the latest sign of use: the newer mtime of the worktree's git index and HEAD log, which git
+    rewrites on commit, checkout, reset and add. The directory's mtime if neither exists, and now if even that is
+    unreadable, so a doubt keeps the worktree."""
+    stamps = []
+    for name in ("index", "logs/HEAD"):
+        stamp = mtime(git(path, "rev-parse", "--path-format=absolute", "--git-path", name).stdout.strip())
+        if stamp is not None:
+            stamps.append(stamp)
+    if stamps:
+        return max(stamps)
+    stamp = mtime(path)
+    return time.time() if stamp is None else stamp
+
+
+def inside(path, rows, checkouts):
+    """Why something else lives inside the worktree at path, or None: a checkout in checkouts ({main checkout: [real
+    paths]}) or a workspace in Orca's rows, whatever its state, whose real path lies strictly inside it. Removing the
+    worktree would delete that directory. A folder above the worktree never counts: Orca can list one as high as a home
+    directory."""
+    top = os.path.realpath(path) + os.sep
+    for paths in checkouts.values():
+        for other in paths:
+            if other.startswith(top):
+                return "another checkout lies inside it: " + other
+    for other in rows["by_path"]:
+        if other.startswith(top):
+            return "an Orca workspace lies inside it: " + other
+    return None
+
+
+def keep_reason(path, rows, checkouts):
+    """Why conditions 4 to 6, or what lies inside it, keep the worktree at path, or None when they let it go. The first
+    failing check gives the reason, in this order: a checkout or Orca workspace inside it, local files, initialized
+    submodules, use, the last 24 hours. classify() asks at scan time, and remove() asks again with fresh rows and a
+    fresh list of the repository's checkouts just before a removal. One function serves both, so a new condition
+    reaches both."""
+    # nothing else lives inside it: the removal would delete that too
+    nested = inside(path, rows, checkouts)
+    if nested:
+        return nested
+    # condition 4: nothing local
+    local = local_data(path)
+    if local:
+        return "local files: " + local
+    if has_submodules(path):
+        return "initialized submodules"
+    # condition 5: nothing uses it
+    use = busy(path, rows)
+    if use:
+        return use
+    # condition 6: nobody touched it for 24 hours
+    if time.time() - last_touched(path) < DAY:
+        return "touched in the last 24 hours"
+    return None
+
+
+def classify(main, wt, repo_slug, rows, checkouts):
+    """Decide one linked worktree: (None, pr) lets it go, (reason, pr) keeps it. pr is the branch's merged pull
+    request once the PR check has found one (the newest, when HEAD is in none), else None. The checks run in
+    order, and the first failure keeps it."""
+    path, branch = wt["worktree"], branch_of(wt)
+    if wt.get("prunable") or not os.path.isdir(path):
+        return "directory missing", None
+    if wt.get("detached") or wt.get("locked"):
+        return "detached or locked", None
+    if os.path.basename(path).startswith("agent-") or (branch or "").startswith("worktree-agent-"):
+        return "agent worktree (agent-* or worktree-agent-*)", None
+    rev = git(path, "rev-parse", "HEAD")
+    if rev.returncode != 0:
+        return "git cannot read it", None
+    if not repo_slug:
+        return "no GitHub remote", None
+    reason, pr = merged_pr(main, repo_slug, branch, rev.stdout.strip())
+    if reason:
+        return reason, pr
+    # HEAD is in the merged pull request from here on, so every reason carries pr and the kept line says "merged #N".
+    return keep_reason(path, rows, checkouts), pr
+
+
+def branch_note(main, branch, pr_head):
+    """What became of the local branch of a worktree that was just removed, as the end of its report line. The branch
+    goes only when it is at the pull request head. update-ref gets that old value, so it fails if the branch moved."""
+    ref = "refs/heads/" + branch
+    tip = git(main, "rev-parse", "--verify", "--quiet", ref).stdout.strip()
+    if not tip:
+        return "branch %s was already deleted" % branch              # Orca's own merged-only rule can do that
+    if any(w.get("branch") == ref for w in worktrees(main)):         # the removed worktree is no longer listed
+        return "kept branch %s: another worktree has it checked out" % branch
+    if tip != pr_head:
+        return "kept branch %s: it is at %s, not the PR head %s" % (branch, tip[:7], pr_head[:7])
+    r = git(main, "update-ref", "-d", ref, pr_head)
+    if r.returncode != 0:
+        return "kept branch %s: %s" % (branch, " ".join(r.stderr.split())[:200])
+    return "deleted branch %s (was %s)" % (branch, pr_head[:10])
+
+
+def remove(main, wt, pr, cli, checkouts):
+    """Remove a worktree that classify() let go, after asking keep_reason() again on a fresh read of Orca's list and of
+    this repository's checkouts, then deal with its branch. Returns (True, "#<pull request>; <what became of the
+    branch>"), or (False, why it stays). Orca removes a worktree that it lists, and git removes any other. Neither gets
+    --force, and a refusal by git keeps the worktree. A failure of the Orca CLI is a ToolError, so it stops the run:
+    Orca may be down. A ToolError in the branch check comes after the removal, so the removal is still reported, and
+    the branch stays."""
+    path, branch = wt["worktree"], branch_of(wt)
+    number, pr_head = pr["number"], pr["headRefOid"]     # read now, so a bad record fails before anything is removed
+    rows = orca_rows(cli)                                # a new read: an agent may have started since the scan
+    checkouts = dict(checkouts)                          # and a checkout may have been added inside it. Other
+    checkouts[main] = checkout_paths(main)               # repositories' lists are from the start of the run.
+    reason = keep_reason(path, rows, checkouts)          # the checks of classify(), on the new reads
+    if reason:
+        return False, reason
+    found = rows["by_path"].get(os.path.realpath(path), [])     # busy() has kept a path that Orca lists twice
+    if found:
+        orca(cli, "worktree", "rm", "--worktree", "id:" + found[0]["worktreeId"], timeout=REMOVE_TIMEOUT)
+    else:
+        r = git(main, "worktree", "remove", path, timeout=REMOVE_TIMEOUT)
+        if r.returncode != 0:
+            why = (r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[0]
+            return False, "git refused the removal: " + why[:200]
+    if os.path.lexists(path) or any(w["worktree"] == path for w in worktrees(main)):
+        if found:
+            raise ToolError("Orca said it removed it, but git still lists it or the directory is still there")
+        return False, "git refused the removal: still present"
+    try:
+        note = branch_note(main, branch, pr_head)
+    except ToolError as e:                               # the worktree is gone: report that, and leave the branch
+        note = "branch %s: not checked (%s)" % (branch, e)
+    return True, "#%s; %s" % (number, note)
+
+
+def scan(main, rows, tally, cli, apply, checkouts):
+    """Classify the linked worktrees of one repository, remove the ones that may go when apply is set, and print its
+    part of the report. A would remove or removed line prints at once, so a run that a time limit stops keeps the
+    record of what it removed. The kept lines follow when the loop ends, or when an error stops it, and tally counts
+    them all."""
+    repo_slug = slug(git(main, "config", "--get", "remote.origin.url").stdout)
+    say("repo %s (%s)" % (main, repo_slug or "no GitHub remote"))
+    kept = []
+    try:
+        for wt in worktrees(main)[1:]:
+            label = "%s  %s" % (wt["worktree"], branch_of(wt) or "(detached)")
+            reason, pr = classify(main, wt, repo_slug, rows, checkouts)
+            if reason is None and apply:
+                try:
+                    removed, text = remove(main, wt, pr, cli, checkouts)
+                except ToolError as e:                         # the error names the worktree, which may be half gone
+                    raise ToolError("%s: %s" % (wt["worktree"], e))
+                if removed:
+                    say(report_line("removed", "%s  %s" % (label, text)))
+                    tally["go"] += 1
+                    continue
+                reason = text                                  # the second look, or git, said no: kept, like any other
+            if reason is None:
+                say(report_line("would remove", label + ("  #%s" % pr["number"] if pr else "")))
+                tally["go"] += 1
+            else:
+                merged = " (merged #%s)" % pr["number"] if pr else ""
+                kept.append(report_line("kept", "%s: %s%s" % (label, reason, merged)))
+                tally["kept"] += 1
+                if pr:
+                    tally["merged"] += 1
+    finally:
+        for text in kept:
+            say(text)
+
+
+def parse_args():
+    ap = Parser(prog="wtclean", add_help=False, allow_abbrev=False)
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true")
+    mode.add_argument("--check", action="store_true")
+    ap.add_argument("--repo", action="append", default=[])
+    return ap.parse_args()
+
+
+def add_local_bin():
+    """Append ~/.local/bin to PATH when it is missing, so gh resolves under an Orca server."""
+    local_bin = os.path.expanduser("~/.local/bin")
+    dirs = os.environ.get("PATH", os.defpath).split(os.pathsep)
+    if local_bin not in dirs:
+        os.environ["PATH"] = os.pathsep.join(dirs + [local_bin])
+
+
+def main():
+    global QUIET
+    if any(a in ("-h", "--help") for a in sys.argv[1:]):
+        print(__doc__.strip())
+        return 0
+    add_local_bin()
+    tally = {"go": 0, "kept": 0, "merged": 0, "errors": 0}
+    where, code, apply, check = "wtclean", 0, False, False
+    try:
+        a = parse_args()
+        apply, check = a.apply, a.check
+        QUIET = check
+        check_git()                               # before the first git call that relies on it
+        cli = orca_cli()
+        tops = repos(cli, a.repo)                 # first, so a usage error wins over a problem with Orca's list
+        rows = orca_rows(cli)                     # one read per run, before the first repository is scanned
+        checkouts = {top: checkout_paths(top) for top in tops}     # every checkout, for the check of what is inside
+        for top in tops:
+            where = top
+            scan(top, rows, tally, cli, apply, checkouts)
+    except UsageError as e:
+        print("wtclean: usage error: %s" % e, file=sys.stderr)
+        return 3
+    except Exception as e:                        # a failed tool, or a crash: report it and stop
+        tally["errors"] += 1
+        text = str(e) if isinstance(e, ToolError) else "%s: %s" % (type(e).__name__, e)
+        say(report_line("error", "%s: %s" % (where, " ".join(text.split()))))
+        code = 2
+    if check:
+        # one line and nothing else. It exits 0 when a tool fails, so the precheck still starts the run, and the run
+        # reports the error. It exits 1 only when there is nothing to do.
+        print("wtclean: %d can go, %d errors" % (tally["go"], tally["errors"]), flush=True)
+        return 0 if tally["go"] or tally["errors"] else 1
+    say("wtclean: %d %s, %d kept (%d merged), %d errors"
+        % (tally["go"], "removed" if apply else "to remove", tally["kept"], tally["merged"], tally["errors"]))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

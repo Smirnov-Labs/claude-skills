@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Sandbox test for prland: fake `gh` and `prbots` on PATH, real git repos and
-# worktrees under a temp dir, so it never talks to GitHub or touches your checkouts.
+# Sandbox test for prland: fake `gh`, `prbots` and Orca CLI on PATH, real git repos and
+# worktrees under a temp dir, so it never talks to GitHub or Orca or touches your checkouts.
 #   tests/prland.sh                  test this checkout's script
 #   TOOL=/path/to/prland tests/...   test another copy
 set -uo pipefail
@@ -8,9 +8,11 @@ TOOL=${TOOL:-$(cd "$(dirname "$0")/.." && pwd)/skills/pr-land/bin/prland}
 T=$(mktemp -d /tmp/prland-test.XXXXXX)
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 export GIT_CONFIG_GLOBAL=$T/gitconfig GIT_CONFIG_NOSYSTEM=1 FAKE=$T/fake
+unset ORCA_CLI_COMMAND   # outside Orca, unless a test names the fake Orca CLI with orun
 pass=0 fail=0
 check() { if eval "$2"; then pass=$((pass+1)); echo "ok   $1"; else fail=$((fail+1)); echo "FAIL $1"; echo "     exit $rc, output was: $out"; fi; }
 run() { out=$(cd "$WD" && "$TOOL" "$@" 2>&1); rc=$?; }
+orun() { ORCA_CLI_COMMAND=$T/bin/orca run "$@"; }    # like run, inside Orca
 
 mkdir -p "$T/bin" "$FAKE"
 cat > "$T/bin/gh" <<'EOF'
@@ -60,8 +62,114 @@ head=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["headRefO
 printf '{"repo":"%s","number":%s,"head":"%s","verdict":"%s","progress":"sar done","sar":{"title":"ok"},"codex":{"status":"none"},"ci":{"failing":[],"pending":[]}}\n' \
   "${FAKE_PB_REPO:-o/r}" "${FAKE_PB_NUMBER:-7}" "${FAKE_PB_HEAD:-$head}" "$FAKE_VERDICT"
 EOF
-chmod +x "$T/bin/gh" "$T/bin/prbots"
+cat > "$T/bin/orca" <<'EOF'
+#!/usr/bin/env python3
+# Fake Orca CLI: logs its arguments to $FAKE/orca.log and answers `worktree ps` from $FAKE/ps.json. `worktree rm
+# --worktree id:R1::<path>` removes that worktree with git. --force, a call without --json, and any command it does not
+# know exit 9. FAKE_ORCA_FAIL=1: every call says Orca is not running. FAKE_ORCA_RM_FAIL=1: `worktree rm` refuses.
+# FAKE_ORCA_RM_NOOP=1: `worktree rm` says it removed the worktree and removes nothing.
+# From its second call on, `worktree ps` answers from $FAKE/ps.next.json if it exists, as if Orca changed meanwhile.
+# FAKE_PS2_TOUCH=FILE: from its second call on, `worktree ps` writes FILE before it answers.
+import json
+import os
+import subprocess
+import sys
+
+args = sys.argv[1:]
+fake = os.environ["FAKE"]
+with open(os.path.join(fake, "orca.log"), "a") as log:
+    log.write(" ".join(args) + "\n")
+
+
+def reply(obj, code=0):
+    print(json.dumps(obj))
+    sys.exit(code)
+
+
+if os.environ.get("FAKE_ORCA_FAIL"):
+    reply({"ok": False, "error": {"message": "Orca is not running"}}, 1)
+if "--force" in args or args[-1:] != ["--json"]:
+    sys.exit(9)
+if args[:2] == ["worktree", "ps"]:
+    with open(os.path.join(fake, "ps.count"), "a") as count:
+        count.write("x\n")
+    later = len(open(os.path.join(fake, "ps.count")).read().splitlines()) >= 2
+    if later and os.environ.get("FAKE_PS2_TOUCH"):
+        with open(os.environ["FAKE_PS2_TOUCH"], "w") as f:
+            f.write("LOCAL=1\n")
+    nxt = os.path.join(fake, "ps.next.json")
+    sys.stdout.write(open(nxt if later and os.path.exists(nxt) else os.path.join(fake, "ps.json")).read())
+    sys.exit(0)
+if args[:3] == ["worktree", "set", "--worktree"]:
+    reply({"ok": True, "result": {"worktree": {}}})
+if args[:3] == ["worktree", "rm", "--worktree"] and args[3].startswith("id:R1::"):
+    if os.environ.get("FAKE_ORCA_RM_FAIL"):
+        reply({"ok": False, "error": {"message": "refused"}}, 1)
+    if os.environ.get("FAKE_ORCA_RM_NOOP"):
+        reply({"ok": True, "result": {"removed": True}})
+    wt = args[3][len("id:R1::"):]
+    listing = subprocess.run(["git", "-C", wt, "worktree", "list", "--porcelain"], capture_output=True, text=True)
+    main = listing.stdout.splitlines()[0][len("worktree "):]
+    r = subprocess.run(["git", "-C", main, "worktree", "remove", wt], capture_output=True, text=True)
+    if r.returncode != 0:
+        reply({"ok": False, "error": {"message": r.stderr.strip()}}, 1)
+    reply({"ok": True, "result": {"removed": True}})
+print("fake orca: unexpected: " + " ".join(args), file=sys.stderr)
+sys.exit(9)
+EOF
+# A fake lsof, on PATH only for the tests that name $T/lsofbin. It logs its arguments to $FAKE/lsof.log. Without
+# LC_ALL=C it exits 3 and prints nothing, so a test that needs its list also proves the tool sets the C locale.
+# FAKE_LSOF=fail: it exits 1 and prints nothing. FAKE_LSOF=partial: it prints process 1, then exits 1. FAKE_LSOF=empty:
+# it prints nothing and exits 0. Otherwise it prints, in the form of lsof -F, process 1 working in / and process 4242
+# ("fake  proc") working in $FAKE_LSOF_CWD, each with the f line that macOS's lsof adds.
+mkdir -p "$T/lsofbin"
+cat > "$T/lsofbin/lsof" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE/lsof.log"
+[ "${LC_ALL-}" = C ] || { echo "fake lsof: LC_ALL is not C" >&2; exit 3; }
+case "${FAKE_LSOF:-}" in
+  fail) exit 1 ;;
+  partial) printf 'p1\ncinit\nfcwd\nn/\n'; exit 1 ;;
+  empty) exit 0 ;;
+esac
+printf 'p1\ncinit\nfcwd\nn/\np4242\ncfake  proc\nfcwd\nn%s\n' "${FAKE_LSOF_CWD:-/}"
+EOF
+chmod +x "$T/bin/gh" "$T/bin/prbots" "$T/bin/orca" "$T/lsofbin/lsof"
 export PATH="$T/bin:$PATH"
+
+# sleeping PID: wait, about 2 seconds at most, until the background subshell PID has run its cd and exec'd sleep.
+# A process that never gets there counts as a failed check, so a process test cannot pass without its process.
+sleeping() {
+  local i
+  for i in $(seq 20); do
+    case "$(ps -o comm= -p "$1" 2>/dev/null)" in *sleep) return 0 ;; esac
+    sleep 0.1
+  done
+  fail=$((fail+1)); echo "FAIL process $1 did not exec sleep within 2 seconds"
+}
+stop() { kill "$1" 2>/dev/null; wait "$1" 2>/dev/null; }
+
+# orca_row PATH [agents=N] [live=N] [children=ID,...] [id=ID] [host=H]: add a row to the fake `worktree ps` answer
+# ($PS_FILE, default $FAKE/ps.json)
+orca_row() {
+  local p=$1; shift
+  python3 - "${PS_FILE:-$FAKE/ps.json}" "$p" "$@" <<'PY'
+import json
+import sys
+
+f, row_path = sys.argv[1:3]
+kw = dict(a.split("=", 1) for a in sys.argv[3:])
+d = json.load(open(f))
+d["result"]["worktrees"].append({
+    "worktreeId": kw.get("id") or "R1::" + row_path, "path": row_path, "hostId": kw.get("host", "local"),
+    "agents": [{"state": "working"} for _ in range(int(kw.get("agents", 0)))],
+    "liveTerminalCount": int(kw.get("live", 0)), "unverifiableTerminalCount": 0, "hasAttachedPty": False,
+    "childWorktreeIds": [c for c in kw.get("children", "").split(",") if c]})
+d["result"]["totalCount"] += 1
+with open(f, "w") as out:
+    json.dump(d, out)
+PY
+}
 
 # origin (bare, reached through insteadOf), the main checkout, and a worktree on branch feat with one
 # pushed commit. A helper clone then lands the squash commit on origin/main, as GitHub would.
@@ -79,9 +187,25 @@ setup() {
   git -C "$FAKE_HELPER" commit -qam "Title (#7)"; git -C "$FAKE_HELPER" push -q origin main; SQUASH=$(git -C "$FAKE_HELPER" rev-parse HEAD)
   printf '{"number":7,"title":"Title","state":"%s","isDraft":%s,"headRefName":"feat","headRefOid":"%s","baseRefName":"main","url":"https://github.com/o/r/pull/7","isCrossRepository":%s,"mergeCommit":null}\n' \
     "${1:-OPEN}" "${2:-false}" "$HEADSHA" "${3:-false}" > "$FAKE/pr.json"
+  printf '{"ok":true,"result":{"worktrees":[],"totalCount":0,"truncated":false,"hostScope":{"hostIds":["local"]}}}\n' > "$FAKE/ps.json"
   WD=$M
 }
 remote_has_feat() { [ -n "$(git -C "$M" ls-remote origin refs/heads/feat)" ]; }
+# flutter_files DIR: what flutter pub get and flutter build leave in DIR and DIR/app, ignored as Flutter's .gitignore
+# files ignore it, with a local.properties that holds only SDK paths. *.secret is ignored too, for a file to keep.
+flutter_files() {
+  printf '%s\n' '.dart_tool/' '.flutter-plugins-dependencies' 'GeneratedPluginRegistrant.*' 'Generated.xcconfig' \
+    'flutter_export_environment.sh' 'ephemeral/' 'local.properties' '*.secret' >> "$M/.git/info/exclude"
+  mkdir -p "$1/.dart_tool" "$1/app/android/app/src/main/java/io/flutter/plugins" "$1/app/ios/Flutter/ephemeral" \
+    "$1/app/ios/Runner" "$1/app/linux/flutter/ephemeral"
+  echo x > "$1/.dart_tool/package_config.json"; echo x > "$1/app/.flutter-plugins-dependencies"
+  echo x > "$1/app/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java"
+  echo x > "$1/app/ios/Runner/GeneratedPluginRegistrant.h"; echo x > "$1/app/ios/Runner/GeneratedPluginRegistrant.m"
+  echo x > "$1/app/ios/Flutter/Generated.xcconfig"; echo x > "$1/app/ios/Flutter/flutter_export_environment.sh"
+  echo x > "$1/app/ios/Flutter/ephemeral/flutter_lldbinit"; echo x > "$1/app/linux/flutter/ephemeral/.plugin_symlinks"
+  printf '%s\n' '## Written by Android Studio and Flutter' 'sdk.dir=/opt/android-sdk' 'flutter.sdk=/opt/flutter' \
+    > "$1/app/android/local.properties"
+}
 
 setup; FAKE_VERDICT=CLEAN run 7
 check "clean PR: exit 0" '[ $rc -eq 0 ]'
@@ -127,6 +251,19 @@ setup; echo SECRET=1 > "$W/.env"; echo more >> "$W/a.txt"; git -C "$W" commit -q
 check "--allow-ignored still keeps a worktree with commits past the PR head" '[ -d "$W" ] && [[ $out == *"not on the PR head"* ]]'
 setup; mkdir -p "$W/node_modules/x"; echo 1 > "$W/node_modules/x/i.js"; FAKE_VERDICT=CLEAN run 7
 check "build output alone (node_modules) does not keep the worktree" '[ ! -d "$W" ]'
+setup; printf '.nx/\n' >> "$M/.git/info/exclude"; mkdir -p "$W/.nx/cache"; echo 1 > "$W/.nx/cache/run.json"; FAKE_VERDICT=CLEAN run 7
+check "an Nx cache (.nx) alone does not keep the worktree" '[ ! -d "$W" ]'
+setup; printf '.nx*\n' >> "$M/.git/info/exclude"; echo keep > "$W/.nxrc"; FAKE_VERDICT=CLEAN run 7
+check "an ignored file whose name only starts with .nx keeps the worktree" '[ -e "$W/.nxrc" ]'
+setup; flutter_files "$W"; FAKE_VERDICT=CLEAN run 7
+check "Flutter's generated files and an SDK-only local.properties do not keep the worktree" '[ ! -d "$W" ]'
+NL=$'\n'   # the report line ends at the file name: no folder before it, and nothing after it
+setup; flutter_files "$W"; echo custom.setting=1 >> "$W/app/android/local.properties"; FAKE_VERDICT=CLEAN run 7
+check "a local.properties with any other key keeps the worktree, and the report names only that file" '[ -e "$W/app/android/local.properties" ] && [[ $out == *"left in place: ignored files that are not build output: app/android/local.properties$NL"* ]]'
+setup; flutter_files "$W"; echo keep > "$W/app/android/app/src/main/java/notes.secret"; FAKE_VERDICT=CLEAN run 7
+check "a folder off the list keeps the worktree when it holds a file that is not build output, and the report names the file" '[ -e "$W/app/android/app/src/main/java/notes.secret" ] && [[ $out == *"left in place: ignored files that are not build output: app/android/app/src/main/java/notes.secret$NL"* ]]'
+setup; printf 'private/\n' >> "$M/.git/info/exclude"; mkdir -p "$W/private/keys"; echo k > "$W/private/keys/api.txt"; FAKE_VERDICT=CLEAN run 7
+check "an ignored folder that git names alone keeps the worktree, and the report names the file in it" '[ -e "$W/private/keys/api.txt" ] && [[ $out == *"left in place: ignored files that are not build output: private/keys/api.txt$NL"* ]]'
 setup; echo more >> "$W/a.txt"; git -C "$W" commit -qam extra; FAKE_VERDICT=CLEAN run 7
 check "a local commit past the PR head keeps the worktree" '[ -d "$W" ] && [[ $out == *"not on the PR head"* ]]'
 
@@ -179,7 +316,201 @@ check "a PR whose URL names another repo is refused" '[ $rc -eq 2 ] && [ ! -e "$
 setup; git -C "$M" config url."$T/r/fork.git".pushInsteadOf https://github.com/o/r.git; git init -q --bare -b main "$T/r/fork.git"; git -C "$W" push -q "$T/r/fork.git" feat; FAKE_VERDICT=CLEAN run 7
 check "pushInsteadOf cannot redirect the remote delete" '! remote_has_feat && [ -n "$(git -C "$T/r/fork.git" for-each-ref refs/heads/feat)" ]'
 setup; WD=$W; FAKE_VERDICT=CLEAN run
-check "from inside the PR worktree: removes it, deletes the branch, says cd" '[ $rc -eq 0 ] && [ ! -d "$W" ] && ! git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"your shell was inside it"* ]]'
+check "from inside the PR worktree: merges, and keeps the worktree and the branch, because the shell works in it" '[ $rc -eq 0 ] && grep -q -- "--squash" "$FAKE/merge.log" && [ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"left in place: process "*" works in it"* ]]'
+
+# Processes that work in the worktree. On Linux prland reads /proc. PRLAND_PROC_ROOT names a missing directory to
+# take the lsof path that macOS uses.
+setup; (cd "$W" && exec sleep 300) & P=$!; sleeping "$P"; FAKE_VERDICT=CLEAN run 7; stop "$P"
+check "a process working in the worktree keeps it and the branch, and names the process" '[ $rc -eq 0 ] && [ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"$W left in place: process $P (sleep) works in it"* ]]'
+setup; mkdir "$W/sub"; (cd "$W/sub" && exec sleep 300) & P=$!; sleeping "$P"; FAKE_VERDICT=CLEAN run 7; stop "$P"
+check "a process in a subdirectory keeps it" '[ -d "$W" ] && [[ $out == *"process $P (sleep) works in it"* ]]'
+setup; mkdir -p "$T/r/wt-feat2"; (cd "$T/r/wt-feat2" && exec sleep 300) & P=$!; sleeping "$P"; FAKE_VERDICT=CLEAN run 7; stop "$P"
+check "a process in a sibling path that shares the prefix does not count" '[ ! -d "$W" ] && [[ $out == *"removed $W"* ]]'
+setup; mkdir "$W/sub"; PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc FAKE_LSOF_CWD=$W/sub FAKE_VERDICT=CLEAN run 7
+check "without /proc, lsof finds a process in it, and prland keeps it" '[ -d "$W" ] && grep -qxF -- "-w -d cwd -F pcn" "$FAKE/lsof.log" && [[ $out == *"left in place: process 4242 (fake proc) works in it"* ]]'
+setup; PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc FAKE_LSOF_CWD=$T/r/wt-feat2 FAKE_VERDICT=CLEAN run 7
+check "without /proc, a worktree that lsof shows no process in goes" '[ ! -d "$W" ] && [ -s "$FAKE/lsof.log" ]'
+setup; PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc FAKE_LSOF=fail FAKE_VERDICT=CLEAN run 7
+check "a process list that cannot be read keeps it, and the merge still counts" '[ $rc -eq 0 ] && [ -d "$W" ] && [[ $out == *"left in place: cannot list processes: lsof exited 1"* ]]'
+setup; PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc FAKE_LSOF=partial FAKE_VERDICT=CLEAN run 7
+check "an lsof that lists some processes and then fails keeps it" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"left in place: cannot list processes: lsof exited 1"* ]]'
+setup; PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc FAKE_LSOF=empty FAKE_VERDICT=CLEAN run 7
+check "an lsof that lists no process at all keeps it" '[ -d "$W" ] && [[ $out == *"left in place: cannot list processes: lsof listed none"* ]]'
+if command -v lsof >/dev/null; then
+  setup; (cd "$W" && exec sleep 300) & P=$!; sleeping "$P"; PRLAND_PROC_ROOT=$T/noproc FAKE_VERDICT=CLEAN run 7; stop "$P"
+  check "the real lsof finds a process in it" '[ -d "$W" ] && [[ $out == *"process $P (sleep) works in it"* ]]'
+fi
+same_check() { python3 - "$(dirname "$TOOL")/../../cleaning-merged-worktrees/bin/wtclean" "$TOOL" <<'PY'
+import re
+import sys
+
+def body(fp):
+    m = re.search(r"^def cwd_users\(path\):\n.*?(?=^def |\Z)", open(fp).read(), re.S | re.M)
+    return m.group(0).rstrip() if m else None
+
+sys.exit(0 if body(sys.argv[1]) and body(sys.argv[1]) == body(sys.argv[2]) else 1)
+PY
+}
+same_rules() { python3 - "$(dirname "$TOOL")/../../cleaning-merged-worktrees/bin/wtclean" "$TOOL" <<'PY'
+import re
+import sys
+
+# The build-output rules that prland and wtclean must agree on: DISPOSABLE, SDK_KEYS and sdk_paths_only, as each
+# file spells them. wtclean ends DISPOSABLE's names with \Z where prland ends them with $ (the comment above them in
+# wtclean says why), so in DISPOSABLE a \Z reads as a $ here. not_build_output differs on purpose: wtclean reads git's
+# NUL-separated list.
+PARTS = (r'^DISPOSABLE = re\.compile\(.*?"\)$', r"^SDK_KEYS = \{.*?\}$", r"^def sdk_paths_only\(fp\):\n.*?(?=^def |\Z)")
+
+def rules(fp):
+    text = open(fp).read()
+    found = [re.search(p, text, re.S | re.M) for p in PARTS]
+    if not all(found):
+        return None
+    got = [m.group(0).rstrip() for m in found]
+    return [got[0].replace(r"\Z", "$")] + got[1:]
+
+sys.exit(0 if rules(sys.argv[1]) and rules(sys.argv[1]) == rules(sys.argv[2]) else 1)
+PY
+}
+if [ -e "$(dirname "$TOOL")/../../cleaning-merged-worktrees/bin/wtclean" ]; then
+  rc=0 out="cwd_users differs"; check "prland and wtclean hold the same process check" 'same_check'
+  rc=0 out="DISPOSABLE, SDK_KEYS or sdk_paths_only differs"
+  check "prland and wtclean hold the same build-output rules" 'same_rules'
+fi
+# cwd_users() on the lsof path, called directly. It runs lsof with LC_ALL=C, so lsof prints each byte by itself: a
+# backslash as \\, a control character as \t or ^A, DEL and each byte of a non-ASCII character as \xNN, and 0xff as
+# \xff where char is signed (macOS) or ^? where it is not. Every other byte, a caret too, prints as it is.
+# FAKE_LSOF_CWD below is what lsof prints for the busy directory.
+lsof_unit() { PATH="$T/lsofbin:$PATH" PRLAND_PROC_ROOT=$T/noproc python3 - "$TOOL" "$T" <<'PY'
+import os
+import runpy
+import sys
+
+tool, t = sys.argv[1], os.path.realpath(sys.argv[2])
+g = runpy.run_path(tool, run_name="lsof_unit")
+bad, BUSY = [], [(4242, "fake proc")]
+
+
+def case(label, where, want, cwd="/", mode=""):
+    os.environ["FAKE_LSOF_CWD"], os.environ["FAKE_LSOF"] = cwd, mode
+    try:
+        got = g["cwd_users"](where)
+    except g["ToolError"] as e:
+        got = "ToolError: %s" % e
+    if not (got == want if isinstance(want, list) else str(got).startswith(want)):
+        bad.append("%s: got %r" % (label, got))
+
+
+case("a tab", t + "/wt\ttab", BUSY, cwd=t + "/wt\\ttab/sub")
+case("a tab, idle", t + "/wt\ttab", [])
+# lsof prints the control character ^A and a literal caret and A alike, so an idle wt<^A>x beside a busy wt^Ax also
+# counts as in use: a false keep, never a miss.
+case("a control character", t + "/wt\x01x", BUSY, cwd=t + "/wt^Ax")
+case("DEL", t + "/wt\x7fx", BUSY, cwd=t + "/wt\\x7fx")
+case("a caret and an A", t + "/wt^Ax", BUSY, cwd=t + "/wt^Ax")
+case("a caret and an A, then a tab", t + "/wt^A\ttab", BUSY, cwd=t + "/wt^A\\ttab")
+case("a caret and an A, then a backslash", t + "/wt^A\\b", BUSY, cwd=t + "/wt^A\\\\b")
+case("a backslash", t + "/wt\\b", BUSY, cwd=t + "/wt\\\\b")
+case("a backslash, idle", t + "/wt\\b", [])
+case("a backslash and a t, idle, beside a busy tab", t + "/wt\\tx", [], cwd=t + "/wt\\tx")
+case("non-ASCII", t + "/José/wt", BUSY, cwd=t + "/Jos\\xc3\\xa9/wt/sub")
+case("a no-break space", t + "/wt\u00a0x", BUSY, cwd=t + "/wt\\xc2\\xa0x")
+case("a no-break space, idle", t + "/wt\u00a0x", [], cwd=t + "/wt\\xc2\\xa0y")
+case("non-ASCII, a no-break space, a caret and an A, a tab", t + "/José/wt\u00a0^A\tz", BUSY,
+     cwd=t + "/Jos\\xc3\\xa9/wt\\xc2\\xa0^A\\tz")
+case("a byte that is not UTF-8, signed char", t + "/wt" + os.fsdecode(b"\xff") + "x", BUSY, cwd=t + "/wt\\xffx")
+case("a byte that is not UTF-8, unsigned char", t + "/wt" + os.fsdecode(b"\xff") + "x", BUSY, cwd=t + "/wt^?x")
+case("non-ASCII parent, caret and an A", t + "/José/wt^A", BUSY, cwd=t + "/Jos\\xc3\\xa9/wt^A")
+case("non-ASCII parent, idle", t + "/José/wt", [], cwd=t + "/Jos\\xc3\\xa9/other")
+case("an escape in a subdirectory", t + "/plain", BUSY, cwd=t + "/plain/sub\\tdir")
+case("a sibling that only an escape makes look alike", t + "/plain", [], cwd=t + "/plain\\x2dx")
+case("an idle plain path", t + "/plain", [])
+case("a failed run with output", t + "/plain", "ToolError: cannot list processes: lsof exited 1", mode="partial")
+case("no output", t + "/plain", "ToolError: cannot list processes: lsof listed none", mode="empty")
+print("\n".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+out=$(lsof_unit 2>&1); rc=$?
+check "cwd_users on the lsof path: escaped paths, partial and empty lists" '[ $rc -eq 0 ]'
+# The real lsof, if installed, on a directory named with an e-acute and a no-break space, which lsof prints as \xNN
+# in the C locale. A sleep that Python starts works in it, and only that PID is killed.
+real_lsof_unit() { PRLAND_PROC_ROOT=$T/noproc python3 - "$TOOL" "$T" <<'PY'
+import os
+import runpy
+import subprocess
+import sys
+
+tool, t = sys.argv[1], os.path.realpath(sys.argv[2])
+g = runpy.run_path(tool, run_name="real_lsof_unit")
+busy, idle = os.path.join(t, "Jos\u00e9\u00a0wt"), os.path.join(t, "Jos\u00e9\u00a0wt2")
+os.makedirs(busy, exist_ok=True)
+os.makedirs(idle, exist_ok=True)
+p = subprocess.Popen(["sleep", "300"], cwd=busy)
+try:
+    got, other = g["cwd_users"](busy), g["cwd_users"](idle)
+finally:
+    p.kill()
+    p.wait()
+bad = []
+if (p.pid, "sleep") not in got:
+    bad.append("busy: got %r, want pid %d" % (got, p.pid))
+if any(pid == p.pid for pid, _ in other):
+    bad.append("idle: got %r" % other)
+print("\n".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+if command -v lsof >/dev/null; then
+  out=$(real_lsof_unit 2>&1); rc=$?
+  check "the real lsof finds a process in a directory named with non-ASCII characters" '[ $rc -eq 0 ]'
+fi
+
+# Inside Orca ($ORCA_CLI_COMMAND set). orca_calls prints the worktree ps, set and rm calls, in order, on one line.
+orca_calls() { grep -o -E "^worktree (ps|set|rm)" "$FAKE/orca.log" 2>/dev/null | sed 's/^worktree //' | tr '\n' ' '; }
+setup; orca_row "$W"; FAKE_VERDICT=CLEAN orun 7
+check "Orca: an idle worktree goes through Orca's worktree rm, by id, with no --force" '[ $rc -eq 0 ] && [ ! -d "$W" ] && grep -qxF -- "worktree rm --worktree id:R1::$W --json" "$FAKE/orca.log" && [[ $out == *"removed $W through Orca"* ]]'
+check "Orca: its card is marked completed, and Orca's list is read again just before the removal" 'grep -qxF -- "worktree set --worktree id:R1::$W --workspace-status completed --json" "$FAKE/orca.log" && [ "$(orca_calls)" = "ps set ps rm " ]'
+check "Orca: the branch still goes by the atomic update-ref" '! git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"deleted feat (was ${HEADSHA:0:10})"* ]]'
+setup; cp "$FAKE/ps.json" "$FAKE/ps.next.json"; orca_row "$W"; PS_FILE=$FAKE/ps.next.json orca_row "$W" live=1; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a terminal that opens after the first read keeps it" '[ -d "$W" ] && [ "$(orca_calls)" = "ps set ps " ] && [[ $out == *"Orca shows a terminal in it"* ]]'
+setup; cp "$FAKE/ps.json" "$FAKE/ps.next.json"; PS_FILE=$FAKE/ps.next.json orca_row "$W" live=1; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a worktree that Orca starts to list after the first read, with a terminal, keeps it" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [ "$(orca_calls)" = "ps ps " ] && [[ $out == *"Orca shows a terminal in it"* ]]'
+setup; orca_row "$W"; FAKE_PS2_TOUCH=$W/.env FAKE_VERDICT=CLEAN orun 7
+check "Orca: an ignored .env that appears during the second read keeps it" '[ -e "$W/.env" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && ! grep -q "worktree rm" "$FAKE/orca.log" && [[ $out == *"not build output: .env"* ]]'
+setup; orca_row "$W" agents=1; FAKE_VERDICT=CLEAN orun 7
+check "Orca: an agent in it keeps the worktree and the branch, and the card says completed" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [ "$(orca_calls)" = "ps set ps " ] && [[ $out == *"left in place: Orca shows an agent in it"* ]]'
+setup; orca_row "$W" live=1; WD=$W; FAKE_VERDICT=CLEAN orun
+check "Orca: prland run from a terminal inside it keeps it" '[ $rc -eq 0 ] && [ -d "$W" ] && [ "$(orca_calls)" = "ps set ps " ] && [[ $out == *"Orca shows a terminal in it"* ]]'
+setup; orca_row "$T/r/kid" agents=1 id=R1::kid; orca_row "$W" children=R1::kid; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a child workspace with an agent keeps it" '[ -d "$W" ] && [[ $out == *"Orca shows an agent in a child workspace"* ]]'
+setup; orca_row "$T/r/kid" live=1 id=R1::kid; orca_row "$W" children=R1::kid; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a child workspace with a terminal keeps it" '[ -d "$W" ] && [[ $out == *"Orca shows a terminal in a child workspace"* ]]'
+setup; orca_row "$T/r/gk" agents=1 id=R1::gk; orca_row "$T/r/kid" id=R1::kid children=R1::gk,R1::kid; orca_row "$W" children=R1::kid
+FAKE_VERDICT=CLEAN orun 7
+check "Orca: an agent in a grandchild keeps it, and a child that lists itself ends the walk" '[ -d "$W" ] && [[ $out == *"Orca shows an agent in a child workspace"* ]]'
+setup; orca_row "$W" children=R1::gone; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a child workspace that Orca did not list keeps it" '[ -d "$W" ] && [[ $out == *"Orca did not list"* ]]'
+setup; orca_row "$W"; orca_row "$W" id=R2::dup; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a worktree that Orca lists twice stays, and no card is touched" '[ -d "$W" ] && [ "$(orca_calls)" = "ps ps " ] && [[ $out == *"Orca lists it more than once"* ]]'
+setup; orca_row "$W"; FAKE_VERDICT=CLEAN FAKE_ORCA_FAIL=1 orun 7
+check "Orca: an unreadable worktree list keeps it, and the merge still counts" '[ $rc -eq 0 ] && [ -d "$W" ] && [ "$(orca_calls)" = "ps ps " ] && [[ $out == *"left in place: Orca'"'"'s worktree list could not be read in full: Orca is not running"* ]]'
+setup; orca_row "$W"; FAKE_VERDICT=CLEAN FAKE_ORCA_RM_FAIL=1 orun 7
+check "Orca: a refused worktree rm keeps the worktree and the branch" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"remove failed, left in place: refused"* ]]'
+setup; orca_row "$W"; FAKE_VERDICT=CLEAN FAKE_ORCA_RM_NOOP=1 orun 7
+check "Orca: a worktree rm that says removed but leaves the worktree keeps the branch" '[ -d "$W" ] && git -C "$M" rev-parse -q --verify refs/heads/feat >/dev/null && [[ $out == *"Orca said it removed it, but it is still on disk"* ]]'
+setup; orca_row "$W"; touch "$W/notes.txt"; FAKE_VERDICT=CLEAN orun 7
+check "Orca: local files keep it, and the card says completed" '[ -e "$W/notes.txt" ] && [ "$(orca_calls)" = "ps set ps " ] && [[ $out == *"untracked"* ]]'
+setup; orca_row "$W"; FAKE_VERDICT=CLEAN orun 7 --keep-worktree
+check "Orca: --keep-worktree still marks the card completed" '[ -d "$W" ] && [ "$(orca_calls)" = "ps set " ] && [[ $out == *"$W completed in Orca"* ]]'
+setup; orca_row "$W"; FAKE_VERDICT=CLEAN orun 7 --dry-run
+check "Orca: --dry-run changes nothing in Orca" '[ -d "$W" ] && [ "$(orca_calls)" = "ps ps " ] && [[ $out == *"would remove worktree $W through Orca"* ]] && [[ $out == *"would mark the Orca card of $W completed"* ]]'
+setup; orca_row "$W" host=runtime:other; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a worktree that Orca lists only for another host goes through git" '[ ! -d "$W" ] && [ "$(orca_calls)" = "ps ps " ] && [[ $out == *"removed $W"* ]] && [[ $out != *"through Orca"* ]]'
+setup; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a worktree that Orca does not list goes through git" '[ ! -d "$W" ] && [ "$(orca_calls)" = "ps ps " ]'
+setup OPEN false true; orca_row "$W"; FAKE_VERDICT=CLEAN orun 7
+check "Orca: a fork PR touches no card" '[ -d "$W" ] && [ ! -e "$FAKE/orca.log" ]'
 
 echo "$pass passed, $fail failed"
 rm -rf "$T"

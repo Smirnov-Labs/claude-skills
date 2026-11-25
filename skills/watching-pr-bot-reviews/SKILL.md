@@ -25,6 +25,31 @@ its output, no re-checking with `gh`. You are notified when it exits; its output
 This skill reads and waits; it never commits or pushes. To drive a PR to clean (fix → push →
 wait, repeated), the user runs `/pr-fix`.
 
+## In Orca
+
+If `ORCA_CLI_COMMAND` is not set, skip this section. If it is set, run these two commands once the PR is open:
+
+```sh
+"$ORCA_CLI_COMMAND" reference add <PR URL> --worktree current --json
+"$ORCA_CLI_COMMAND" worktree set --worktree current --workspace-status in-review --json
+```
+
+The first command links the PR to your workspace, so `reference find <PR URL>` finds the workspace and its agent.
+The second command moves the card to in review. `current` is the workspace that holds your shell's directory. If
+your shell is in a different checkout, use `--worktree path:<the PR's worktree>`. If an update fails, continue.
+
+A bot with GitHub events can use them to decide when to look. For example, this one-time wait runs the bot once,
+when a check on the PR fails:
+
+```sh
+"$ORCA_CLI_COMMAND" automations create --bot <bot> --name <name> --once \
+  --on "github.ci_failed subject=<owner/repo>#<n>" --prompt "<what to do>" --json
+```
+
+`github.pr_conflicted` takes the same `subject=`. The other events, such as `github.pr_merged`, and the flags are in
+`"$ORCA_CLI_COMMAND" skills get orca-cli --reference references/automations.md`. An event only tells the bot when to
+look. Before you merge, `prbots` must give the verdict.
+
 ## Why `--trigger` after a push
 
 Neither bot re-reviews a push by itself: Codex runs on PR open / ready-for-review / an
