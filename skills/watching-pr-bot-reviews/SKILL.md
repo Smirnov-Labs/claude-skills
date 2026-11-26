@@ -88,6 +88,10 @@ CLEAN. `--full` adds finding bodies + the full SAR; `--json` emits the machine p
 `--timeout 30m`, `--interval 30` (one GraphQL call per poll), `--sha SHA`, `--dry-run`
 (print trigger comments instead of posting).
 
+Codex can also post a review's findings in one plain PR comment, which the digest links. That
+comment has no thread to resolve. It counts until Codex reviews again and finds nothing, so
+after the fix, push and run `wait --trigger`.
+
 ## Orchestrating subagents
 
 Don't paste a polling recipe into subagent prompts. On 2026-10-16 one did
@@ -102,12 +106,15 @@ Don't paste a polling recipe into subagent prompts. On 2026-10-16 one did
 - **Codex**: one summary comment, edited in place, embeds
   `<!-- codex-review-state:v1 {"code_review":{"commit_sha":…,"status":"running"|"completed"|"failed","has_any_findings":…,"has_unresolved_findings":…}} -->`.
   Done for HEAD ⇔ `commit_sha == HEAD && status == completed`. Findings = review threads tagged
-  `codex-code-review-finding` with a `P0`–`P3` badge; a clean run posts a "Didn't find any
-  major issues" receipt + 👍.
+  `codex-code-review-finding` with a `P0`–`P3` badge, or one plain comment with that tag: per
+  finding, a blob link to the reviewed commit and a badge. A clean run posts a "Didn't find any
+  major issues" receipt + 👍. The state can flag findings for a new commit and post none: the
+  open ones are then in the comment on an older commit, which prbots keeps open.
 - **SAR**: `github-actions[bot]` comment `## ✅|⚠️|🚫|🟢 Architecture Review - <verdict>` with
   `**Severity**: N/4 | **Blockers**: bool`. Fresh only if posted after HEAD's commit / force-push.
-- **Where they live (REST)**: Codex findings in `pulls/<PR>/comments`, its formal review in
-  `pulls/<PR>/reviews`; its summary comment and the SAR both in `issues/<PR>/comments`.
+- **Where they live (REST)**: Codex findings in `pulls/<PR>/comments` (or in one comment in
+  `issues/<PR>/comments`), its formal review in `pulls/<PR>/reviews`; its summary comment and the
+  SAR both in `issues/<PR>/comments`.
 - **Logins**: REST = `chatgpt-codex-connector[bot]` / `github-actions[bot]`; GraphQL and
   `gh pr view --json comments` = `chatgpt-codex-connector` / `github-actions` (no `[bot]`).
   `gh pr view` *does* include both bots — a filter that expects the `[bot]` suffix there
@@ -116,4 +123,5 @@ Don't paste a polling recipe into subagent prompts. On 2026-10-16 one did
 ## Limits
 
 SHA-strict: a clean rebase also reads as "HEAD not reviewed" — re-trigger, or judge it and
-say so. Reads the last 50 review threads.
+say so. Reads the last 50 review threads. A reply does not clear a finding in a plain Codex
+comment; only a new Codex review does, or a person who merges by hand.

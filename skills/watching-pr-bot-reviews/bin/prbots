@@ -15,6 +15,12 @@
 #          nothing, whatever the finding flags say; only an "@codex review" comment retries it.
 #          Findings are review comments tagged codex-code-review-finding with a P0–P3
 #          badge; a clean run posts a receipt comment + a 👍 reaction instead.
+#          (2026-11) Codex can also post all its findings in one plain PR comment with that
+#          tag: per finding, a blob link to the reviewed commit and a badge, split by "---".
+#          It has no thread to resolve. It counts until a later Codex review of the same
+#          commit replaces it, or Codex reviews a newer commit clean (a receipt, or a state
+#          without unresolved findings). 2026-11-25: a state said "findings" for a new commit,
+#          posted none, and the open ones sat in a comment on the commit before.
 #          Runs on PR opened / ready-for-review / an "@codex review" comment; a push
 #          usually does NOT re-run it.
 #   SAR    github-actions[bot] comment "## <icon> Architecture Review - <verdict>" with
@@ -162,6 +168,8 @@ JQ_NORM=$(cat <<'JQ'
 def strip: sub("^\\s+"; "") | sub("\\s+$"; "");
 def needs($x): $need | any(. == $x);
 def failed: . as $s | ["FAILURE","ERROR","TIMED_OUT","CANCELLED","ACTION_REQUIRED","STARTUP_FAILURE","STALE"] | any(. == $s);
+# the same commit, when either SHA may be short
+def same($a; $b): $a != null and $b != null and (($a | startswith($b)) or ($b | startswith($a)));
 
 .pr as $p
 | .comments as $cs
@@ -173,19 +181,32 @@ def failed: . as $s | ["FAILURE","ERROR","TIMED_OUT","CANCELLED","ACTION_REQUIRE
 | ([$p.createdAt, ($p.ready.nodes[]?.createdAt // empty)] | max) as $auto_at
 | ($head_at > $auto_at) as $pushed_after_open
 
-# ---- Codex: state JSON in the summary comment; receipts / reviews as fallback
+# ---- Codex: state JSON in the summary comment; receipts / reviews / finding comments as fallback
 | [$cs[] | select(.author.login == $codex)] as $cx
 | ([$cx[] | .body | (capture("codex-review-state:v1 (?<j>\\{.*?\\}) -->").j | fromjson | .code_review)?] | last) as $st
 | ([$cx[] | .body | capture("\\*\\*Code Review\\*\\* \\|[^|]*\\| `[0-9a-f]+` \\| (?<t>[^|]+?) \\|").t] | last) as $trig
-| [$p.reviews.nodes[] | select(.author.login == $codex)] as $crev
-| ([$cx[] | select(.body | test("codex-review-receipt")) | {at: .createdAt, sha: (.body | capture("Reviewed commit:\\*\\* `(?<s>[0-9a-f]+)`").s)}] | last) as $rcpt
+# the second the Code Review row last changed: when the review started, failed or completed
+| ([$cx[] | .body | capture("\\*\\*Code Review\\*\\* \\|[^|]*datetime=\"(?<t>\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d)").t + "Z"] | last) as $row_at
+| [$p.reviews.nodes[] | select(.author.login == $codex) | {at: .submittedAt, sha: .commit.oid}] as $crev
+| [$cx[] | select(.body | test("codex-review-receipt")) | {at: .createdAt, sha: (.body | capture("Reviewed commit:\\*\\* `(?<s>[0-9a-f]+)`").s)}] as $rcpts
+# findings in one plain comment: per finding, a blob link to the reviewed commit and a badge
+| [$cx[] | select(.body | test("codex-code-review-finding") and (test("codex-review-state|codex-review-receipt") | not)) | .body as $b
+   | {at: .createdAt, url: .url, sha: (($b | capture("/blob/(?<s>[0-9a-f]{7,40})/").s) // null),
+      items: ([$b | sub("\\s*<details>[\\s\\S]*$"; "") | split("\n---\n")[] | select(test("!\\[P[0-3] Badge\\]"))]
+              | if length > 0 then . else [$b] end
+              | map({sev: ((capture("!\\[(?<s>P[0-3]) Badge\\]").s) // "P?"),
+                     path: ((capture("/blob/[0-9a-f]+/(?<p>[^#\\s]+)").p) // null),
+                     line: ((capture("/blob/[^#\\s]+#L(?<l>\\d+)").l | tonumber) // null),
+                     title: ((split("\n") | map(select(test("Badge\\]"))) | first // "Codex finding comment")
+                             | gsub("<[^>]+>|!\\[[^\\]]*\\]\\([^)]*\\)|\\*\\*"; "") | strip),
+                     body: (gsub("<!--[^>]*-->|(^|\\n)#+ [^\\n]*"; "") | sub("\\s*<details>[\\s\\S]*$"; "") | strip)}))}] as $cfc
 | (if $st != null and $st.status != null then
      {status: $st.status, sha: $st.commit_sha}
      # a failed review (over the usage limit, say) reviewed nothing: its finding flags mean nothing
      + (if $st.status == "failed" then {has_findings: null, unresolved: null}
         else {has_findings: $st.has_any_findings, unresolved: $st.has_unresolved_findings} end)
-   elif ($crev | length) > 0 or $rcpt != null then
-     ([($crev[] | {at: .submittedAt, sha: .commit.oid, has_findings: true}), ($rcpt // empty | . + {has_findings: false})]
+   elif ($crev + $rcpts + $cfc | length) > 0 then
+     ([($crev[] | . + {has_findings: true}), ($rcpts[] | . + {has_findings: false}), ($cfc[] | {at, sha, has_findings: true})]
       | sort_by(.at) | last) + {status: "completed"}
    else {status: "none", sha: null, has_findings: null} end) as $c0
 | ($c0.sha != null and ($head | startswith($c0.sha))) as $c_on_head
@@ -203,16 +224,22 @@ def failed: . as $s | ["FAILURE","ERROR","TIMED_OUT","CANCELLED","ACTION_REQUIRE
       body: ($f.body | sub("\\n+Useful\\? React with[^\\n]*"; "") | gsub("<!--[^>]*-->"; "") | strip)}
    | .open = ((.resolved or .replied | not) and (.current or (.outdated | not)))
    | select(.current or .open)] as $findings
+# Codex's last review is clean: no findings flagged, or a receipt for its commit
+| ($c0.has_findings == false or $c0.unresolved == false or any($rcpts[]; same(.sha; $c0.sha))) as $c_clean
+# a finding comment counts until a later receipt, review, finding comment or clean state for its commit
+# replaces it; one about an older commit counts only while Codex's last review is not clean
+| ([$crev[], $rcpts[], $cfc[], ($st | select(.status == "completed" and (.has_any_findings == false or .has_unresolved_findings == false))
+    | {at: $row_at, sha: .commit_sha})] | map(select(.at != null))) as $c_words
+| ($findings + [$cfc[] | . as $m | same($m.sha; $c0.sha) as $cur
+   | select((any($c_words[]; .at > $m.at and same(.sha; $m.sha)) | not) and ($cur or ($c_clean | not)))
+   | $m.items[] | . + {sha: $m.sha, url: $m.url, current: $cur, resolved: false, outdated: false, replied: false, open: true}]) as $findings
 | ([$cs[] | select(.author.login != $codex and .createdAt > $head_at
      and (.body | test("@(codex|chatgpt-codex-connector)\\b[^\\n]*review"; "i"))) | .createdAt] | max) as $c_req_at
 # a failed review of HEAD failed in the second its Code Review row shows. Only a row without a time
 # falls back to Codex's usage-limit comment, which can land after a quick retry. A request in or
 # after that second is a retry not yet answered.
 | ([$cx[] | select(.createdAt > $head_at and (.body | test("codex usage limit"; "i"))) | .createdAt] | max) as $c_limit_at
-| (if $c_failed then
-     ([$cx[] | .body | capture("\\*\\*Code Review\\*\\* \\|[^|]*datetime=\"(?<t>\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d)").t + "Z"] | last)
-     // $c_limit_at
-   else null end) as $c_fail_at
+| (if $c_failed then $row_at // $c_limit_at else null end) as $c_fail_at
 
 # ---- SAR: newest Architecture Review comment
 | ([$cs[] | select(.author.login == $sar and (.body | test("^\\s*## [^\\n]{0,12}Architecture Review")))] | last) as $s
@@ -249,10 +276,10 @@ def failed: . as $s | ["FAILURE","ERROR","TIMED_OUT","CANCELLED","ACTION_REQUIRE
 | [(if needs("codex") and ($o.codex.done | not) then "codex" else empty end),
    (if needs("sar") and ($o.sar.fresh | not) then "sar" else empty end),
    (if needs("ci") and ($o.ci.done | not) then "ci" else empty end)] as $waiting
-| [(if $o.codex.done then $o.codex.findings[] | select(.open and (.sev == "P0" or .sev == "P1")) | "codex \(.sev) \(.path):\(.line)" else empty end),
+| [(if $o.codex.done then $o.codex.findings[] | select(.open and (.sev == "P0" or .sev == "P1")) | "codex \(.sev) \(.path // "?"):\(.line // "?")" else empty end),
    (if $o.sar.fresh and ($o.sar.class == "block" or $o.sar.blockers == true or ($o.sar.severity.n // 0) >= 3) then "SAR \($o.sar.title)" else empty end),
    (if ($o.ci.failing | length) > 0 then "CI failing: \($o.ci.failing | join(", "))" else empty end)] as $block
-| [(if $o.codex.done then $o.codex.findings[] | select(.open and (.sev == "P2" or .sev == "P?")) | "codex \(.sev) \(.path):\(.line)" else empty end),
+| [(if $o.codex.done then $o.codex.findings[] | select(.open and (.sev == "P2" or .sev == "P?")) | "codex \(.sev) \(.path // "?"):\(.line // "?")" else empty end),
    (if $o.sar.fresh and $o.sar.class == "advisory" then "SAR advisory" else empty end)] as $fix
 | "has not started on HEAD \($head[0:7]) and will not without a trigger" as $idle
 | "review failed on HEAD \($head[0:7])\(if $o.codex.usage_limit then " (usage limit)" else "" end)" as $c_why
@@ -282,17 +309,19 @@ def hm: if . == null then "?" else .[11:16] + "Z" end;
 def s7: if . == null then "?" else .[0:7] end;
 "PR #\(.number) · \(.repo) · \(.branch) · HEAD \(.head | s7) · \(.state)\(if .draft then " (draft)" else "" end)",
 (.codex as $c
+ | ([$c.findings[] | select(.open) | .url // empty] | last) as $in   # findings posted as a plain comment
  | if $c.status == "none" then "codex  · no Codex activity on this PR"
    elif $c.status == "running" then "codex  … running @\($c.sha | s7)\(if $c.on_head then " (HEAD)" else " — not HEAD" end)"
    elif ($c.on_head | not) then "codex  ⧗ HEAD not reviewed — last review @\($c.sha | s7) \(if $c.status == "failed" then "failed" elif $c.has_findings then "was findings" else "was clean" end)"
    elif $c.status == "failed" then "codex  ✗ review failed @\($c.sha | s7)\(if $c.usage_limit then " (usage limit)" else "" end) · \(if $c.retry_requested then "retry requested" else "comment \"@codex review\" to retry" end)"
    elif ([$c.findings[] | select(.current)] | length) > 0 then
      ([$c.findings[] | select(.current)]) as $cur
-     | "codex  \(if any($cur[]; .open) then "✗" else "✓" end) \($cur | length) finding(s) @\($c.sha | s7) (\($cur | group_by(.sev) | map("\(.[0].sev)×\(length)") | join(" ")))\(if $c.trigger then " · \($c.trigger)" else "" end)"
+     | "codex  \(if any($cur[]; .open) then "✗" else "✓" end) \($cur | length) finding(s) @\($c.sha | s7) (\($cur | group_by(.sev) | map("\(.[0].sev)×\(length)") | join(" ")))\(if $c.trigger then " · \($c.trigger)" else "" end)\(if $in then " · in a comment: \($in)" else "" end)"
+   elif $c.has_findings == true and $in then "codex  ✗ findings @\($c.sha | s7), none posted for it · still open in an older comment: \($in)"
    elif $c.has_findings == true then "codex  ✗ findings @\($c.sha | s7), not among the last 50 threads — open \(.url)"
    else "codex  ✓ clean @\($c.sha | s7)\(if $c.trigger then " · \($c.trigger)" else "" end)" end),
 (.codex.findings | sort_by(.sev)[]
- | "         \(.sev) \(.path):\(.line // "?")  \(.title)\(if .resolved then "  [resolved]" elif .replied then "  [replied]" else "" end)\(if .current then "" else "  (older @\(.sha | s7))" end)"),
+ | "         \(.sev) \(.path // "?"):\(.line // "?")  \(.title)\(if .resolved then "  [resolved]" elif .replied then "  [replied]" else "" end)\(if .current then "" else "  (older @\(.sha | s7))" end)"),
 (.sar as $s
  | if ($s.present | not) then "sar    · no Architecture Review on this PR"
    else "sar    \({"ok": "✓", "advisory": "⚠", "block": "✗"}[$s.class] // "?") \($s.title | sub("^.*Architecture Review\\s*-\\s*"; "")) · severity \($s.severity.n // "?")/\($s.severity.m // "?") · blockers \(if $s.blockers == null then "?" else $s.blockers end) · \($s.at | hm)\(if $s.fresh then "" else " · STALE (before HEAD)" end)" end),
@@ -322,7 +351,7 @@ render() {
   fi
   jq -r "$JQ_TEXT" "$TMP/norm.json"
   if ((FULL)); then
-    jq -r '(.codex.findings[]? | "\n── codex \(.sev) \(.path):\(.line // "?") ──\n\(.body)"),
+    jq -r '(.codex.findings[]? | "\n── codex \(.sev) \(.path // "?"):\(.line // "?") ──\n\(.body)"),
            (if .sar.present then "\n── Architecture Review \(.sar.at) \(.sar.url) ──\n\(.sar.body)" else empty end)' "$TMP/norm.json"
   fi
   [[ $(field .draft) == true ]] && hint "draft PR: Codex and the SAR run when it is marked ready for review"
