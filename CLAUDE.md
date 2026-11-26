@@ -106,7 +106,7 @@ After that, `skillsync` pulls and relinks, and `skillsync add <git-url>` adds an
 | `hyprland-lua` | Script, control, and debug a Hyprland compositor configured in Lua |
 | `adding-an-add-to-claude-button` | Build the "Add to Claude" link for a remote MCP server, and the README, HTML or React button around it (`add-to-claude-link`) |
 | `de-slopping` | Cut hedges and filler from written deliverables; bundles a Simplified Technical English linter (`ste_lint.py`) and an optional `slop_guard` Stop hook |
-| `minto-pyramid` | Restructure a write-up answer-first (Minto Pyramid) |
+| `minto-pyramid` | Frame substantive investigations before tools; restructure drafts with the conclusion first (Minto Pyramid) |
 | `humanizer` | Remove signs of AI-generated writing (forked: `UPSTREAM` lists the local changes) |
 | `nonstop` | Autonomous work mode driven by a Stop hook, one flag per session (forked: `UPSTREAM` lists the local changes and the hook line) |
 

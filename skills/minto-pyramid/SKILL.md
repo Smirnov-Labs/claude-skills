@@ -1,25 +1,29 @@
 ---
 name: minto-pyramid
-description: Use when starting a task that will take tool calls or investigation and you want a frame before you begin, or when tightening or restructuring a draft (email, memo, status update, PR description, proposal) that opens with context, buries the ask, recaps in order or rambles, or when asked whether the lede is buried.
+description: Use when starting a substantive investigation, when explicitly asked to frame a task, or when tightening or restructuring a draft (email, memo, status update, PR description, proposal) that opens with context, buries the ask, recaps in order or rambles, or when asked whether the lede is buried.
 ---
 
 # Minto Pyramid
 
 ## Overview
 
-Lead with the answer. Barbara Minto's Pyramid Principle (developed at McKinsey):
+Frame substantive investigations before using tools. For drafts, lead with the answer.
+Barbara Minto's Pyramid Principle (developed at McKinsey):
 state your single conclusion first, support it with exactly three
 mutually-exclusive reasons, then put evidence under each. Most drafts do the
 opposite — they walk through context chronologically and reveal the point at the
 end.
 
-**Core principle:** The reader should know your conclusion by the end of the
+**Writing principle:** The reader should know your conclusion by the end of the
 first sentence. Everything after it exists only to support it.
 
 ## Before you investigate
 
-When a task needs tool calls or investigation, write a Frame first,
-before any tool call except loading a skill:
+A substantive investigation tests an explanation or weighs evidence to reach a decision.
+For these investigations, or when explicitly asked to frame a task, write a Frame
+before any tool call except loading a skill.
+Skip framing for routine tool actions unless explicitly requested.
+Examples include reading a known file or applying a mechanical edit.
 
 ```
 Frame
@@ -30,10 +34,11 @@ Check: 1) <what must hold> 2) <what must hold> 3) <what must hold>
 
 Q is the one question the task has to answer. A?: is the answer you expect
 before you look, so a wrong guess shows against what you find. Each Check item
-is something that must hold for that answer to be right. You read only the
-evidence that tests those items. The reply's first line answers Q, and if the
-work went against A?, the reply says so. A turn that needs no tool call and
-answers in one line needs no frame.
+is something that must hold for that answer to be right.
+Use `unknown` for A? when the prompt gives no basis for a prediction.
+Start with the three checks and look for evidence against the prediction.
+Revise or add checks when findings call for it.
+The reply's first line answers Q, and if the work went against A?, the reply says so.
 
 One frame for a lookup:
 
@@ -44,10 +49,9 @@ A?: Only the two legacy ones, billing and search.
 Check: 1) grep each manifest for the library name 2) each hit is a running service, not a test fixture 3) no newer service pins it
 ```
 
-## When to Use
+## When to edit a draft
 
-At the start of a task that needs tool calls or investigation, write the
-Frame from "Before you investigate" before your first tool call.
+Use the writing moves below only for drafts.
 
 Apply when a draft:
 
@@ -60,7 +64,7 @@ Apply when a draft:
 
 Also when the writer asks "what's my actual point?" or "did I bury the lede?"
 
-**Skip it for:** pure narrative (stories, post-mortems where sequence matters),
+**Skip these writing moves for:** pure narrative (stories, post-mortems where sequence matters),
 reference docs, or anything where suspense or chronology is deliberately the point.
 
 ## The Pyramid
