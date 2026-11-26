@@ -98,6 +98,16 @@ def finding_comment(at, sha=HEAD, sevs=("P2", "P2")):   # a review's findings in
               "If Codex has suggestions, it will comment; otherwise it will react with 👍.\n\n</details>")
     return {"author": {"login": CODEX}, "createdAt": at, "url": URL + "#issuecomment-4", "body": body}
 
+def unbadged(at):   # a finding comment whose finding has no P0–P3 badge
+    body = ("<!-- codex-code-review-finding:v1 -->\n\n### 💡 Codex Review\n\n"
+            "https://github.com/acme/webapp/blob/%s/src/auth/session.ts#L51-L53\n"
+            "**Expire refresh tokens on logout**\n\nLogout leaves the refresh token valid.\n" % HEAD)
+    return {"author": {"login": CODEX}, "createdAt": at, "url": URL + "#issuecomment-4", "body": body}
+
+def reply(at):   # a person answers the finding comment
+    return {"author": {"login": "dev"}, "createdAt": at, "url": URL + "#issuecomment-6",
+            "body": "Both are fixed in the next commit. Re: " + URL + "#issuecomment-4"}
+
 def receipt(at, sha=HEAD):   # the plain comment of a review that found nothing
     return {"author": {"login": CODEX}, "createdAt": at, "url": URL + "#issuecomment-5",
             "body": "<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn't find any major issues. Nice work!\n\n"
@@ -132,6 +142,8 @@ snaps = {
     # findings in a plain comment: alone (no summary yet), and next to the summary's state
     "comment-findings": page([finding_comment("2026-10-20T10:05:00Z")]),
     "comment-findings-p1": page([summary("completed", DONE, True), finding_comment(DONE, sevs=("P1", "P2"))]),
+    "comment-unbadged": page([unbadged("2026-10-20T10:05:00Z")]),
+    "comment-replied": page([finding_comment("2026-10-20T10:05:00Z"), reply("2026-10-20T10:08:00Z")]),
     "receipt": page([receipt(DONE)]),
     "comment-then-receipt": page([finding_comment("2026-10-20T10:05:00Z"), receipt(DONE)]),
     # findings on an older commit; Codex then reviewed HEAD clean, or flagged findings but posted none
@@ -234,6 +246,11 @@ use comment-findings-p1; run 42 -R acme/webapp --need codex --json
 q='.verdict == "BLOCK" and .blocking == ["codex P1 src/auth/session.ts:51"] and .fixes == ["codex P2 src/auth/session.ts:64"]
    and all(.codex.findings[]; .current and .open and .url == "https://github.com/acme/webapp/pull/42#issuecomment-4")'
 check "a P1 in a plain comment, next to the summary's state: BLOCK" 'json "$q"'
+use comment-unbadged; run 42 -R acme/webapp --need codex
+check "a finding comment without a badge still counts, as P?" \
+  'has "P? src/auth/session.ts:51  Codex finding comment" && has "verdict FIX — codex P? src/auth/session.ts:51"'
+use comment-replied; run 42 -R acme/webapp --need codex
+check "a reply does not clear a finding comment: verdict FIX" 'has "verdict FIX — codex P2 src/auth/session.ts:51; codex P2 src/auth/session.ts:64" && ! has "[replied]"'
 use receipt; run 42 -R acme/webapp --need codex
 check "a plain comment that found nothing: verdict CLEAN" 'has "codex  ✓ clean @56d1b7b" && has "verdict CLEAN"'
 use comment-then-receipt; run 42 -R acme/webapp --need codex
