@@ -1,6 +1,6 @@
 ---
 name: minto-pyramid
-description: Use when tightening or restructuring a draft (email, memo, status update, PR description, proposal) that opens with context, buries the ask, recaps in order or rambles, or when asked whether the lede is buried.
+description: Use when starting a task that will take tool calls or investigation and you want a frame before you begin, or when tightening or restructuring a draft (email, memo, status update, PR description, proposal) that opens with context, buries the ask, recaps in order or rambles, or when asked whether the lede is buried.
 ---
 
 # Minto Pyramid
@@ -16,7 +16,38 @@ end.
 **Core principle:** The reader should know your conclusion by the end of the
 first sentence. Everything after it exists only to support it.
 
+## Before you investigate
+
+When a task needs tool calls or investigation, write a Frame first,
+before any tool call except loading a skill:
+
+```
+Frame
+Q: <the question this task answers, one line>
+A?: <the answer you expect, one line>
+Check: 1) <what must hold> 2) <what must hold> 3) <what must hold>
+```
+
+Q is the one question the task has to answer. A?: is the answer you expect
+before you look, so a wrong guess shows against what you find. Each Check item
+is something that must hold for that answer to be right. You read only the
+evidence that tests those items. The reply's first line answers Q, and if the
+work went against A?, the reply says so. A turn that needs no tool call and
+answers in one line needs no frame.
+
+One frame for a lookup:
+
+```
+Frame
+Q: Which services still load the old auth library?
+A?: Only the two legacy ones, billing and search.
+Check: 1) grep each manifest for the library name 2) each hit is a running service, not a test fixture 3) no newer service pins it
+```
+
 ## When to Use
+
+At the start of a task that needs tool calls or investigation, write the
+Frame from "Before you investigate" before your first tool call.
 
 Apply when a draft:
 
