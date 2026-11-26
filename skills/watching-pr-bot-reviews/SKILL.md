@@ -81,14 +81,16 @@ verdict FIX — codex P2 src/auth/session.ts:51
 | PENDING (2) | a needed bot hasn't reviewed HEAD | read the `x …` line: timed out / needs `--trigger` / PR head not updated. **Never merge on PENDING** |
 
 A finding is handled once its thread is resolved or has a non-bot reply (shown `[replied]` /
-`[resolved]`). Codex can also post a review's findings in one plain PR comment, which the digest
-links. That comment has no thread to resolve. It counts until Codex reviews again and finds
-nothing, so after the fix, push and run `wait --trigger`. Don't declare a PR done without
-showing the user the digest, even when it is CLEAN. `--full` adds finding bodies + the full SAR; `--json` emits the machine payload.
+`[resolved]`). Don't declare a PR done without showing the user the digest, even when it is
+CLEAN. `--full` adds finding bodies + the full SAR; `--json` emits the machine payload.
 `status` always exits 0; errors exit 3. Other flags: `--need codex,sar,ci|all`
 (default codex, + sar if the repo has an architecture-review workflow; `status` adds ci),
 `--timeout 30m`, `--interval 30` (one GraphQL call per poll), `--sha SHA`, `--dry-run`
 (print trigger comments instead of posting).
+
+Codex can also post a review's findings in one plain PR comment, which the digest links. That
+comment has no thread to resolve. It counts until Codex reviews again and finds nothing, so
+after the fix, push and run `wait --trigger`.
 
 ## Orchestrating subagents
 
